@@ -28,8 +28,6 @@ for path in (str(REPO_ROOT), str(SRC_ROOT)):
 
 import pandas as pd
 
-from aiquantbase.executor import ClickHouseExecutor
-from aiquantbase.runtime_config import load_runtime_config
 from sync_data_system.amazingdata_sdk_provider import (
     AmazingDataSDKConfig,
     AmazingDataSDKProvider,
@@ -41,6 +39,7 @@ from sync_data_system.amazingdata_sdk_provider import (
     _iter_records_from_sdk_result,
     _record_get,
 )
+from sync_data_system.clickhouse_client import ClickHouseConfig, create_clickhouse_client
 
 
 DEFAULT_RUNTIME = REPO_ROOT / "config" / "runtime.local.yaml"
@@ -148,8 +147,6 @@ def quote_sql(value: str) -> str:
 
 
 def fetch_db_rows(runtime_path: Path, code: str, trade_date: date) -> pd.DataFrame:
-    runtime = load_runtime_config(runtime_path)
-    executor = ClickHouseExecutor(runtime.datasource)
     sql = f"""
         SELECT
           market_code,
@@ -169,7 +166,12 @@ def fetch_db_rows(runtime_path: Path, code: str, trade_date: date) -> pd.DataFra
           AND trade_date = {quote_sql(trade_date.isoformat())}
         ORDER BY market_code, trade_date, reason_type, trader_name
     """
-    return executor.execute_sql_df(sql)
+    config = ClickHouseConfig.from_env(runtime_path=runtime_path)
+    connection = create_clickhouse_client(config)
+    try:
+        return connection.query_df(sql)
+    finally:
+        connection.close()
 
 
 def numeric_sum(df: pd.DataFrame, column: str) -> float | None:

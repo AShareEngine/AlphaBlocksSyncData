@@ -1,5 +1,5 @@
 const projectRoot = __dirname
-const pythonBin = process.env.PYTHON_BIN || '/Users/zhao/miniconda3/envs/py313/bin/python'
+const pythonBin = process.env.PYTHON_BIN || 'python3'
 const syncHost = process.env.SYNC_HOST || '127.0.0.1'
 const syncPort = process.env.SYNC_PORT || '8010'
 

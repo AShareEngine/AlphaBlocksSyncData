@@ -16,8 +16,8 @@ try:
 except Exception:  # pragma: no cover
     pd = None  # type: ignore
 
-from aiquantbase.runtime_config import load_runtime_config
 from sync_data_system.config_paths import resolve_runtime_config_path
+from sync_data_system.runtime_config import load_runtime_config
 from sync_data_system.sources.baostock.specs import BAOSTOCK_TASK_SPECS
 
 

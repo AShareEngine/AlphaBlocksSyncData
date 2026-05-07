@@ -101,6 +101,7 @@ class RunTaskRequest(BaseModel):
 
 class WideTableInlineRunRequest(BaseModel):
     id: str
+    payload: Optional[dict[str, Any]] = None
     graph_path: Optional[str] = None
     fields_path: Optional[str] = None
     state_database: Optional[str] = None
@@ -363,13 +364,11 @@ def get_wide_table_state(
 @app.post("/api/sync/wide-tables/run-inline")
 def run_wide_table_inline(request: WideTableInlineRunRequest):
     try:
-        from aiquantbase.wide_table import build_wide_table_export_payload
-
-        payload = build_wide_table_export_payload(
-            request.id,
-            graph_path=request.graph_path,
-            fields_path=request.fields_path,
-        )
+        payload = request.payload
+        if not isinstance(payload, dict):
+            raise ValueError(
+                "payload is required. Build the wide-table payload in AlphaBlocks, then send it to the sync service."
+            )
         spec_name = str(((payload.get("wide_table") or {}).get("name")) or request.id).strip() or request.id
         spec_path = f"inline://{spec_name}.yaml"
         metadata = build_wide_table_metadata(payload, spec_path=spec_path)

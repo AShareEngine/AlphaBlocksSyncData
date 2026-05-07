@@ -17,7 +17,6 @@ try:
 except Exception:  # pragma: no cover
     pd = None  # type: ignore
 
-from aiquantbase.runtime_config import load_runtime_config
 from sync_data_system.amazingdata_constants import (
     FactorType,
     Market,
@@ -106,6 +105,7 @@ from sync_data_system.data_models import (
 )
 from sync_data_system.info_data import InfoDataSyncProvider
 from sync_data_system.market_data import MarketDataSyncProvider
+from sync_data_system.runtime_config import load_runtime_config
 
 
 logger = logging.getLogger(__name__)

@@ -54,6 +54,29 @@ class ServiceApiTest(unittest.TestCase):
 
     def test_run_wide_table_inline_uses_payload_execution(self) -> None:
         client = TestClient(app)
+        payload = {
+            "wide_table": {
+                "id": "demo_wide",
+                "name": "demo_wide",
+                "source_node": "stock_daily_real",
+                "target": {
+                    "database": "starlight",
+                    "table": "demo_wide",
+                    "engine": "Memory",
+                    "partition_by": [],
+                    "order_by": ["market_code", "trade_date"],
+                    "version_field": "",
+                },
+                "fields": ["market_code", "trade_date", "close"],
+                "key_fields": ["market_code", "trade_date"],
+                "status": "enabled",
+            },
+            "materialization_bundle": {
+                "query_plan": {},
+                "base_context": {},
+                "preview_sql": "SELECT 1",
+            },
+        }
         with patch(
             "sync_data_system.service.api.build_wide_table_metadata",
             return_value=object(),
@@ -73,7 +96,7 @@ class ServiceApiTest(unittest.TestCase):
         ):
             response = client.post(
                 "/api/sync/wide-tables/run-inline",
-                json={"id": "demo_wide", "graph_path": "graph.yaml", "fields_path": "fields.yaml"},
+                json={"id": "demo_wide", "payload": payload},
             )
         self.assertEqual(response.status_code, 200)
         payload = response.json()
