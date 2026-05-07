@@ -57,6 +57,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from program_bootstrap import install_sync_data_system_alias
+
+install_sync_data_system_alias(Path(__file__).resolve().parent)
+
 from sync_data_system.amazingdata_constants import FactorType, PeriodName, SecurityType
 from sync_data_system.amazingdata_sdk_provider import AmazingDataSDKConfig, AmazingDataSDKProvider
 from sync_data_system.base_data import BaseData, BaseDataCacheMissError

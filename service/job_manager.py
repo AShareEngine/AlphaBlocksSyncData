@@ -99,7 +99,7 @@ class SyncJobManager:
         self._ensure_no_running_jobs()
         resolved_config = self._resolve_config_path(config_path)
         relative_config_path = str(resolved_config.relative_to(self.config_root))
-        command = [sys.executable, "-m", "sync_data_system.run_sync", "--config", str(resolved_config)]
+        command = [sys.executable, str(self.project_root / "run_sync.py"), "--config", str(resolved_config)]
         if runtime_path:
             command.extend(["--runtime-path", runtime_path])
         if log_level:
@@ -130,7 +130,7 @@ class SyncJobManager:
         runtime_path: Optional[str] = None,
     ) -> JobRecord:
         self._ensure_no_running_jobs()
-        command = [sys.executable, "-m", "sync_data_system.run_sync", task]
+        command = [sys.executable, str(self.project_root / "run_sync.py"), task]
         if runtime_path:
             command.extend(["--runtime-path", runtime_path])
         code_items = [item.strip() for item in (codes or []) if str(item).strip()]
@@ -230,7 +230,7 @@ class SyncJobManager:
         log_fp = log_path.open("a", encoding="utf-8")
         process = subprocess.Popen(
             command,
-            cwd=str(self.project_root.parent),
+            cwd=str(self.project_root),
             env=self._build_subprocess_env(),
             stdout=log_fp,
             stderr=subprocess.STDOUT,
@@ -288,8 +288,7 @@ class SyncJobManager:
         log_path = self.logs_dir / f"{job_id}.log"
         command = [
             sys.executable,
-            "-m",
-            "sync_data_system.scripts.run_registered_task",
+            str(self.project_root / "scripts" / "run_registered_task.py"),
             "--job-id",
             job_id,
             "--task",
@@ -423,7 +422,7 @@ class SyncJobManager:
 
     def _build_subprocess_env(self) -> dict[str, str]:
         env = os.environ.copy()
-        parent = str(self.project_root.parent)
+        parent = str(self.project_root)
         current = env.get("PYTHONPATH", "")
         items = [item for item in current.split(os.pathsep) if item]
         if parent not in items:
