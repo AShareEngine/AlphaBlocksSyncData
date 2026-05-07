@@ -1,6 +1,6 @@
 const projectRoot = __dirname
 const pythonBin = process.env.PYTHON_BIN || 'python3'
-const syncHost = process.env.SYNC_HOST || '127.0.0.1'
+const syncHost = process.env.SYNC_HOST || '0.0.0.0'
 const syncPort = process.env.SYNC_PORT || '8010'
 
 module.exports = {
