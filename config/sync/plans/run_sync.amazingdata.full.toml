@@ -1,0 +1,68 @@
+source = "amazingdata"
+log_level = "INFO"
+continue_on_error = true
+
+[defaults]
+limit = 0
+force = false
+resume = true
+
+[[tasks]]
+task = "code_info"
+
+[[tasks]]
+task = "hist_code_list"
+
+[[tasks]]
+task = "stock_basic"
+
+[[tasks]]
+task = "history_stock_status"
+
+[[tasks]]
+task = "adj_factor"
+
+[[tasks]]
+task = "backward_factor"
+
+[[tasks]]
+task = "daily_kline"
+
+[[tasks]]
+task = "minute_kline"
+
+[[tasks]]
+task = "market_snapshot"
+
+[[tasks]]
+task = "dividend"
+
+[[tasks]]
+task = "index_constituent"
+
+[[tasks]]
+task = "index_weight"
+
+[[tasks]]
+task = "industry_base_info"
+
+[[tasks]]
+task = "industry_constituent"
+
+[[tasks]]
+task = "industry_weight"
+
+[[tasks]]
+task = "industry_daily"
+
+[[tasks]]
+task = "etf_pcf"
+
+[[tasks]]
+task = "long_hu_bang"
+
+[[tasks]]
+task = "margin_detail"
+
+[[tasks]]
+task = "margin_summary"

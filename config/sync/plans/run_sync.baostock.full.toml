@@ -1,0 +1,24 @@
+source = "baostock"
+database = "baostock"
+log_level = "INFO"
+continue_on_error = true
+
+[defaults]
+limit = 0
+force = false
+continue_on_error = true
+
+[[tasks]]
+task = "trade_dates"
+
+[[tasks]]
+task = "all_stock"
+
+[[tasks]]
+task = "stock_basic"
+
+[[tasks]]
+task = "adjust_factor"
+
+[[tasks]]
+task = "daily_kline"

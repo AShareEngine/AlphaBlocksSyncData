@@ -190,15 +190,14 @@ class SyncJobManager:
         return "\n".join(lines[-tail_lines:])
 
     def list_configs(self) -> list[str]:
-        if not self.config_root.exists():
-            return []
-        return sorted(
-            [
-                path.name
-                for path in self.config_root.glob("run_sync*.toml")
-                if path.is_file()
-            ]
-        )
+        paths: dict[str, Path] = {}
+        for root in (self.config_root, self.project_root):
+            if not root.exists():
+                continue
+            for path in root.glob("run_sync*.toml"):
+                if path.is_file():
+                    paths.setdefault(path.name, path)
+        return sorted(paths)
 
     def list_tasks(self) -> list[str]:
         names = set()

@@ -1,0 +1,35 @@
+source = "amazingdata"
+log_level = "INFO"
+continue_on_error = true
+
+[defaults]
+limit = 0
+force = false
+resume = true
+
+[[tasks]]
+task = "code_info"
+
+[[tasks]]
+task = "history_stock_status"
+
+[[tasks]]
+task = "adj_factor"
+
+[[tasks]]
+task = "daily_kline"
+
+[[tasks]]
+task = "dividend"
+
+[[tasks]]
+task = "index_constituent"
+
+[[tasks]]
+task = "industry_constituent"
+
+[[tasks]]
+task = "industry_daily"
+
+[[tasks]]
+task = "long_hu_bang"
