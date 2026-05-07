@@ -1,0 +1,42 @@
+# run_sync.py 批量任务配置示例
+#
+# 用法：
+#   python3 run_sync.py --config run_sync.example.toml
+
+source = "amazingdata"
+log_level = "INFO"
+continue_on_error = false
+
+[defaults]
+limit = 0
+force = false
+
+[[tasks]]
+task = "code_info"
+
+[[tasks]]
+task = "industry_base_info"
+
+[[tasks]]
+task = "fund_share"
+begin_date = 20240101
+end_date = 20241231
+limit = 20
+
+[[tasks]]
+task = "kzz_corr"
+codes = ["110059.SH", "123001.SZ"]
+
+[[tasks]]
+task = "daily_kline"
+codes = "000001.SZ,600000.SH"
+begin_date = 20240101
+end_date = 20240131
+force = true
+
+[[tasks]]
+task = "market_snapshot"
+enabled = false
+begin_date = 20240115
+end_date = 20240115
+limit = 10

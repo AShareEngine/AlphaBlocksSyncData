@@ -6,14 +6,14 @@
 
 当前仓库也新增了一条独立的 `BaoStock -> ClickHouse` 同步入口：
 
-- 统一入口：`/Users/zhao/Desktop/git/sync_data_system/run_sync.py`
-- BaoStock 全量配置：`/Users/zhao/Desktop/git/sync_data_system/run_sync.baostock.full.toml`
-- 独立脚本入口：`/Users/zhao/Desktop/git/sync_data_system/scripts/run_baostock_sync.py`
-- 运行手册：`/Users/zhao/Desktop/git/sync_data_system/BAOSTOCK_RUNBOOK.md`
+- 统一入口：`/home/mubin/AlphaBlocksSyncData/run_sync.py`
+- BaoStock 全量配置：`/home/mubin/AlphaBlocksSyncData/config/sync/plans/run_sync.baostock.full.toml`
+- 独立脚本入口：`/home/mubin/AlphaBlocksSyncData/scripts/run_baostock_sync.py`
+- 运行手册：`/home/mubin/AlphaBlocksSyncData/BAOSTOCK_RUNBOOK.md`
 - `begin/end` 型 BaoStock 接口已支持按业务表最新业务日期自动增量
-- `BaoStock` 正式实现目录：`/Users/zhao/Desktop/git/sync_data_system/sources/baostock/`
-- 公共同步层目录：`/Users/zhao/Desktop/git/sync_data_system/sync_core/`
-- AmazingData 专项配置：`/Users/zhao/Desktop/git/sync_data_system/run_sync.amazingdata.special.toml`
+- `BaoStock` 正式实现目录：`/home/mubin/AlphaBlocksSyncData/sources/baostock/`
+- 公共同步层目录：`/home/mubin/AlphaBlocksSyncData/sync_core/`
+- AmazingData 专项配置：`/home/mubin/AlphaBlocksSyncData/config/sync/plans/run_sync.amazingdata.special.toml`
 
 仓库结构正在收敛为“多数据源 + 公共层”：
 
@@ -40,7 +40,7 @@
 
 当前正式同步入口文件：
 
-- `/Users/zhao/Desktop/git/sync_data_system/run_sync.py`
+- `/home/mubin/AlphaBlocksSyncData/run_sync.py`
 
 ---
 
@@ -49,7 +49,7 @@
 项目当前已经固化的设计原则如下：
 
 - 默认只同步 `EXTRA_STOCK_A`
-- 正式同步入口默认读取项目根目录 `runtime.local.yaml`
+- 正式同步入口默认读取 `config/runtime.local.yaml`；也可以通过 `SYNC_DATA_RUNTIME_CONFIG` 覆盖
 - 正式同步按“逐股顺序同步”执行，不再走复杂批调度
 - ClickHouse 表名统一为小写
 - ClickHouse 列名统一为小写 `snake_case`
@@ -81,20 +81,20 @@
 
 核心文件：
 
-- `/Users/zhao/Desktop/git/sync_data_system/amazingdata_sdk_provider.py`
-- `/Users/zhao/Desktop/git/sync_data_system/clickhouse_client.py`
-- `/Users/zhao/Desktop/git/sync_data_system/base_data.py`
-- `/Users/zhao/Desktop/git/sync_data_system/info_data.py`
-- `/Users/zhao/Desktop/git/sync_data_system/market_data.py`
-- `/Users/zhao/Desktop/git/sync_data_system/clickhouse_tables.py`
-- `/Users/zhao/Desktop/git/sync_data_system/data_models.py`
-- `/Users/zhao/Desktop/git/sync_data_system/service/api.py`
-- `/Users/zhao/Desktop/git/sync_data_system/service/job_manager.py`
-- `/Users/zhao/Desktop/git/sync_data_system/service/task_registry.py`
-- `/Users/zhao/Desktop/git/sync_data_system/repositories/base_data_repository.py`
-- `/Users/zhao/Desktop/git/sync_data_system/repositories/info_data_repository.py`
-- `/Users/zhao/Desktop/git/sync_data_system/repositories/market_data_repository.py`
-- `/Users/zhao/Desktop/git/sync_data_system/scripts/run_api_service.py`
+- `/home/mubin/AlphaBlocksSyncData/amazingdata_sdk_provider.py`
+- `/home/mubin/AlphaBlocksSyncData/clickhouse_client.py`
+- `/home/mubin/AlphaBlocksSyncData/base_data.py`
+- `/home/mubin/AlphaBlocksSyncData/info_data.py`
+- `/home/mubin/AlphaBlocksSyncData/market_data.py`
+- `/home/mubin/AlphaBlocksSyncData/clickhouse_tables.py`
+- `/home/mubin/AlphaBlocksSyncData/data_models.py`
+- `/home/mubin/AlphaBlocksSyncData/service/api.py`
+- `/home/mubin/AlphaBlocksSyncData/service/job_manager.py`
+- `/home/mubin/AlphaBlocksSyncData/service/task_registry.py`
+- `/home/mubin/AlphaBlocksSyncData/repositories/base_data_repository.py`
+- `/home/mubin/AlphaBlocksSyncData/repositories/info_data_repository.py`
+- `/home/mubin/AlphaBlocksSyncData/repositories/market_data_repository.py`
+- `/home/mubin/AlphaBlocksSyncData/scripts/run_api_service.py`
 
 ### 3.2 当前正式任务
 

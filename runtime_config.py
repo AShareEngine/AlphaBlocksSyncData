@@ -90,7 +90,11 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
 def load_runtime_config(path: str | Path) -> RuntimeConfig:
     resolved_path = Path(path).expanduser().resolve()
     if not resolved_path.exists():
-        raise FileNotFoundError(f"runtime config not found: {resolved_path}")
+        raise FileNotFoundError(
+            f"runtime config not found: {resolved_path}. "
+            "Create AlphaBlocksSyncData/config/runtime.local.yaml from config/runtime.example.yaml "
+            "or set SYNC_DATA_RUNTIME_CONFIG."
+        )
 
     data = load_yaml(resolved_path)
     datasource_payload = {

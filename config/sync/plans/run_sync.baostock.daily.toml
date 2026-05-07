@@ -1,0 +1,24 @@
+# BaoStock 日线增量同步配置
+#
+# 用法：
+#   python3 -m sync_data_system.run_sync --config config/sync/plans/run_sync.baostock.daily.toml
+#
+# 说明：
+# - 只跑 BaoStock `daily_kline`
+# - 不传 codes 时，会自动拉取当日全市场代码池后逐只更新
+# - 已支持按表内最新 date 自动增量
+
+source = "baostock"
+log_level = "INFO"
+continue_on_error = true
+database = "baostock"
+
+[defaults]
+limit = 0
+force = false
+continue_on_error = true
+
+[[tasks]]
+task = "daily_kline"
+enabled = true
+begin_date = 20100101

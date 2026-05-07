@@ -23,13 +23,13 @@ class SyncJobManagerTest(unittest.TestCase):
             manager = SyncJobManager(root, state_dir=root / ".service_state")
             self.assertEqual(manager.list_configs(), ["run_sync.baostock.full.toml", "run_sync.full.toml"])
 
-    def test_list_configs_keeps_legacy_project_root_files(self) -> None:
+    def test_list_configs_ignores_legacy_project_root_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "sync_project"
             root.mkdir()
             (root / "run_sync.legacy.toml").write_text("source = 'amazingdata'\n[[tasks]]\ntask='code_info'\n", encoding="utf-8")
             manager = SyncJobManager(root, state_dir=root / ".service_state")
-            self.assertEqual(manager.list_configs(), ["run_sync.legacy.toml"])
+            self.assertEqual(manager.list_configs(), [])
 
     def test_resolve_config_path_rejects_outside_project(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

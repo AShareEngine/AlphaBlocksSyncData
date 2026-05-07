@@ -2,6 +2,7 @@ const projectRoot = __dirname
 const pythonBin = process.env.PYTHON_BIN || 'python3'
 const syncHost = process.env.SYNC_HOST || '0.0.0.0'
 const syncPort = process.env.SYNC_PORT || '8010'
+const runtimeConfig = process.env.SYNC_DATA_RUNTIME_CONFIG || `${projectRoot}/config/runtime.local.yaml`
 
 module.exports = {
   apps: [
@@ -19,6 +20,7 @@ module.exports = {
         PYTHONUNBUFFERED: '1',
         SYNC_HOST: syncHost,
         SYNC_PORT: syncPort,
+        SYNC_DATA_RUNTIME_CONFIG: runtimeConfig,
       },
     },
   ],

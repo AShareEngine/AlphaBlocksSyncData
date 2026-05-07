@@ -6,14 +6,14 @@
 
 目录说明：
 
-- 统一入口：`/Users/zhao/Desktop/git/sync_data_system/run_sync.py`
-- BaoStock 全量配置：`/Users/zhao/Desktop/git/sync_data_system/run_sync.baostock.full.toml`
-- 独立脚本入口：`/Users/zhao/Desktop/git/sync_data_system/scripts/run_baostock_sync.py`
-- 正式实现：`/Users/zhao/Desktop/git/sync_data_system/sources/baostock/runner.py`
-- 规格定义：`/Users/zhao/Desktop/git/sync_data_system/sources/baostock/specs.py`
-- Provider：`/Users/zhao/Desktop/git/sync_data_system/sources/baostock/provider.py`
-- Repository：`/Users/zhao/Desktop/git/sync_data_system/sources/baostock/repository.py`
-- 公共层：`/Users/zhao/Desktop/git/sync_data_system/sync_core/`
+- 统一入口：`/home/mubin/AlphaBlocksSyncData/run_sync.py`
+- BaoStock 全量配置：`/home/mubin/AlphaBlocksSyncData/config/sync/plans/run_sync.baostock.full.toml`
+- 独立脚本入口：`/home/mubin/AlphaBlocksSyncData/scripts/run_baostock_sync.py`
+- 正式实现：`/home/mubin/AlphaBlocksSyncData/sources/baostock/runner.py`
+- 规格定义：`/home/mubin/AlphaBlocksSyncData/sources/baostock/specs.py`
+- Provider：`/home/mubin/AlphaBlocksSyncData/sources/baostock/provider.py`
+- Repository：`/home/mubin/AlphaBlocksSyncData/sources/baostock/repository.py`
+- 公共层：`/home/mubin/AlphaBlocksSyncData/sync_core/`
 
 ## 入口
 
@@ -36,7 +36,7 @@ BaoStock 登录默认走匿名账号：
 - `BAOSTOCK_USER_ID=anonymous`
 - `BAOSTOCK_PASSWORD=123456`
 
-如需覆盖，可以写入 `runtime.local.yaml` 或环境变量。
+如需覆盖，可以写入 `config/runtime.local.yaml` 或环境变量。
 
 ## 环境变量
 

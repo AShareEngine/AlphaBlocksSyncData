@@ -1,0 +1,28 @@
+# AmazingData 龙虎榜 / 融资融券明细 接入测试配置
+#
+# 用法：
+#   python3 run_sync.py --config run_sync.amazingdata.lhb_margin_detail.test.toml
+#
+# 说明：
+# - 只跑两个接口：
+#   - long_hu_bang
+#   - margin_detail
+# - 适合验证这两个接口是否已经接进同步链路
+# - 当前即使返回空数据，也会记录同步日志和 checkpoint
+
+source = "amazingdata"
+log_level = "INFO"
+continue_on_error = true
+
+[defaults]
+begin_date = 20100101
+limit = 0
+force = false
+
+[[tasks]]
+task = "long_hu_bang"
+enabled = true
+
+[[tasks]]
+task = "margin_detail"
+enabled = true

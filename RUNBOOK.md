@@ -22,11 +22,11 @@ ClickHouse：
 
 说明：
 
-- 默认读取项目根目录 `runtime.local.yaml`
+- 默认读取 `config/runtime.local.yaml`；也可以通过 `SYNC_DATA_RUNTIME_CONFIG` 覆盖
 - `run_sync.py` 现在是统一入口
 - `run_sync.full.toml` / `run_sync.amazingdata.full.toml` 走 AmazingData
 - `run_sync.baostock.full.toml` 走 BaoStock
-- BaoStock 详细说明见 [BAOSTOCK_RUNBOOK.md](/Users/zhao/Desktop/git/sync_data_system/BAOSTOCK_RUNBOOK.md)
+- BaoStock 详细说明见 [BAOSTOCK_RUNBOOK.md](/home/mubin/AlphaBlocksSyncData/BAOSTOCK_RUNBOOK.md)
 
 推荐先做一次最小验证：
 
@@ -145,7 +145,7 @@ curl -X POST http://127.0.0.1:18080/api/jobs/run-task \
 
 默认行为：
 
-- 默认读取项目根目录 `runtime.local.yaml`
+- 默认读取 `config/runtime.local.yaml`；也可以通过 `SYNC_DATA_RUNTIME_CONFIG` 覆盖
 - 默认只同步 `EXTRA_STOCK_A`
 - 默认起始日期：`20100101`
 - 默认结束日期：最新交易日
@@ -232,10 +232,10 @@ python3 run_sync.py --config run_sync.full.toml --resume
 ## 配置执行
 
 - 支持用 `TOML` 配置文件按列表顺序批量执行任务
-- 示例文件：`/Users/zhao/Desktop/git/sync_data_system/run_sync.example.toml`
-- AmazingData 包路径：`/Users/zhao/Desktop/git/sync_data_system/sources/amazingdata/`
-- BaoStock 包路径：`/Users/zhao/Desktop/git/sync_data_system/sources/baostock/`
-- 公共层路径：`/Users/zhao/Desktop/git/sync_data_system/sync_core/`
+- 示例文件：`/home/mubin/AlphaBlocksSyncData/config/sync/plans/run_sync.example.toml`
+- AmazingData 包路径：`/home/mubin/AlphaBlocksSyncData/sources/amazingdata/`
+- BaoStock 包路径：`/home/mubin/AlphaBlocksSyncData/sources/baostock/`
+- 公共层路径：`/home/mubin/AlphaBlocksSyncData/sync_core/`
 
 常用命令：
 

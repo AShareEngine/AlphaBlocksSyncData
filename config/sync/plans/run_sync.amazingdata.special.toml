@@ -1,0 +1,84 @@
+# AmazingData 专项增量同步配置
+#
+# 用法：
+#   python3 run_sync.py --config run_sync.amazingdata.special.toml
+#
+# 这份配置专门用来单独更新：
+# - 历史代码表
+# - 期权基本资料 / 标准合约 / 月合约属性变动
+# - 国债收益率
+# - 新增的可转债条款 / 大宗交易 / 龙虎榜 / 融资融券
+
+source = "amazingdata"
+log_level = "INFO"
+continue_on_error = true
+
+[defaults]
+begin_date = 20100101
+limit = 0
+force = false
+
+# 1. 历史代码表
+[[tasks]]
+task = "hist_code_list"
+enabled = true
+
+# 2. 期权基本资料
+[[tasks]]
+task = "option_basic_info"
+enabled = true
+
+# 3. 期权标准合约属性
+[[tasks]]
+task = "option_std_ctr_specs"
+enabled = true
+
+# 4. 期权月合约属性变动
+[[tasks]]
+task = "option_mon_ctr_specs"
+enabled = true
+
+# 5. 国债收益率
+[[tasks]]
+task = "treasury_yield"
+enabled = true
+
+# 6. 可转债回售/赎回条款明细
+[[tasks]]
+task = "kzz_put_call_item"
+enabled = true
+
+# 7. 可转债回售条款
+[[tasks]]
+task = "kzz_put"
+enabled = true
+
+# 8. 可转债赎回条款
+[[tasks]]
+task = "kzz_call"
+enabled = true
+
+# 9. 可转债转股条款
+[[tasks]]
+task = "kzz_conv"
+enabled = true
+
+# 10. 大宗交易
+[[tasks]]
+task = "block_trading"
+enabled = true
+
+# 11. 龙虎榜
+[[tasks]]
+task = "long_hu_bang"
+enabled = true
+
+# 12. 融资融券明细
+[[tasks]]
+task = "margin_detail"
+enabled = true
+
+# 13. 融资融券汇总
+[[tasks]]
+task = "margin_summary"
+enabled = true
