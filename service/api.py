@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -102,8 +102,7 @@ class RunTaskRequest(BaseModel):
 class WideTableInlineRunRequest(BaseModel):
     id: str
     payload: Optional[dict[str, Any]] = None
-    graph_path: Optional[str] = None
-    fields_path: Optional[str] = None
+    nodes_path: Optional[str] = None
     state_database: Optional[str] = None
     runtime_path: Optional[str] = None
 

@@ -96,7 +96,11 @@ class ServiceApiTest(unittest.TestCase):
         ):
             response = client.post(
                 "/api/sync/wide-tables/run-inline",
-                json={"id": "demo_wide", "payload": payload},
+                json={
+                    "id": "demo_wide",
+                    "nodes_path": "/tmp/alphablocks/config/nodes",
+                    "payload": payload,
+                },
             )
         self.assertEqual(response.status_code, 200)
         payload = response.json()
