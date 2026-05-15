@@ -10,6 +10,7 @@ from pathlib import Path
 
 from sync_data_system.run_sync import detect_config_source
 from sync_data_system.sources.baostock.runner import load_execution_plan_from_toml
+from sync_data_system.sources.qmt.runner import load_execution_plan_from_toml as load_qmt_execution_plan_from_toml
 
 
 class RunSyncMultiSourceTest(unittest.TestCase):
@@ -24,6 +25,12 @@ class RunSyncMultiSourceTest(unittest.TestCase):
             path = Path(tmpdir) / "cfg.toml"
             path.write_text("source = 'baostock'\n[[tasks]]\ntask = 'all_stock'\n", encoding="utf-8")
             self.assertEqual(detect_config_source(str(path)), "baostock")
+
+    def test_detect_config_source_qmt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "cfg.toml"
+            path.write_text("source = 'qmt'\n[[tasks]]\ntask = 'sectors'\n", encoding="utf-8")
+            self.assertEqual(detect_config_source(str(path)), "qmt")
 
     def test_load_baostock_execution_plan_from_toml(self) -> None:
         content = textwrap.dedent(
@@ -62,6 +69,33 @@ class RunSyncMultiSourceTest(unittest.TestCase):
         self.assertEqual(plan.tasks[1].task, "daily_kline")
         self.assertEqual(plan.tasks[1].begin_date, "20240101")
         self.assertEqual(plan.tasks[1].end_date, "20240131")
+
+    def test_load_qmt_execution_plan_from_toml(self) -> None:
+        content = textwrap.dedent(
+            """
+            source = "qmt"
+            log_level = "INFO"
+            continue_on_error = true
+            database = "qmt"
+
+            [defaults]
+            symbols = ["600000.SH"]
+
+            [[tasks]]
+            task = "kline_history"
+            begin_date = 20240101
+            end_date = 20240131
+            period = "1d"
+            """
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "cfg.toml"
+            path.write_text(content, encoding="utf-8")
+            plan = load_qmt_execution_plan_from_toml(str(path))
+
+        self.assertEqual(plan.database, "qmt")
+        self.assertEqual(plan.tasks[0].task, "kline_history")
+        self.assertEqual(plan.tasks[0].symbols_raw, "600000.SH")
 
 
 if __name__ == "__main__":

@@ -57,6 +57,15 @@ class ServiceTaskRegistryTest(unittest.TestCase):
         self.assertEqual(metadata["baostock.daily_kline"]["target"], "bs_daily_kline")
         self.assertIn("frequency", metadata["baostock.daily_kline"]["request_fields"])
 
+    def test_registry_metadata_contains_qmt_tasks(self) -> None:
+        metadata = {item["name"]: item for item in TASK_REGISTRY.list_task_metadata()}
+        self.assertIn("qmt.kline_history", metadata)
+        self.assertEqual(metadata["qmt.kline_history"]["source"], "qmt")
+        self.assertEqual(metadata["qmt.kline_history"]["database"], "qmt")
+        self.assertEqual(metadata["qmt.kline_history"]["target"], "qmt_kline_history")
+        self.assertIn("codes", metadata["qmt.kline_history"]["request_fields"])
+        self.assertIn("period", metadata["qmt.kline_history"]["request_fields"])
+
     def test_market_kline_defaults_resolver_populates_probe(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             probe = create_probe(

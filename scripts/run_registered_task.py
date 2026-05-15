@@ -16,7 +16,7 @@ from program_bootstrap import install_sync_data_system_alias
 
 install_sync_data_system_alias(PROJECT_ROOT)
 
-from sync_data_system.service.task_registry import TASK_REGISTRY, build_amazingdata_context, build_baostock_context, create_probe
+from sync_data_system.service.task_registry import TASK_REGISTRY, build_amazingdata_context, build_baostock_context, build_qmt_context, create_probe
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,6 +32,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--year", type=int)
     parser.add_argument("--quarter", type=int)
     parser.add_argument("--year-type")
+    parser.add_argument("--market")
+    parser.add_argument("--index-code")
+    parser.add_argument("--table-names")
+    parser.add_argument("--sector-name")
+    parser.add_argument("--code-market")
+    parser.add_argument("--period")
+    parser.add_argument("--fields")
+    parser.add_argument("--adjust-type")
+    parser.add_argument("--qmt-adjust-type")
+    parser.add_argument("--fill-data", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--count", type=int, default=-1)
+    parser.add_argument("--incrementally", action="store_true")
+    parser.add_argument("--complete", action="store_true")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--resume", action="store_true")
@@ -56,6 +69,18 @@ def main() -> int:
         year=args.year,
         quarter=args.quarter,
         year_type=args.year_type,
+        market=args.market,
+        index_code=args.index_code,
+        table_names=args.table_names,
+        sector_name=args.sector_name,
+        code_market=args.code_market,
+        period=args.period,
+        fields=args.fields,
+        qmt_adjust_type=args.qmt_adjust_type or args.adjust_type,
+        fill_data=args.fill_data,
+        count=args.count,
+        incrementally=args.incrementally,
+        complete=args.complete,
         limit=args.limit,
         force=args.force,
         resume=args.resume,
@@ -67,6 +92,8 @@ def main() -> int:
     probe.log(f"task={probe.name} source={definition.source} target={definition.target} status=preparing")
     if definition.source == "baostock":
         context = build_baostock_context(runtime_path=probe.runtime_path, database=definition.database or "baostock")
+    elif definition.source == "qmt":
+        context = build_qmt_context(runtime_path=probe.runtime_path, database=definition.database or "qmt")
     else:
         context = build_amazingdata_context(runtime_path=probe.runtime_path)
     probe.context = context

@@ -70,6 +70,7 @@ from sync_data_system.data_models import normalize_code_list, to_ch_date
 from sync_data_system.info_data import InfoData
 from sync_data_system.market_data import MarketData
 from sync_data_system.sources.baostock.runner import run_config_file as run_baostock_config_file
+from sync_data_system.sources.qmt.runner import run_config_file as run_qmt_config_file
 from sync_data_system.toml_compat import tomllib
 
 
@@ -460,12 +461,19 @@ def _as_bool(value: Any, field_name: str) -> bool:
 
 def main() -> int:
     args = parse_args()
-    if args.config and detect_config_source(args.config) == "baostock":
+    config_source = detect_config_source(args.config) if args.config else ""
+    if args.config and config_source == "baostock":
         if args.task:
             raise ValueError("BaoStock 配置模式下不要再额外传 task。")
         if args.resume:
             logger.warning("BaoStock 配置模式当前不支持 --resume，参数将被忽略。")
         return run_baostock_config_file(args.config, log_level_override=args.log_level)
+    if args.config and config_source == "qmt":
+        if args.task:
+            raise ValueError("QMT 配置模式下不要再额外传 task。")
+        if args.resume:
+            logger.warning("QMT 配置模式当前不支持 --resume，参数将被忽略。")
+        return run_qmt_config_file(args.config, log_level_override=args.log_level)
 
     plan = build_execution_plan(args)
     logging.basicConfig(

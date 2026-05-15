@@ -65,9 +65,17 @@ class SyncBaoStockConfig:
 
 
 @dataclass(slots=True)
+class SyncQmtConfig:
+    base_url: str = "http://172.16.2.89:8000"
+    api_key: str = "dev-api-key-001"
+    timeout: int = 60
+
+
+@dataclass(slots=True)
 class SyncConfig:
     amazingdata: SyncAmazingDataConfig = field(default_factory=SyncAmazingDataConfig)
     baostock: SyncBaoStockConfig = field(default_factory=SyncBaoStockConfig)
+    qmt: SyncQmtConfig = field(default_factory=SyncQmtConfig)
 
 
 @dataclass(slots=True)
@@ -111,6 +119,7 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
         sync=SyncConfig(
             amazingdata=SyncAmazingDataConfig(**(sync_payload.get("amazingdata", {}) or {})),
             baostock=SyncBaoStockConfig(**(sync_payload.get("baostock", {}) or {})),
+            qmt=SyncQmtConfig(**(sync_payload.get("qmt", {}) or {})),
         ),
     )
 
@@ -124,5 +133,6 @@ __all__ = [
     "SyncAmazingDataConfig",
     "SyncBaoStockConfig",
     "SyncConfig",
+    "SyncQmtConfig",
     "load_runtime_config",
 ]

@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 from sync_data_system.amazingdata_sdk_provider import AmazingDataSDKConfig
+from sync_data_system.runtime_config import load_runtime_config
 
 
 class RuntimeConfigIntegrationTest(unittest.TestCase):
@@ -69,6 +70,33 @@ class RuntimeConfigIntegrationTest(unittest.TestCase):
         self.assertIn("sync.amazingdata.port", message)
         self.assertIn("sync:", message)
         self.assertIn("amazingdata:", message)
+
+    def test_runtime_config_loads_qmt_defaults(self) -> None:
+        runtime_yaml = textwrap.dedent(
+            """
+            datasource:
+              host: 127.0.0.1
+              port: 8123
+              database: starlight
+              username: default
+              password: ''
+            sync:
+              qmt:
+                base_url: http://172.16.2.89:8000
+                api_key: dev-api-key-001
+                timeout: 30
+            """
+        ).strip()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_path = Path(tmpdir) / "runtime.local.yaml"
+            runtime_path.write_text(runtime_yaml, encoding="utf-8")
+
+            runtime = load_runtime_config(runtime_path)
+
+        self.assertEqual(runtime.sync.qmt.base_url, "http://172.16.2.89:8000")
+        self.assertEqual(runtime.sync.qmt.api_key, "dev-api-key-001")
+        self.assertEqual(runtime.sync.qmt.timeout, 30)
 
 
 if __name__ == "__main__":

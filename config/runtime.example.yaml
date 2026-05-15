@@ -38,3 +38,7 @@ sync:
   baostock:
     user_id: anonymous
     password: 123456
+  qmt:
+    base_url: http://172.16.2.89:8000
+    api_key: dev-api-key-001
+    timeout: 60

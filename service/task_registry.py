@@ -43,6 +43,18 @@ PROBE_PUBLIC_FIELDS = (
     "input_year",
     "input_quarter",
     "input_year_type",
+    "input_market",
+    "input_index_code",
+    "input_table_names",
+    "input_sector_name",
+    "input_code_market",
+    "input_period",
+    "input_fields",
+    "input_adjust_type",
+    "input_fill_data",
+    "input_count",
+    "input_incrementally",
+    "input_complete",
     "limit",
     "force",
     "resume",
@@ -87,6 +99,18 @@ class SyncTaskProbe:
     input_year: Optional[int] = None
     input_quarter: Optional[int] = None
     input_year_type: Optional[str] = None
+    input_market: Optional[str] = None
+    input_index_code: Optional[str] = None
+    input_table_names: Optional[str] = None
+    input_sector_name: Optional[str] = None
+    input_code_market: Optional[str] = None
+    input_period: Optional[str] = None
+    input_fields: Optional[str] = None
+    input_adjust_type: Optional[str] = None
+    input_fill_data: bool = True
+    input_count: int = -1
+    input_incrementally: bool = False
+    input_complete: bool = False
     limit: int = 0
     force: bool = False
     resume: bool = False
@@ -131,6 +155,18 @@ class SyncTaskProbe:
             "input_year": self.input_year,
             "input_quarter": self.input_quarter,
             "input_year_type": self.input_year_type,
+            "input_market": self.input_market,
+            "input_index_code": self.input_index_code,
+            "input_table_names": self.input_table_names,
+            "input_sector_name": self.input_sector_name,
+            "input_code_market": self.input_code_market,
+            "input_period": self.input_period,
+            "input_fields": self.input_fields,
+            "input_adjust_type": self.input_adjust_type,
+            "input_fill_data": self.input_fill_data,
+            "input_count": self.input_count,
+            "input_incrementally": self.input_incrementally,
+            "input_complete": self.input_complete,
             "limit": self.limit,
             "force": self.force,
             "resume": self.resume,
@@ -299,6 +335,20 @@ class BaoStockExecutionContext:
         self.provider.close()
 
 
+@dataclass
+class QmtExecutionContext:
+    provider: Any
+    repository: Any
+    connection: Any
+
+    def close(self) -> None:
+        try:
+            self.connection.close()
+        except Exception:
+            pass
+        self.provider.close()
+
+
 def build_amazingdata_context(runtime_path: Optional[str] = None) -> ApiSyncExecutionContext:
     sdk_config = AmazingDataSDKConfig.from_env(runtime_path=runtime_path)
     clickhouse_config = ClickHouseConfig.from_env(runtime_path=runtime_path)
@@ -326,6 +376,19 @@ def build_baostock_context(runtime_path: Optional[str] = None, database: str = "
     repository = BaoStockRepository(connection, database=database)
     repository.ensure_tables()
     return BaoStockExecutionContext(provider=provider, repository=repository, connection=connection)
+
+
+def build_qmt_context(runtime_path: Optional[str] = None, database: str = "qmt") -> QmtExecutionContext:
+    from sync_data_system.sources.qmt.provider import QmtConfig, QmtProvider
+    from sync_data_system.sources.qmt.repository import QmtRepository
+    from sync_data_system.sync_core.clickhouse import create_clickhouse_client
+
+    clickhouse_config = ClickHouseConfig.from_env(runtime_path=runtime_path)
+    provider = QmtProvider(QmtConfig.from_env(runtime_path=runtime_path))
+    connection = create_clickhouse_client(clickhouse_config)
+    repository = QmtRepository(connection, database=database)
+    repository.ensure_tables()
+    return QmtExecutionContext(provider=provider, repository=repository, connection=connection)
 
 
 @register_input_resolver("run_sync_defaults")
@@ -530,6 +593,97 @@ except Exception:
     pass
 
 
+def _qmt_request_fields(spec) -> tuple[str, ...]:
+    fields = ["name"]
+    if spec.uses_symbols:
+        fields.append("codes")
+    if spec.uses_symbol or spec.uses_stock_code:
+        fields.append("codes")
+    if spec.uses_market:
+        fields.append("market")
+    if spec.uses_index_code:
+        fields.append("index_code")
+    if spec.uses_table_names:
+        fields.append("table_names")
+    if spec.uses_sector_name:
+        fields.append("sector_name")
+    if spec.uses_code_market:
+        fields.append("code_market")
+    if spec.uses_begin_end:
+        fields.extend(["begin_date", "end_date"])
+    if spec.uses_period:
+        fields.append("period")
+    if spec.uses_fields:
+        fields.append("fields")
+    if spec.uses_adjust_type:
+        fields.append("adjust_type")
+    if spec.uses_fill_data:
+        fields.append("fill_data")
+    if spec.uses_count:
+        fields.append("count")
+    if spec.uses_incrementally:
+        fields.append("incrementally")
+    if spec.uses_complete:
+        fields.append("complete")
+    fields.extend(["limit", "force", "log_level"])
+    return tuple(dict.fromkeys(fields))
+
+
+def _register_qmt_task(task_name: str, spec) -> None:
+    registry_name = f"qmt.{task_name}"
+
+    @sync_task(
+        name=registry_name,
+        source="qmt",
+        database="qmt",
+        target=spec.table_name,
+        input_resolver=None,
+        request_fields=_qmt_request_fields(spec),
+    )
+    def _generated_qmt_task(probe: SyncTaskProbe) -> int:
+        from sync_data_system.sources.qmt.runner import SyncArgs, run_sync_args
+
+        codes = ",".join(probe.input_codes)
+        args = SyncArgs(
+            task=task_name,
+            symbols_raw=codes,
+            symbol=codes.split(",", 1)[0] if codes else "",
+            market=str(getattr(probe, "input_market", "") or ""),
+            index_code=str(getattr(probe, "input_index_code", "") or ""),
+            stock_code=codes.split(",", 1)[0] if codes else "",
+            table_names_raw=str(getattr(probe, "input_table_names", "") or ""),
+            sector_name=str(getattr(probe, "input_sector_name", "") or ""),
+            code_market=str(getattr(probe, "input_code_market", "") or ""),
+            begin_time=_format_optional_int(probe.input_begin_date),
+            end_time=_format_optional_int(probe.input_end_date),
+            period=str(getattr(probe, "input_period", "") or ""),
+            fields_raw=str(getattr(probe, "input_fields", "") or ""),
+            adjust_type=str(getattr(probe, "input_adjust_type", "none") or "none"),
+            fill_data=bool(getattr(probe, "input_fill_data", True)),
+            count=int(getattr(probe, "input_count", -1) or -1),
+            incrementally=bool(getattr(probe, "input_incrementally", False)),
+            complete=bool(getattr(probe, "input_complete", False)),
+            limit=probe.limit,
+            force=probe.force,
+            continue_on_error=False,
+            runtime_path=probe.runtime_path,
+            database="qmt",
+            log_level=str(probe.log_level or "INFO"),
+        )
+        inserted = run_sync_args(args, probe.context.provider, probe.context.repository)
+        probe.set_row_count(inserted)
+        return inserted
+
+
+try:
+    from sync_data_system.sources.qmt.specs import QMT_TASK_SPECS
+
+    for _qmt_task_name, _qmt_spec in QMT_TASK_SPECS.items():
+        _register_qmt_task(_qmt_task_name, _qmt_spec)
+except Exception:
+    pass
+
+
 def create_probe(
     *,
     task_name: str,
@@ -544,6 +698,18 @@ def create_probe(
     year: Optional[int] = None,
     quarter: Optional[int] = None,
     year_type: Optional[str] = None,
+    market: Optional[str] = None,
+    index_code: Optional[str] = None,
+    table_names: Optional[str] = None,
+    sector_name: Optional[str] = None,
+    code_market: Optional[str] = None,
+    period: Optional[str] = None,
+    fields: Optional[str] = None,
+    qmt_adjust_type: Optional[str] = None,
+    fill_data: bool = True,
+    count: int = -1,
+    incrementally: bool = False,
+    complete: bool = False,
     limit: int = 0,
     force: bool = False,
     resume: bool = False,
@@ -568,6 +734,18 @@ def create_probe(
         input_year=year,
         input_quarter=quarter,
         input_year_type=year_type,
+        input_market=market,
+        input_index_code=index_code,
+        input_table_names=table_names,
+        input_sector_name=sector_name,
+        input_code_market=code_market,
+        input_period=period,
+        input_fields=fields,
+        input_adjust_type=qmt_adjust_type,
+        input_fill_data=fill_data,
+        input_count=count,
+        input_incrementally=incrementally,
+        input_complete=complete,
         limit=limit,
         force=force,
         resume=resume,
@@ -583,8 +761,10 @@ __all__ = [
     "TASK_REGISTRY",
     "TaskDefinition",
     "BaoStockExecutionContext",
+    "QmtExecutionContext",
     "build_amazingdata_context",
     "build_baostock_context",
+    "build_qmt_context",
     "create_probe",
     "register_input_resolver",
     "sync_task",

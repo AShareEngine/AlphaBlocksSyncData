@@ -272,6 +272,19 @@ class SyncJobManager:
         year: Optional[int] = None,
         quarter: Optional[int] = None,
         year_type: Optional[str] = None,
+        market: Optional[str] = None,
+        index_code: Optional[str] = None,
+        table_names: Optional[str] = None,
+        sector_name: Optional[str] = None,
+        code_market: Optional[str] = None,
+        period: Optional[str] = None,
+        fields: Optional[str] = None,
+        adjust_type: Optional[str] = None,
+        qmt_adjust_type: Optional[str] = None,
+        fill_data: Optional[bool] = None,
+        count: Optional[int] = None,
+        incrementally: Optional[bool] = None,
+        complete: Optional[bool] = None,
         limit: int = 0,
         force: bool = False,
         resume: bool = False,
@@ -311,6 +324,31 @@ class SyncJobManager:
             command.extend(["--quarter", str(quarter)])
         if year_type:
             command.extend(["--year-type", str(year_type)])
+        if market:
+            command.extend(["--market", str(market)])
+        if index_code:
+            command.extend(["--index-code", str(index_code)])
+        if table_names:
+            command.extend(["--table-names", str(table_names)])
+        if sector_name:
+            command.extend(["--sector-name", str(sector_name)])
+        if code_market:
+            command.extend(["--code-market", str(code_market)])
+        if period:
+            command.extend(["--period", str(period)])
+        if fields:
+            command.extend(["--fields", str(fields)])
+        resolved_qmt_adjust_type = qmt_adjust_type or adjust_type
+        if resolved_qmt_adjust_type:
+            command.extend(["--adjust-type", str(resolved_qmt_adjust_type)])
+        if fill_data is not None:
+            command.append("--fill-data" if fill_data else "--no-fill-data")
+        if count is not None:
+            command.extend(["--count", str(count)])
+        if incrementally:
+            command.append("--incrementally")
+        if complete:
+            command.append("--complete")
         if limit:
             command.extend(["--limit", str(limit)])
         if force:
@@ -339,6 +377,19 @@ class SyncJobManager:
                 "year": year,
                 "quarter": quarter,
                 "year_type": year_type,
+                "market": market,
+                "index_code": index_code,
+                "table_names": table_names,
+                "sector_name": sector_name,
+                "code_market": code_market,
+                "period": period,
+                "fields": fields,
+                "adjust_type": adjust_type,
+                "qmt_adjust_type": qmt_adjust_type,
+                "fill_data": fill_data,
+                "count": count,
+                "incrementally": incrementally,
+                "complete": complete,
                 "limit": limit,
                 "force": force,
                 "resume": resume,

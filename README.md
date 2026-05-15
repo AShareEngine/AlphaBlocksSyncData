@@ -31,6 +31,8 @@ Fill at least:
 - `sync.amazingdata.host`
 - `sync.amazingdata.port`
 - `sync.amazingdata.local_path`
+- `sync.qmt.base_url`
+- `sync.qmt.api_key`
 
 ## PM2
 
