@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from sync_data_system.clickhouse_client import ClickHouseConfig, create_clickhouse_client
 from sync_data_system.service.job_manager import SyncJobManager
+from sync_data_system.service.schedule_manager import SyncScheduleManager
 from sync_data_system.wide_table_sync import (
     WideTableSyncStateRepository,
     build_wide_table_metadata,
@@ -23,6 +24,7 @@ from sync_data_system.wide_table_sync import (
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 JOB_MANAGER = SyncJobManager(PROJECT_ROOT)
+SCHEDULE_MANAGER = SyncScheduleManager(PROJECT_ROOT, JOB_MANAGER)
 app = FastAPI(title="AmazingData Sync Service", version="0.1.0")
 
 DATE_FIELD_CANDIDATES = (
@@ -61,6 +63,12 @@ def _job_error_to_http(exc: Exception) -> HTTPException:
     if isinstance(exc, (FileNotFoundError, ValueError)):
         return HTTPException(status_code=400, detail=message)
     return HTTPException(status_code=400, detail=message)
+
+
+def _model_to_dict(model: BaseModel, **kwargs) -> dict[str, Any]:
+    if hasattr(model, "model_dump"):
+        return model.model_dump(**kwargs)
+    return model.dict(**kwargs)
 
 
 class RunConfigRequest(BaseModel):
@@ -109,6 +117,36 @@ class RunTaskRequest(BaseModel):
         if not task_name:
             raise ValueError("name 不能为空。")
         return task_name
+
+
+class ScheduleCreateRequest(BaseModel):
+    name: str
+    enabled: bool = True
+    target_type: str = "config"
+    target: str
+    frequency: str = "daily"
+    time: str = "18:00"
+    weekdays: list[str] = Field(default_factory=lambda: ["1", "2", "3", "4", "5"])
+    interval_minutes: int = 60
+    timezone: str = "Asia/Shanghai"
+    log_level: Optional[str] = "INFO"
+    concurrency_policy: str = "skip"
+    retry_attempts: int = 0
+
+
+class ScheduleUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    enabled: Optional[bool] = None
+    target_type: Optional[str] = None
+    target: Optional[str] = None
+    frequency: Optional[str] = None
+    time: Optional[str] = None
+    weekdays: Optional[list[str]] = None
+    interval_minutes: Optional[int] = None
+    timezone: Optional[str] = None
+    log_level: Optional[str] = None
+    concurrency_policy: Optional[str] = None
+    retry_attempts: Optional[int] = None
 
 
 class WideTableInlineRunRequest(BaseModel):
@@ -199,6 +237,110 @@ def list_providers():
         return {"providers": JOB_MANAGER.list_providers()}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/sync/schedules")
+@app.get("/api/schedules")
+def list_schedules(
+    enabled: Optional[bool] = Query(None),
+    target_type: Optional[str] = Query(None),
+):
+    try:
+        return {
+            "schedules": [
+                schedule.__dict__
+                for schedule in SCHEDULE_MANAGER.list_schedules(
+                    enabled=enabled,
+                    target_type=target_type,
+                )
+            ]
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/sync/schedules")
+@app.post("/api/schedules")
+def create_schedule(request: ScheduleCreateRequest):
+    try:
+        schedule = SCHEDULE_MANAGER.create_schedule(_model_to_dict(request))
+    except Exception as exc:
+        raise _job_error_to_http(exc)
+    return {"ok": True, "schedule": schedule.__dict__}
+
+
+@app.get("/api/sync/schedules/{schedule_id}")
+@app.get("/api/schedules/{schedule_id}")
+def get_schedule(schedule_id: str):
+    try:
+        schedule = SCHEDULE_MANAGER.get_schedule(schedule_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="schedule not found")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return schedule.__dict__
+
+
+@app.patch("/api/sync/schedules/{schedule_id}")
+@app.patch("/api/schedules/{schedule_id}")
+def update_schedule(schedule_id: str, request: ScheduleUpdateRequest):
+    try:
+        schedule = SCHEDULE_MANAGER.update_schedule(schedule_id, _model_to_dict(request, exclude_unset=True))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="schedule not found")
+    except Exception as exc:
+        raise _job_error_to_http(exc)
+    return {"ok": True, "schedule": schedule.__dict__}
+
+
+@app.delete("/api/sync/schedules/{schedule_id}")
+@app.delete("/api/schedules/{schedule_id}")
+def delete_schedule(schedule_id: str):
+    try:
+        schedule = SCHEDULE_MANAGER.delete_schedule(schedule_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="schedule not found")
+    return {"ok": True, "schedule": schedule.__dict__}
+
+
+@app.post("/api/sync/schedules/{schedule_id}/pause")
+@app.post("/api/schedules/{schedule_id}/pause")
+def pause_schedule(schedule_id: str):
+    try:
+        schedule = SCHEDULE_MANAGER.set_enabled(schedule_id, False)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="schedule not found")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, "schedule": schedule.__dict__}
+
+
+@app.post("/api/sync/schedules/{schedule_id}/resume")
+@app.post("/api/schedules/{schedule_id}/resume")
+def resume_schedule(schedule_id: str):
+    try:
+        schedule = SCHEDULE_MANAGER.set_enabled(schedule_id, True)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="schedule not found")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, "schedule": schedule.__dict__}
+
+
+@app.post("/api/sync/schedules/{schedule_id}/run-now")
+@app.post("/api/schedules/{schedule_id}/run-now")
+def run_schedule_now(schedule_id: str):
+    try:
+        schedule, job = SCHEDULE_MANAGER.run_schedule_now(schedule_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="schedule not found")
+    except Exception as exc:
+        raise _job_error_to_http(exc)
+    return {
+        "ok": True,
+        "schedule": schedule.__dict__,
+        "job": job.__dict__,
+    }
 
 
 @app.get("/api/sync-table-status")
