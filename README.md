@@ -15,7 +15,7 @@ This project owns all sync-service configs:
 ## Server Setup
 
 ```bash
-cd /home/mubin/AlphaBlocksSyncData
+cd AlphaBlocksSyncData
 cp config/runtime.example.yaml config/runtime.local.yaml
 vim config/runtime.local.yaml
 ```
@@ -37,14 +37,14 @@ Fill at least:
 ## PM2
 
 ```bash
-cd /home/mubin/AlphaBlocksSyncData
+cd AlphaBlocksSyncData
 pm2 start ecosystem.config.js
 ```
 
 The PM2 config defaults `SYNC_DATA_RUNTIME_CONFIG` to:
 
 ```text
-/home/mubin/AlphaBlocksSyncData/config/runtime.local.yaml
+<repo>/config/runtime.local.yaml
 ```
 
 If you use a different path:
@@ -67,4 +67,20 @@ Useful checks:
 curl http://127.0.0.1:8010/health
 curl http://127.0.0.1:8010/api/sync/meta/configs
 curl http://127.0.0.1:8010/api/sync/meta/tasks
+curl http://127.0.0.1:8010/api/sync/meta/providers
+```
+
+## Providers
+
+Provider implementations live under `providers/<name>/` and are described by `provider.toml`.
+See `docs/provider-development.md` before adding a new data provider.
+
+Useful provider commands:
+
+```bash
+python3 scripts/validate_provider.py --load-entrypoints
+python3 scripts/install_provider_deps.py --all --check
+python3 scripts/install_provider_deps.py qmt --check
+python3 scripts/install_provider_deps.py qmt --install
+python3 scripts/run_provider_sync.py qmt.kline_history --codes 600000.SH --begin-date 20240101 --end-date 20240131 --period 1d
 ```

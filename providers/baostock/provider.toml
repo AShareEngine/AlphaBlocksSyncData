@@ -1,0 +1,178 @@
+name = "baostock"
+display_name = "BaoStock"
+version = "0.1.0"
+module = "sync_data_system.providers.baostock"
+runtime_config_key = "baostock"
+default_database = "baostock"
+plans_path = "plans"
+dependencies = ["baostock", "pandas", "clickhouse-connect"]
+import_modules = ["baostock"]
+
+[entrypoints]
+provider = "provider:BaoStockProvider"
+repository = "repository:BaoStockRepository"
+runner = "runner:run_sync_args"
+config_runner = "runner:run_config_file"
+context_builder = "runner:build_context"
+registered_task_runner = "runner:run_registered_task"
+specs = "specs:BAOSTOCK_TASK_SPECS"
+
+[[tasks]]
+name = "trade_dates"
+target = "bs_trade_dates"
+supports_incremental = true
+cursor_field = "calendar_date"
+request_fields = ["name", "begin_date", "end_date", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "all_stock"
+target = "bs_all_stock"
+supports_incremental = true
+cursor_field = "query_date"
+request_fields = ["name", "day", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "stock_basic"
+target = "bs_stock_basic"
+supports_incremental = false
+request_fields = ["name", "codes", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "adjust_factor"
+target = "bs_adjust_factor"
+supports_incremental = true
+cursor_field = "dividOperateDate"
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "daily_kline"
+target = "bs_daily_kline"
+supports_incremental = true
+cursor_field = "date"
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level", "adjustflag", "frequency"]
+
+[[tasks]]
+name = "hs300_stocks"
+target = "bs_hs300_stocks"
+supports_incremental = true
+cursor_field = "updateDate"
+request_fields = ["name", "day", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "sz50_stocks"
+target = "bs_sz50_stocks"
+supports_incremental = true
+cursor_field = "updateDate"
+request_fields = ["name", "day", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "zz500_stocks"
+target = "bs_zz500_stocks"
+supports_incremental = true
+cursor_field = "updateDate"
+request_fields = ["name", "day", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "stock_industry"
+target = "bs_stock_industry"
+supports_incremental = true
+cursor_field = "updateDate"
+request_fields = ["name", "codes", "day", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "dividend_data"
+target = "bs_dividend_data"
+supports_incremental = true
+cursor_field = "dividOperateDate"
+request_fields = ["name", "codes", "year", "year_type", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "profit_data"
+target = "bs_profit_data"
+supports_incremental = true
+cursor_field = "statDate"
+request_fields = ["name", "codes", "year", "quarter", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "operation_data"
+target = "bs_operation_data"
+supports_incremental = true
+cursor_field = "statDate"
+request_fields = ["name", "codes", "year", "quarter", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "growth_data"
+target = "bs_growth_data"
+supports_incremental = true
+cursor_field = "statDate"
+request_fields = ["name", "codes", "year", "quarter", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "dupont_data"
+target = "bs_dupont_data"
+supports_incremental = true
+cursor_field = "statDate"
+request_fields = ["name", "codes", "year", "quarter", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "balance_data"
+target = "bs_balance_data"
+supports_incremental = true
+cursor_field = "statDate"
+request_fields = ["name", "codes", "year", "quarter", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "cash_flow_data"
+target = "bs_cash_flow_data"
+supports_incremental = true
+cursor_field = "statDate"
+request_fields = ["name", "codes", "year", "quarter", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "performance_express_report"
+target = "bs_performance_express_report"
+supports_incremental = true
+cursor_field = "performanceExpUpdateDate"
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "forecast_report"
+target = "bs_forecast_report"
+supports_incremental = true
+cursor_field = "profitForcastExpPubDate"
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "deposit_rate_data"
+target = "bs_deposit_rate_data"
+supports_incremental = true
+cursor_field = "pubDate"
+request_fields = ["name", "begin_date", "end_date", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "loan_rate_data"
+target = "bs_loan_rate_data"
+supports_incremental = true
+cursor_field = "pubDate"
+request_fields = ["name", "begin_date", "end_date", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "required_reserve_ratio_data"
+target = "bs_required_reserve_ratio_data"
+supports_incremental = true
+cursor_field = "effectiveDate"
+request_fields = ["name", "begin_date", "end_date", "year_type", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "money_supply_data_month"
+target = "bs_money_supply_data_month"
+supports_incremental = true
+cursor_field = "statYear"
+request_fields = ["name", "begin_date", "end_date", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "money_supply_data_year"
+target = "bs_money_supply_data_year"
+supports_incremental = true
+cursor_field = "statYear"
+request_fields = ["name", "begin_date", "end_date", "limit", "force", "log_level"]

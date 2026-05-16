@@ -1,7 +1,7 @@
 # AmazingData 全量同步配置
 #
 # 用法：
-#   python3 run_sync.py --config run_sync.full.toml
+#   python3 scripts/run_provider_sync.py --config run_sync.full.toml
 #
 # 说明：
 # - 这份配置把当前已接入的任务全部列出来了

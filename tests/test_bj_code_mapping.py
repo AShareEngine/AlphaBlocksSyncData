@@ -12,7 +12,7 @@ except Exception:  # pragma: no cover
     pd = None  # type: ignore
 
 from sync_data_system.data_models import BjCodeMappingRow
-from sync_data_system.info_data import InfoData
+from sync_data_system.providers.amazingdata.info import InfoData
 
 
 class _FakeRepository:

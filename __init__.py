@@ -4,7 +4,6 @@ from importlib import import_module
 from typing import Any
 
 _LAZY_MODULES = {
-    "run_sync": "sync_data_system.run_sync",
     "wide_table_sync": "sync_data_system.wide_table_sync",
 }
 

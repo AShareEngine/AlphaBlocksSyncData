@@ -23,16 +23,19 @@ ClickHouse：
 说明：
 
 - 默认读取 `config/runtime.local.yaml`；也可以通过 `SYNC_DATA_RUNTIME_CONFIG` 覆盖
-- `run_sync.py` 现在是统一入口
+- `scripts/run_provider_sync.py` 现在是统一入口
 - `run_sync.full.toml` / `run_sync.amazingdata.full.toml` 走 AmazingData
 - `run_sync.baostock.full.toml` 走 BaoStock
-- BaoStock 详细说明见 [BAOSTOCK_RUNBOOK.md](/home/mubin/AlphaBlocksSyncData/BAOSTOCK_RUNBOOK.md)
+- BaoStock 详细说明见 [BAOSTOCK_RUNBOOK.md](BAOSTOCK_RUNBOOK.md)
 
 推荐先做一次最小验证：
 
 ```bash
-python3 run_sync.py code_info --limit 10 --force --log-level INFO
+python3 scripts/install_provider_deps.py amazingdata --check
+python3 scripts/run_provider_sync.py amazingdata.code_info --limit 10 --force --log-level INFO
 ```
+
+如果 `install_provider_deps.py amazingdata --check` 报 `import AmazingData` 缺失，需要先把官方 AmazingData SDK 安装到当前 Python 环境；`dependencies` 只覆盖可 pip 安装的公共包。
 
 ## API 服务
 
@@ -68,8 +71,8 @@ python3 scripts/run_api_service.py
 
 当前服务层还支持装饰器注册任务，第一版已接入：
 
-- `daily_kline`
-- `minute_kline`
+- `amazingdata.daily_kline`
+- `amazingdata.minute_kline`
 
 注册表文件：
 
@@ -90,58 +93,57 @@ curl -X POST http://127.0.0.1:18080/api/jobs/run-config \
 ```bash
 curl -X POST http://127.0.0.1:18080/api/jobs/run-task \
   -H 'Content-Type: application/json' \
-  -d '{"name":"daily_kline","codes":["000001.SZ"],"begin_date":20240101,"end_date":20240131,"limit":20}'
+  -d '{"name":"amazingdata.daily_kline","codes":["000001.SZ"],"begin_date":20240101,"end_date":20240131,"limit":20}'
 ```
 
 说明：
 
 - `run-task` 当前推荐使用 `name`
 - `codes` 当前推荐使用 `list[str]`
-- 兼容旧字段 `task`
 
 ## 当前正式同步入口
 
-- 代码池：`python run_sync.py code_info`
-- 历史代码表：`python run_sync.py hist_code_list`
-- 北交所新旧代码映射：`python run_sync.py bj_code_mapping`
-- 股票基础信息：`python run_sync.py stock_basic`
-- 历史证券状态：`python run_sync.py history_stock_status`
-- 单次复权因子：`python run_sync.py adj_factor`
-- 后复权因子：`python run_sync.py backward_factor`
-- 资产负债表：`python run_sync.py balance_sheet`
-- 现金流量表：`python run_sync.py cash_flow`
-- 利润表：`python run_sync.py income`
-- 业绩快报：`python run_sync.py profit_express`
-- 业绩预告：`python run_sync.py profit_notice`
-- 十大股东：`python run_sync.py share_holder`
-- 股东户数：`python run_sync.py holder_num`
-- 股本结构：`python run_sync.py equity_structure`
-- 股权冻结/质押：`python run_sync.py equity_pledge_freeze`
-- 限售股解禁：`python run_sync.py equity_restricted`
-- 分红方案：`python run_sync.py dividend`
-- 配股方案：`python run_sync.py right_issue`
-- ETF 申赎主表 + 成分明细：`python run_sync.py etf_pcf`
-- ETF IOPV：`python run_sync.py fund_iopv`
-- 可转债发行：`python run_sync.py kzz_issuance`
-- 可转债份额：`python run_sync.py kzz_share`
-- 可转债停复牌：`python run_sync.py kzz_suspend`
-- 可转债回售/赎回条款明细：`python run_sync.py kzz_put_call_item`
-- 可转债回售条款：`python run_sync.py kzz_put`
-- 可转债赎回条款：`python run_sync.py kzz_call`
-- 可转债转股条款：`python run_sync.py kzz_conv`
-- 可转债赎回条款执行说明：`python run_sync.py kzz_call_explanation`
-- 可转债回售条款执行说明：`python run_sync.py kzz_put_explanation`
-- 大宗交易：`python run_sync.py block_trading`
-- 龙虎榜：`python run_sync.py long_hu_bang`
-- 融资融券明细：`python run_sync.py margin_detail`
-- 融资融券汇总：`python run_sync.py margin_summary`
-- 期权基本资料：`python run_sync.py option_basic_info --codes ...`
-- 期权标准合约属性：`python run_sync.py option_std_ctr_specs --codes ...`
-- 期权月合约属性变动：`python run_sync.py option_mon_ctr_specs --codes ...`
-- 国债收益率：`python run_sync.py treasury_yield --codes m3,m6,y1,...`
-- 日线 K 线：`python run_sync.py daily_kline`
-- 1 分钟 K 线：`python run_sync.py minute_kline`
-- 历史快照：`python run_sync.py market_snapshot`
+- 代码池：`python scripts/run_provider_sync.py amazingdata.code_info`
+- 历史代码表：`python scripts/run_provider_sync.py amazingdata.hist_code_list`
+- 北交所新旧代码映射：`python scripts/run_provider_sync.py amazingdata.bj_code_mapping`
+- 股票基础信息：`python scripts/run_provider_sync.py amazingdata.stock_basic`
+- 历史证券状态：`python scripts/run_provider_sync.py amazingdata.history_stock_status`
+- 单次复权因子：`python scripts/run_provider_sync.py amazingdata.adj_factor`
+- 后复权因子：`python scripts/run_provider_sync.py amazingdata.backward_factor`
+- 资产负债表：`python scripts/run_provider_sync.py amazingdata.balance_sheet`
+- 现金流量表：`python scripts/run_provider_sync.py amazingdata.cash_flow`
+- 利润表：`python scripts/run_provider_sync.py amazingdata.income`
+- 业绩快报：`python scripts/run_provider_sync.py amazingdata.profit_express`
+- 业绩预告：`python scripts/run_provider_sync.py amazingdata.profit_notice`
+- 十大股东：`python scripts/run_provider_sync.py amazingdata.share_holder`
+- 股东户数：`python scripts/run_provider_sync.py amazingdata.holder_num`
+- 股本结构：`python scripts/run_provider_sync.py amazingdata.equity_structure`
+- 股权冻结/质押：`python scripts/run_provider_sync.py amazingdata.equity_pledge_freeze`
+- 限售股解禁：`python scripts/run_provider_sync.py amazingdata.equity_restricted`
+- 分红方案：`python scripts/run_provider_sync.py amazingdata.dividend`
+- 配股方案：`python scripts/run_provider_sync.py amazingdata.right_issue`
+- ETF 申赎主表 + 成分明细：`python scripts/run_provider_sync.py amazingdata.etf_pcf`
+- ETF IOPV：`python scripts/run_provider_sync.py amazingdata.fund_iopv`
+- 可转债发行：`python scripts/run_provider_sync.py amazingdata.kzz_issuance`
+- 可转债份额：`python scripts/run_provider_sync.py amazingdata.kzz_share`
+- 可转债停复牌：`python scripts/run_provider_sync.py amazingdata.kzz_suspend`
+- 可转债回售/赎回条款明细：`python scripts/run_provider_sync.py amazingdata.kzz_put_call_item`
+- 可转债回售条款：`python scripts/run_provider_sync.py amazingdata.kzz_put`
+- 可转债赎回条款：`python scripts/run_provider_sync.py amazingdata.kzz_call`
+- 可转债转股条款：`python scripts/run_provider_sync.py amazingdata.kzz_conv`
+- 可转债赎回条款执行说明：`python scripts/run_provider_sync.py amazingdata.kzz_call_explanation`
+- 可转债回售条款执行说明：`python scripts/run_provider_sync.py amazingdata.kzz_put_explanation`
+- 大宗交易：`python scripts/run_provider_sync.py amazingdata.block_trading`
+- 龙虎榜：`python scripts/run_provider_sync.py amazingdata.long_hu_bang`
+- 融资融券明细：`python scripts/run_provider_sync.py amazingdata.margin_detail`
+- 融资融券汇总：`python scripts/run_provider_sync.py amazingdata.margin_summary`
+- 期权基本资料：`python scripts/run_provider_sync.py amazingdata.option_basic_info --codes ...`
+- 期权标准合约属性：`python scripts/run_provider_sync.py amazingdata.option_std_ctr_specs --codes ...`
+- 期权月合约属性变动：`python scripts/run_provider_sync.py amazingdata.option_mon_ctr_specs --codes ...`
+- 国债收益率：`python scripts/run_provider_sync.py amazingdata.treasury_yield --codes m3,m6,y1,...`
+- 日线 K 线：`python scripts/run_provider_sync.py amazingdata.daily_kline`
+- 1 分钟 K 线：`python scripts/run_provider_sync.py amazingdata.minute_kline`
+- 历史快照：`python scripts/run_provider_sync.py amazingdata.market_snapshot`
 
 默认行为：
 
@@ -167,9 +169,9 @@ curl -X POST http://127.0.0.1:18080/api/jobs/run-task \
 示例：
 
 ```bash
-python3 run_sync.py stock_basic --codes 000001.SZ,600000.SH --force --log-level INFO
-python3 run_sync.py adj_factor --codes 000001.SZ --force --log-level INFO
-python3 run_sync.py daily_kline --codes 000001.SZ --begin-date 20240101 --end-date 20240131 --force --log-level INFO
+python3 scripts/run_provider_sync.py amazingdata.stock_basic --codes 000001.SZ,600000.SH --force --log-level INFO
+python3 scripts/run_provider_sync.py amazingdata.adj_factor --codes 000001.SZ --force --log-level INFO
+python3 scripts/run_provider_sync.py amazingdata.daily_kline --codes 000001.SZ --begin-date 20240101 --end-date 20240131 --force --log-level INFO
 ```
 
 ### 方式二：按默认全量配置顺序执行
@@ -177,7 +179,7 @@ python3 run_sync.py daily_kline --codes 000001.SZ --begin-date 20240101 --end-da
 适合日常批量跑全流程。
 
 ```bash
-python3 run_sync.py
+python3 scripts/run_provider_sync.py
 ```
 
 说明：
@@ -191,19 +193,19 @@ python3 run_sync.py
 AmazingData：
 
 ```bash
-python3 run_sync.py --config run_sync.amazingdata.full.toml
+python3 scripts/run_provider_sync.py --config run_sync.amazingdata.full.toml
 ```
 
 AmazingData 专项补数：
 
 ```bash
-python3 run_sync.py --config run_sync.amazingdata.special.toml
+python3 scripts/run_provider_sync.py --config run_sync.amazingdata.special.toml
 ```
 
 BaoStock：
 
 ```bash
-python3 run_sync.py --config run_sync.baostock.full.toml
+python3 scripts/run_provider_sync.py --config run_sync.baostock.full.toml
 ```
 
 ### 方式三：按自定义 TOML 配置执行
@@ -211,7 +213,7 @@ python3 run_sync.py --config run_sync.baostock.full.toml
 适合分批、分主题、分时间范围跑。
 
 ```bash
-python3 run_sync.py --config run_sync.example.toml
+python3 scripts/run_provider_sync.py --config run_sync.example.toml
 ```
 
 ### 方式四：从上次成功断点继续
@@ -219,9 +221,9 @@ python3 run_sync.py --config run_sync.example.toml
 适合长任务中断后继续补跑。
 
 ```bash
-python3 run_sync.py --resume
-python3 run_sync.py daily_kline --resume
-python3 run_sync.py --config run_sync.full.toml --resume
+python3 scripts/run_provider_sync.py --resume
+python3 scripts/run_provider_sync.py amazingdata.daily_kline --resume
+python3 scripts/run_provider_sync.py --config run_sync.full.toml --resume
 ```
 
 说明：
@@ -232,22 +234,24 @@ python3 run_sync.py --config run_sync.full.toml --resume
 ## 配置执行
 
 - 支持用 `TOML` 配置文件按列表顺序批量执行任务
-- 示例文件：`/home/mubin/AlphaBlocksSyncData/config/sync/plans/run_sync.example.toml`
-- AmazingData 包路径：`/home/mubin/AlphaBlocksSyncData/sources/amazingdata/`
-- BaoStock 包路径：`/home/mubin/AlphaBlocksSyncData/sources/baostock/`
-- 公共层路径：`/home/mubin/AlphaBlocksSyncData/sync_core/`
+- 示例文件：`config/sync/plans/run_sync.example.toml`
+- AmazingData 包路径：`providers/amazingdata/`
+- BaoStock 包路径：`providers/baostock/`
+- QMT 包路径：`providers/qmt/`
+- Provider 公共层路径：`core/`
+- 旧 `sources/*` 和根目录 AmazingData 模块仅保留兼容导出，不再作为新代码入口
 
 常用命令：
 
 ```bash
-python3 run_sync.py
-python3 run_sync.py --config run_sync.full.toml
-python3 run_sync.py --config run_sync.example.toml
+python3 scripts/run_provider_sync.py
+python3 scripts/run_provider_sync.py --config run_sync.full.toml
+python3 scripts/run_provider_sync.py --config run_sync.example.toml
 ```
 
 说明：
 
-- 直接执行 `python3 run_sync.py` 时，会默认读取 `run_sync.full.toml`
+- 直接执行 `python3 scripts/run_provider_sync.py` 时，会默认读取 `run_sync.full.toml`
 - 如果你想换一份批量任务配置，再显式传 `--config`
 
 配置规则：
@@ -264,8 +268,8 @@ python3 run_sync.py --config run_sync.example.toml
 
 推荐做法：
 
-- 一个进程跑 AmazingData：`python3 run_sync.py --config run_sync.amazingdata.full.toml`
-- 另一个进程跑 BaoStock：`python3 run_sync.py --config run_sync.baostock.full.toml`
+- 一个进程跑 AmazingData：`python3 scripts/run_provider_sync.py --config run_sync.amazingdata.full.toml`
+- 另一个进程跑 BaoStock：`python3 scripts/run_provider_sync.py --config run_sync.baostock.full.toml`
 - 最好放在两个终端、两个 `tmux` 窗口，或者分别重定向日志文件
 
 安全组合：
@@ -295,13 +299,13 @@ python3 run_sync.py --config run_sync.example.toml
 终端 1：
 
 ```bash
-python3 run_sync.py --config run_sync.amazingdata.full.toml >> logs/amazingdata.log 2>&1
+python3 scripts/run_provider_sync.py --config run_sync.amazingdata.full.toml >> logs/amazingdata.log 2>&1
 ```
 
 终端 2：
 
 ```bash
-python3 run_sync.py --config run_sync.baostock.full.toml >> logs/baostock.log 2>&1
+python3 scripts/run_provider_sync.py --config run_sync.baostock.full.toml >> logs/baostock.log 2>&1
 ```
 
 更稳妥的建议：
@@ -375,7 +379,7 @@ python3 run_sync.py --config run_sync.baostock.full.toml >> logs/baostock.log 2>
 
 ### hist_code_list
 
-- 通过 `python run_sync.py hist_code_list ...` 触发
+- 通过 `python scripts/run_provider_sync.py amazingdata.hist_code_list ...` 触发
 - 数据落到 `ad_hist_code_daily`
 - 当前默认按 `EXTRA_STOCK_A` 同步历史代码表
 - 会按表里已有最新 `trade_date` 做增量
@@ -522,181 +526,181 @@ python3 run_sync.py --config run_sync.baostock.full.toml >> logs/baostock.log 2>
 ### 同步代码池
 
 ```bash
-python run_sync.py code_info --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.code_info --force --log-level INFO
 ```
 
 ### 同步北交所新旧代码映射
 
 ```bash
-python run_sync.py bj_code_mapping --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.bj_code_mapping --force --log-level INFO
 ```
 
 ### 同步股票基础信息
 
 ```bash
-python run_sync.py stock_basic --limit 20 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.stock_basic --limit 20 --force --log-level INFO
 ```
 
 ### 同步历史证券状态
 
 ```bash
-python run_sync.py history_stock_status --begin-date 20240101 --end-date 20240131 --limit 20 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.history_stock_status --begin-date 20240101 --end-date 20240131 --limit 20 --force --log-level INFO
 ```
 
 ### 同步单次复权因子
 
 ```bash
-python run_sync.py adj_factor --limit 20 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.adj_factor --limit 20 --force --log-level INFO
 ```
 
 ### 同步后复权因子
 
 ```bash
-python run_sync.py backward_factor --limit 20 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.backward_factor --limit 20 --force --log-level INFO
 ```
 
 ### 同步 ETF IOPV
 
 ```bash
-python run_sync.py fund_iopv --codes 510050.SH --begin-date 20240101 --end-date 20240131 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.fund_iopv --codes 510050.SH --begin-date 20240101 --end-date 20240131 --force --log-level INFO
 ```
 
 ### 同步可转债发行
 
 ```bash
-python run_sync.py kzz_issuance --codes 110030.SH --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.kzz_issuance --codes 110030.SH --force --log-level INFO
 ```
 
 ### 同步可转债份额
 
 ```bash
-python run_sync.py kzz_share --codes 110030.SH --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.kzz_share --codes 110030.SH --force --log-level INFO
 ```
 
 ### 同步可转债停复牌
 
 ```bash
-python run_sync.py kzz_suspend --codes 110030.SH --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.kzz_suspend --codes 110030.SH --force --log-level INFO
 ```
 
 ### 同步可转债回售条款执行说明
 
 ```bash
-python run_sync.py kzz_put_explanation --codes 110030.SH --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.kzz_put_explanation --codes 110030.SH --force --log-level INFO
 ```
 
 ### 同步期权基本资料
 
 ```bash
-python run_sync.py option_basic_info --codes 10000001.SH --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.option_basic_info --codes 10000001.SH --force --log-level INFO
 ```
 
 ### 同步期权标准合约属性
 
 ```bash
-python run_sync.py option_std_ctr_specs --codes 510050.SH --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.option_std_ctr_specs --codes 510050.SH --force --log-level INFO
 ```
 
 ### 同步期权月合约属性变动
 
 ```bash
-python run_sync.py option_mon_ctr_specs --codes 510050.SH --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.option_mon_ctr_specs --codes 510050.SH --force --log-level INFO
 ```
 
 ### 同步国债收益率
 
 ```bash
-python run_sync.py treasury_yield --codes m3,m6,y1,y2,y3,y5,y7,y10,y30 --begin-date 20240101 --end-date 20240131 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.treasury_yield --codes m3,m6,y1,y2,y3,y5,y7,y10,y30 --begin-date 20240101 --end-date 20240131 --force --log-level INFO
 ```
 
 ### 同步资产负债表
 
 ```bash
-python run_sync.py balance_sheet --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.balance_sheet --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
 ```
 
 ### 同步现金流量表
 
 ```bash
-python run_sync.py cash_flow --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.cash_flow --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
 ```
 
 ### 同步利润表
 
 ```bash
-python run_sync.py income --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.income --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
 ```
 
 ### 同步业绩快报
 
 ```bash
-python run_sync.py profit_express --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.profit_express --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
 ```
 
 ### 同步业绩预告
 
 ```bash
-python run_sync.py profit_notice --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.profit_notice --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
 ```
 
 ### 同步十大股东
 
 ```bash
-python run_sync.py share_holder --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.share_holder --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
 ```
 
 ### 同步股东户数
 
 ```bash
-python run_sync.py holder_num --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.holder_num --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
 ```
 
 ### 同步股本结构
 
 ```bash
-python run_sync.py equity_structure --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.equity_structure --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
 ```
 
 ### 同步股权冻结/质押
 
 ```bash
-python run_sync.py equity_pledge_freeze --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.equity_pledge_freeze --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
 ```
 
 ### 同步限售股解禁
 
 ```bash
-python run_sync.py equity_restricted --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.equity_restricted --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
 ```
 
 ### 同步分红方案
 
 ```bash
-python run_sync.py dividend --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.dividend --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
 ```
 
 ### 同步配股方案
 
 ```bash
-python run_sync.py right_issue --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.right_issue --begin-date 20240101 --end-date 20241231 --limit 20 --force --log-level INFO
 ```
 
 ### 小范围验证日线
 
 ```bash
-python run_sync.py daily_kline --begin-date 20240101 --end-date 20240131 --limit 20 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.daily_kline --begin-date 20240101 --end-date 20240131 --limit 20 --force --log-level INFO
 ```
 
 ### 小范围验证 1 分钟
 
 ```bash
-python run_sync.py minute_kline --begin-date 20240115 --end-date 20240115 --limit 20 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.minute_kline --begin-date 20240115 --end-date 20240115 --limit 20 --force --log-level INFO
 ```
 
 ### 小范围验证快照
 
 ```bash
-python run_sync.py market_snapshot --begin-date 20240115 --end-date 20240115 --limit 20 --force --log-level INFO
+python scripts/run_provider_sync.py amazingdata.market_snapshot --begin-date 20240115 --end-date 20240115 --limit 20 --force --log-level INFO
 ```
 
 ## 表结构变更后的注意事项

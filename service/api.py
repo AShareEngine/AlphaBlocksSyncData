@@ -75,8 +75,7 @@ class SyncConfigWriteRequest(BaseModel):
 
 
 class RunTaskRequest(BaseModel):
-    name: Optional[str] = None
-    task: Optional[str] = None
+    name: str
     codes: list[str] = Field(default_factory=list)
     day: Optional[int] = None
     begin_date: Optional[int] = None
@@ -106,7 +105,7 @@ class RunTaskRequest(BaseModel):
     runtime_path: Optional[str] = None
 
     def resolved_name(self) -> str:
-        task_name = (self.name or self.task or "").strip()
+        task_name = self.name.strip()
         if not task_name:
             raise ValueError("name 不能为空。")
         return task_name
@@ -182,15 +181,6 @@ def get_task_metadata(task_name: str):
         items = {item["name"]: item for item in JOB_MANAGER.list_registered_tasks()}
         if task_name in items:
             return items[task_name]
-        if task_name in JOB_MANAGER.list_tasks():
-            return {
-                "name": task_name,
-                "source": None,
-                "target": None,
-                "input_resolver": None,
-                "request_fields": ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"],
-                "probe_fields": [],
-            }
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     raise HTTPException(status_code=404, detail="task not found")
@@ -200,6 +190,15 @@ def get_task_metadata(task_name: str):
 @app.get("/api/meta/configs")
 def list_configs():
     return {"configs": JOB_MANAGER.list_configs()}
+
+
+@app.get("/api/sync/meta/providers")
+@app.get("/api/meta/providers")
+def list_providers():
+    try:
+        return {"providers": JOB_MANAGER.list_providers()}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/api/sync-table-status")
@@ -488,18 +487,7 @@ def run_task(request: RunTaskRequest):
             )
             task_metadata = registered_tasks[task_name]
         else:
-            job = JOB_MANAGER.create_task_job(
-                task=task_name,
-                codes=request.codes,
-                begin_date=request.begin_date,
-                end_date=request.end_date,
-                limit=request.limit,
-                force=request.force,
-                resume=request.resume,
-                log_level=request.log_level,
-                runtime_path=request.runtime_path,
-            )
-            task_metadata = None
+            raise ValueError(f"unknown registered task: {task_name}")
     except Exception as exc:
         raise _job_error_to_http(exc)
     return {

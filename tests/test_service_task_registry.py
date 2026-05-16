@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from sync_data_system.service.task_registry import TASK_REGISTRY, create_probe
 
@@ -36,18 +37,18 @@ class _FakeProvider:
 class ServiceTaskRegistryTest(unittest.TestCase):
     def test_registry_contains_market_tasks(self) -> None:
         tasks = {item.name: item for item in TASK_REGISTRY.list_tasks()}
-        self.assertIn("daily_kline", tasks)
-        self.assertIn("minute_kline", tasks)
-        self.assertEqual(tasks["daily_kline"].input_resolver, "market_kline_defaults")
+        self.assertIn("amazingdata.daily_kline", tasks)
+        self.assertIn("amazingdata.minute_kline", tasks)
+        self.assertEqual(tasks["amazingdata.daily_kline"].input_resolver, "market_kline_defaults")
 
     def test_registry_metadata_contains_source_target(self) -> None:
         metadata = {item["name"]: item for item in TASK_REGISTRY.list_task_metadata()}
-        self.assertIn("daily_kline", metadata)
-        self.assertEqual(metadata["daily_kline"]["source"], "amazingdata")
-        self.assertEqual(metadata["daily_kline"]["database"], "starlight")
-        self.assertEqual(metadata["daily_kline"]["target"], "ad_market_kline_daily")
-        self.assertIn("request_fields", metadata["daily_kline"])
-        self.assertIn("probe_fields", metadata["daily_kline"])
+        self.assertIn("amazingdata.daily_kline", metadata)
+        self.assertEqual(metadata["amazingdata.daily_kline"]["source"], "amazingdata")
+        self.assertEqual(metadata["amazingdata.daily_kline"]["database"], "starlight")
+        self.assertEqual(metadata["amazingdata.daily_kline"]["target"], "ad_market_kline_daily")
+        self.assertIn("request_fields", metadata["amazingdata.daily_kline"])
+        self.assertIn("probe_fields", metadata["amazingdata.daily_kline"])
 
     def test_registry_metadata_contains_baostock_tasks(self) -> None:
         metadata = {item["name"]: item for item in TASK_REGISTRY.list_task_metadata()}
@@ -66,10 +67,37 @@ class ServiceTaskRegistryTest(unittest.TestCase):
         self.assertIn("codes", metadata["qmt.kline_history"]["request_fields"])
         self.assertIn("period", metadata["qmt.kline_history"]["request_fields"])
 
+    def test_manifest_provider_task_handler_uses_provider_runner(self) -> None:
+        probe = create_probe(
+            task_name="qmt.kline_history",
+            job_id="job1",
+            project_root=Path("."),
+            log_path=Path("job1.log"),
+            codes=["600000.SH"],
+            begin_date=20240101,
+            end_date=20240131,
+        )
+        probe.context = SimpleNamespace(provider=object(), repository=object())
+        definition = TASK_REGISTRY.get_task("qmt.kline_history")
+
+        calls = []
+
+        def fake_runner(value):
+            calls.append(value)
+            value.set_row_count(7)
+            return 7
+
+        with patch("sync_data_system.core.providers.ProviderManifest.load_registered_task_runner", return_value=fake_runner):
+            result = definition.handler(probe)
+
+        self.assertEqual(result, 7)
+        self.assertEqual(probe.row_count, 7)
+        self.assertEqual(calls, [probe])
+
     def test_market_kline_defaults_resolver_populates_probe(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             probe = create_probe(
-                task_name="daily_kline",
+                task_name="amazingdata.daily_kline",
                 job_id="job1",
                 project_root=Path(tmpdir),
                 log_path=Path(tmpdir) / "job1.log",

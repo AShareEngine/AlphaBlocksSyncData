@@ -9,13 +9,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from sync_data_system.amazingdata_sdk_provider import AmazingDataSDKConfig, AmazingDataSDKProvider
-from sync_data_system.base_data import BaseData
-from sync_data_system.clickhouse_client import ClickHouseConfig
+from sync_data_system.core.providers import ProviderManifest, ProviderTaskManifest, load_provider_registry
 from sync_data_system.data_models import normalize_code_list
-from sync_data_system.info_data import InfoData
-from sync_data_system.market_data import MarketData
-from sync_data_system import run_sync as run_sync_module
+from sync_data_system.providers.amazingdata import runner as amazingdata_runner
 
 
 RUN_TASK_REQUEST_FIELDS = (
@@ -297,98 +293,15 @@ def register_input_resolver(name: str):
     return decorator
 
 
-@dataclass
-class ApiSyncExecutionContext:
-    sdk_config: AmazingDataSDKConfig
-    provider: AmazingDataSDKProvider
-    base_data: BaseData
-    info_data: InfoData
-    market_data: MarketData
-
-    def close(self) -> None:
-        try:
-            self.market_data.close()
-        except Exception:
-            pass
-        try:
-            self.info_data.close()
-        except Exception:
-            pass
-        try:
-            self.base_data.close()
-        except Exception:
-            pass
-        self.provider.close()
+def build_provider_context(source: str, runtime_path: Optional[str] = None, database: Optional[str] = None) -> Any:
+    manifest = load_provider_registry().get(source)
+    builder = manifest.load_context_builder()
+    return builder(runtime_path=runtime_path, database=database or manifest.default_database)
 
 
-@dataclass
-class BaoStockExecutionContext:
-    provider: Any
-    repository: Any
-    connection: Any
-
-    def close(self) -> None:
-        try:
-            self.connection.close()
-        except Exception:
-            pass
-        self.provider.close()
-
-
-@dataclass
-class QmtExecutionContext:
-    provider: Any
-    repository: Any
-    connection: Any
-
-    def close(self) -> None:
-        try:
-            self.connection.close()
-        except Exception:
-            pass
-        self.provider.close()
-
-
-def build_amazingdata_context(runtime_path: Optional[str] = None) -> ApiSyncExecutionContext:
-    sdk_config = AmazingDataSDKConfig.from_env(runtime_path=runtime_path)
-    clickhouse_config = ClickHouseConfig.from_env(runtime_path=runtime_path)
-    provider = AmazingDataSDKProvider(sdk_config)
-    base_data = BaseData.from_clickhouse_config(clickhouse_config, sync_provider=provider)
-    info_data = InfoData.from_clickhouse_config(clickhouse_config, sync_provider=provider)
-    market_data = MarketData.from_clickhouse_config(clickhouse_config, sync_provider=provider)
-    return ApiSyncExecutionContext(
-        sdk_config=sdk_config,
-        provider=provider,
-        base_data=base_data,
-        info_data=info_data,
-        market_data=market_data,
-    )
-
-
-def build_baostock_context(runtime_path: Optional[str] = None, database: str = "baostock") -> BaoStockExecutionContext:
-    from sync_data_system.sources.baostock.provider import BaoStockConfig, BaoStockProvider
-    from sync_data_system.sources.baostock.repository import BaoStockRepository
-    from sync_data_system.sync_core.clickhouse import create_clickhouse_client
-
-    clickhouse_config = ClickHouseConfig.from_env(runtime_path=runtime_path)
-    provider = BaoStockProvider(BaoStockConfig.from_env(runtime_path=runtime_path))
-    connection = create_clickhouse_client(clickhouse_config)
-    repository = BaoStockRepository(connection, database=database)
-    repository.ensure_tables()
-    return BaoStockExecutionContext(provider=provider, repository=repository, connection=connection)
-
-
-def build_qmt_context(runtime_path: Optional[str] = None, database: str = "qmt") -> QmtExecutionContext:
-    from sync_data_system.sources.qmt.provider import QmtConfig, QmtProvider
-    from sync_data_system.sources.qmt.repository import QmtRepository
-    from sync_data_system.sync_core.clickhouse import create_clickhouse_client
-
-    clickhouse_config = ClickHouseConfig.from_env(runtime_path=runtime_path)
-    provider = QmtProvider(QmtConfig.from_env(runtime_path=runtime_path))
-    connection = create_clickhouse_client(clickhouse_config)
-    repository = QmtRepository(connection, database=database)
-    repository.ensure_tables()
-    return QmtExecutionContext(provider=provider, repository=repository, connection=connection)
+def _provider_task_name(registry_name: str, source: str) -> str:
+    prefix = f"{source}."
+    return registry_name[len(prefix):] if str(registry_name).startswith(prefix) else registry_name
 
 
 @register_input_resolver("run_sync_defaults")
@@ -396,30 +309,30 @@ def resolve_run_sync_defaults(probe: SyncTaskProbe) -> None:
     if probe.context is None:
         raise RuntimeError("probe.context is required for run_sync_defaults")
 
-    task = probe.name
-    ignores_date_range = run_sync_module.task_ignores_date_range(task)
-    begin_date, end_date = run_sync_module.resolve_date_window(
+    task = _provider_task_name(probe.name, probe.source)
+    ignores_date_range = amazingdata_runner.task_ignores_date_range(task)
+    begin_date, end_date = amazingdata_runner.resolve_date_window(
         provider=probe.context.provider,
         begin_date=None if ignores_date_range else probe.input_begin_date,
         end_date=None if ignores_date_range else probe.input_end_date,
     )
 
     codes: list[str] = []
-    if run_sync_module.task_requires_code_list(task):
+    if amazingdata_runner.task_requires_code_list(task):
         if task == "backward_factor":
-            codes = run_sync_module.resolve_backward_factor_code_list(
+            codes = amazingdata_runner.resolve_backward_factor_code_list(
                 base_data=probe.context.base_data,
                 raw_codes=",".join(probe.input_codes),
                 limit=probe.limit,
             )
         elif task in {"industry_constituent", "industry_weight", "industry_daily"}:
-            codes = run_sync_module.resolve_industry_code_list(
+            codes = amazingdata_runner.resolve_industry_code_list(
                 info_data=probe.context.info_data,
                 raw_codes=",".join(probe.input_codes),
                 limit=probe.limit,
             )
         else:
-            codes = run_sync_module.resolve_code_list(
+            codes = amazingdata_runner.resolve_code_list(
                 base_data=probe.context.base_data,
                 task=task,
                 raw_codes=",".join(probe.input_codes),
@@ -427,7 +340,7 @@ def resolve_run_sync_defaults(probe: SyncTaskProbe) -> None:
                 local_path=probe.context.sdk_config.local_path,
                 end_date=end_date,
             )
-        task_spec = run_sync_module.TaskRunSpec(
+        task_spec = amazingdata_runner.TaskRunSpec(
             task=task,
             codes_raw=",".join(probe.input_codes),
             begin_date=None if ignores_date_range else probe.input_begin_date,
@@ -436,7 +349,7 @@ def resolve_run_sync_defaults(probe: SyncTaskProbe) -> None:
             force=probe.force,
             resume=probe.resume,
         )
-        codes = run_sync_module.filter_code_list_for_resume(
+        codes = amazingdata_runner.filter_code_list_for_resume(
             context=probe.context,
             task_spec=task_spec,
             code_list=codes,
@@ -454,7 +367,7 @@ def resolve_market_kline_defaults(probe: SyncTaskProbe) -> None:
     if probe.context is None:
         raise RuntimeError("probe.context is required for market_kline_defaults")
 
-    probe.begin_date, probe.end_date = run_sync_module.resolve_date_window(
+    probe.begin_date, probe.end_date = amazingdata_runner.resolve_date_window(
         provider=probe.context.provider,
         begin_date=probe.input_begin_date,
         end_date=probe.input_end_date,
@@ -464,13 +377,14 @@ def resolve_market_kline_defaults(probe: SyncTaskProbe) -> None:
         if probe.limit and probe.limit > 0:
             codes = codes[: probe.limit]
     else:
-        codes = run_sync_module.resolve_market_kline_code_list(
+        codes = amazingdata_runner.resolve_market_kline_code_list(
             base_data=probe.context.base_data,
-            task=probe.name,
+            task=_provider_task_name(probe.name, probe.source),
             limit=probe.limit,
         )
-    task_spec = run_sync_module.TaskRunSpec(
-        task=probe.name,
+    task_name = _provider_task_name(probe.name, probe.source)
+    task_spec = amazingdata_runner.TaskRunSpec(
+        task=task_name,
         codes_raw=",".join(probe.input_codes),
         begin_date=probe.input_begin_date,
         end_date=probe.input_end_date,
@@ -478,7 +392,7 @@ def resolve_market_kline_defaults(probe: SyncTaskProbe) -> None:
         force=probe.force,
         resume=probe.resume,
     )
-    probe.codes = run_sync_module.filter_code_list_for_resume(
+    probe.codes = amazingdata_runner.filter_code_list_for_resume(
         context=probe.context,
         task_spec=task_spec,
         code_list=codes,
@@ -487,201 +401,34 @@ def resolve_market_kline_defaults(probe: SyncTaskProbe) -> None:
     )
 
 
-def _execute_via_run_sync(probe: SyncTaskProbe) -> int:
-    task_spec = run_sync_module.TaskRunSpec(
-        task=probe.name,
-        codes_raw=",".join(probe.codes),
-        begin_date=probe.begin_date,
-        end_date=probe.end_date,
-        limit=probe.limit,
-        force=probe.force,
-        resume=probe.resume,
-    )
-    return run_sync_module.execute_task_spec(probe.context, task_spec)
+def _register_provider_task(manifest: ProviderManifest, task: ProviderTaskManifest) -> None:
+    registry_name = f"{manifest.name}.{task.name}"
+    input_resolver = None
+    if manifest.name == "amazingdata":
+        input_resolver = amazingdata_runner.TASK_INPUT_RESOLVER_MAP.get(task.name, "run_sync_defaults")
 
-
-def _register_run_sync_task(name: str, target: str, input_resolver: str = "run_sync_defaults") -> None:
     @sync_task(
-        name=name,
-        source="amazingdata",
-        database="starlight",
-        target=target,
+        name=registry_name,
+        source=manifest.name,
+        database=manifest.default_database,
+        target=task.target,
         input_resolver=input_resolver,
-        request_fields=RUN_TASK_REQUEST_FIELDS,
+        request_fields=task.request_fields or RUN_TASK_REQUEST_FIELDS,
     )
-    def _generated_task(probe: SyncTaskProbe) -> int:
-        inserted = _execute_via_run_sync(probe)
-        probe.set_row_count(inserted)
-        return inserted
+    def _generated_provider_task(probe: SyncTaskProbe) -> int:
+        runner = manifest.load_registered_task_runner()
+        return runner(probe)
 
 
-for _task_name in run_sync_module.TASK_CHOICES:
-    _register_run_sync_task(
-        _task_name,
-        run_sync_module.TASK_TARGET_TABLE_MAP[_task_name],
-        input_resolver=run_sync_module.TASK_INPUT_RESOLVER_MAP.get(_task_name, "run_sync_defaults"),
-    )
+def _register_manifest_provider_tasks() -> None:
+    for manifest in load_provider_registry().list():
+        if not manifest.entrypoints.registered_task_runner:
+            continue
+        for task in manifest.tasks:
+            _register_provider_task(manifest, task)
 
 
-def _baostock_request_fields(spec) -> tuple[str, ...]:
-    fields = ["name"]
-    if spec.uses_code:
-        fields.append("codes")
-    if spec.uses_day:
-        fields.append("day")
-    if spec.uses_begin_end:
-        fields.extend(["begin_date", "end_date"])
-    if spec.uses_year:
-        fields.append("year")
-    if spec.uses_quarter:
-        fields.append("quarter")
-    if spec.uses_year_type:
-        fields.append("year_type")
-    fields.extend(["limit", "force", "log_level"])
-    if spec.task == "daily_kline":
-        fields.extend(["adjustflag", "frequency"])
-    return tuple(dict.fromkeys(fields))
-
-
-def _format_optional_int(value: Optional[int]) -> str:
-    return "" if value is None else str(value)
-
-
-def _register_baostock_task(task_name: str, spec) -> None:
-    registry_name = f"baostock.{task_name}"
-
-    @sync_task(
-        name=registry_name,
-        source="baostock",
-        database="baostock",
-        target=spec.table_name,
-        input_resolver=None,
-        request_fields=_baostock_request_fields(spec),
-    )
-    def _generated_baostock_task(probe: SyncTaskProbe) -> int:
-        from sync_data_system.sources.baostock.runner import SyncArgs, run_sync_args
-
-        args = SyncArgs(
-            task=task_name,
-            codes_raw=",".join(probe.input_codes),
-            begin_date=_format_optional_int(probe.input_begin_date),
-            end_date=_format_optional_int(probe.input_end_date),
-            day=_format_optional_int(probe.input_day),
-            year=probe.input_year,
-            quarter=probe.input_quarter,
-            year_type=str(probe.input_year_type or "").strip(),
-            adjustflag=str(probe.adjustflag or "3").strip() or "3",
-            frequency=str(probe.frequency or "d").strip() or "d",
-            limit=probe.limit,
-            force=probe.force,
-            continue_on_error=False,
-            runtime_path=probe.runtime_path,
-            database="baostock",
-            log_level=str(probe.log_level or "INFO"),
-        )
-        inserted = run_sync_args(args, probe.context.provider, probe.context.repository)
-        probe.set_row_count(inserted)
-        return inserted
-
-
-try:
-    from sync_data_system.sources.baostock.specs import BAOSTOCK_TASK_SPECS
-
-    for _baostock_task_name, _baostock_spec in BAOSTOCK_TASK_SPECS.items():
-        _register_baostock_task(_baostock_task_name, _baostock_spec)
-except Exception:
-    pass
-
-
-def _qmt_request_fields(spec) -> tuple[str, ...]:
-    fields = ["name"]
-    if spec.uses_symbols:
-        fields.append("codes")
-    if spec.uses_symbol or spec.uses_stock_code:
-        fields.append("codes")
-    if spec.uses_market:
-        fields.append("market")
-    if spec.uses_index_code:
-        fields.append("index_code")
-    if spec.uses_table_names:
-        fields.append("table_names")
-    if spec.uses_sector_name:
-        fields.append("sector_name")
-    if spec.uses_code_market:
-        fields.append("code_market")
-    if spec.uses_begin_end:
-        fields.extend(["begin_date", "end_date"])
-    if spec.uses_period:
-        fields.append("period")
-    if spec.uses_fields:
-        fields.append("fields")
-    if spec.uses_adjust_type:
-        fields.append("adjust_type")
-    if spec.uses_fill_data:
-        fields.append("fill_data")
-    if spec.uses_count:
-        fields.append("count")
-    if spec.uses_incrementally:
-        fields.append("incrementally")
-    if spec.uses_complete:
-        fields.append("complete")
-    fields.extend(["limit", "force", "log_level"])
-    return tuple(dict.fromkeys(fields))
-
-
-def _register_qmt_task(task_name: str, spec) -> None:
-    registry_name = f"qmt.{task_name}"
-
-    @sync_task(
-        name=registry_name,
-        source="qmt",
-        database="qmt",
-        target=spec.table_name,
-        input_resolver=None,
-        request_fields=_qmt_request_fields(spec),
-    )
-    def _generated_qmt_task(probe: SyncTaskProbe) -> int:
-        from sync_data_system.sources.qmt.runner import SyncArgs, run_sync_args
-
-        codes = ",".join(probe.input_codes)
-        args = SyncArgs(
-            task=task_name,
-            symbols_raw=codes,
-            symbol=codes.split(",", 1)[0] if codes else "",
-            market=str(getattr(probe, "input_market", "") or ""),
-            index_code=str(getattr(probe, "input_index_code", "") or ""),
-            stock_code=codes.split(",", 1)[0] if codes else "",
-            table_names_raw=str(getattr(probe, "input_table_names", "") or ""),
-            sector_name=str(getattr(probe, "input_sector_name", "") or ""),
-            code_market=str(getattr(probe, "input_code_market", "") or ""),
-            begin_time=_format_optional_int(probe.input_begin_date),
-            end_time=_format_optional_int(probe.input_end_date),
-            period=str(getattr(probe, "input_period", "") or ""),
-            fields_raw=str(getattr(probe, "input_fields", "") or ""),
-            adjust_type=str(getattr(probe, "input_adjust_type", "none") or "none"),
-            fill_data=bool(getattr(probe, "input_fill_data", True)),
-            count=int(getattr(probe, "input_count", -1) or -1),
-            incrementally=bool(getattr(probe, "input_incrementally", False)),
-            complete=bool(getattr(probe, "input_complete", False)),
-            limit=probe.limit,
-            force=probe.force,
-            continue_on_error=False,
-            runtime_path=probe.runtime_path,
-            database="qmt",
-            log_level=str(probe.log_level or "INFO"),
-        )
-        inserted = run_sync_args(args, probe.context.provider, probe.context.repository)
-        probe.set_row_count(inserted)
-        return inserted
-
-
-try:
-    from sync_data_system.sources.qmt.specs import QMT_TASK_SPECS
-
-    for _qmt_task_name, _qmt_spec in QMT_TASK_SPECS.items():
-        _register_qmt_task(_qmt_task_name, _qmt_spec)
-except Exception:
-    pass
+_register_manifest_provider_tasks()
 
 
 def create_probe(
@@ -756,15 +503,10 @@ def create_probe(
 
 
 __all__ = [
-    "ApiSyncExecutionContext",
     "SyncTaskProbe",
     "TASK_REGISTRY",
     "TaskDefinition",
-    "BaoStockExecutionContext",
-    "QmtExecutionContext",
-    "build_amazingdata_context",
-    "build_baostock_context",
-    "build_qmt_context",
+    "build_provider_context",
     "create_probe",
     "register_input_resolver",
     "sync_task",

@@ -36,7 +36,7 @@ class ServiceApiTest(unittest.TestCase):
             def close(self):
                 return None
 
-        with patch("sync_data_system.service.api.JOB_MANAGER.list_registered_tasks", return_value=[{"name": "daily_kline", "target": "ad_market_kline_daily"}]), patch(
+        with patch("sync_data_system.service.api.JOB_MANAGER.list_registered_tasks", return_value=[{"name": "amazingdata.daily_kline", "target": "ad_market_kline_daily"}]), patch(
             "sync_data_system.service.api.ClickHouseConfig.from_env",
             return_value=object(),
         ), patch(
@@ -129,10 +129,10 @@ class ServiceApiTest(unittest.TestCase):
             started_at="2026-01-01T00:00:00+00:00",
             finished_at=None,
             cwd="/tmp",
-            command=["python", "run_sync.py"],
+            command=["python", "scripts/run_provider_sync.py"],
             log_path="/tmp/job1.log",
             config_path=None,
-            task="daily_kline",
+            task="amazingdata.daily_kline",
             source="amazingdata",
             target="ad_market_kline_daily",
             pid=123,
@@ -159,10 +159,10 @@ class ServiceApiTest(unittest.TestCase):
             started_at="2026-01-01T00:00:00+00:00",
             finished_at=None,
             cwd="/tmp",
-            command=["python", "run_sync.py"],
+            command=["python", "scripts/run_provider_sync.py"],
             log_path="/tmp/job1.log",
             config_path=None,
-            task="daily_kline",
+            task="amazingdata.daily_kline",
             source="amazingdata",
             target="ad_market_kline_daily",
             pid=123,
@@ -183,11 +183,11 @@ class ServiceApiTest(unittest.TestCase):
             side_effect=RuntimeError("another sync job is running job_id=job1 task=daily_kline; cancel it first"),
         ), patch(
             "sync_data_system.service.api.JOB_MANAGER.list_registered_tasks",
-            return_value=[{"name": "daily_kline"}],
+            return_value=[{"name": "amazingdata.daily_kline"}],
         ):
             response = client.post(
                 "/api/jobs/run-task",
-                json={"name": "daily_kline"},
+                json={"name": "amazingdata.daily_kline"},
             )
         self.assertEqual(response.status_code, 409)
         self.assertIn("another sync job is running", response.json()["detail"])
@@ -202,16 +202,16 @@ class ServiceApiTest(unittest.TestCase):
             started_at="2026-01-01T00:00:00+00:00",
             finished_at=None,
             cwd="/tmp",
-            command=["python", "scripts/run_registered_task.py"],
+            command=["python", "scripts/run_provider_sync.py"],
             log_path="/tmp/job1.log",
             config_path=None,
-            task="daily_kline",
+            task="amazingdata.daily_kline",
             source="amazingdata",
             target="ad_market_kline_daily",
             pid=123,
             return_code=None,
             error=None,
-            request_payload={"name": "daily_kline"},
+            request_payload={"name": "amazingdata.daily_kline"},
         )
         with patch(
             "sync_data_system.service.api.JOB_MANAGER.create_registered_task_job",
@@ -220,7 +220,7 @@ class ServiceApiTest(unittest.TestCase):
             "sync_data_system.service.api.JOB_MANAGER.list_registered_tasks",
             return_value=[
                 {
-                    "name": "daily_kline",
+                    "name": "amazingdata.daily_kline",
                     "source": "amazingdata",
                     "target": "ad_market_kline_daily",
                     "input_resolver": "market_kline_defaults",
@@ -229,11 +229,11 @@ class ServiceApiTest(unittest.TestCase):
                 }
             ],
         ):
-            response = client.post("/api/jobs/run-task", json={"name": "daily_kline"})
+            response = client.post("/api/jobs/run-task", json={"name": "amazingdata.daily_kline"})
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["job_id"], "job1")
-        self.assertEqual(payload["task_metadata"]["name"], "daily_kline")
+        self.assertEqual(payload["task_metadata"]["name"], "amazingdata.daily_kline")
 
 
 if __name__ == "__main__":

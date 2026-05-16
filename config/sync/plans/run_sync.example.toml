@@ -1,7 +1,7 @@
-# run_sync.py 批量任务配置示例
+# scripts/run_provider_sync.py 批量任务配置示例
 #
 # 用法：
-#   python3 run_sync.py --config run_sync.example.toml
+#   python3 scripts/run_provider_sync.py --config run_sync.example.toml
 
 source = "amazingdata"
 log_level = "INFO"

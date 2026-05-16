@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Background job manager for run_sync.py."""
+"""Background job manager for provider sync jobs."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from sync_data_system.config_paths import resolve_config_candidate, resolve_sync_plan_root
+from sync_data_system.core.providers import load_provider_registry
 from sync_data_system.service.task_registry import TASK_REGISTRY
 
 
@@ -99,7 +100,7 @@ class SyncJobManager:
         self._ensure_no_running_jobs()
         resolved_config = self._resolve_config_path(config_path)
         relative_config_path = str(resolved_config.relative_to(self.config_root))
-        command = [sys.executable, str(self.project_root / "run_sync.py"), "--config", str(resolved_config)]
+        command = [sys.executable, str(self.project_root / "scripts" / "run_provider_sync.py"), "--config", str(resolved_config)]
         if runtime_path:
             command.extend(["--runtime-path", runtime_path])
         if log_level:
@@ -111,56 +112,6 @@ class SyncJobManager:
             task=None,
             request_payload={
                 "config": relative_config_path,
-                "log_level": log_level,
-                "runtime_path": runtime_path,
-            },
-        )
-
-    def create_task_job(
-        self,
-        *,
-        task: str,
-        codes: list[str] | None = None,
-        begin_date: Optional[int] = None,
-        end_date: Optional[int] = None,
-        limit: int = 0,
-        force: bool = False,
-        resume: bool = False,
-        log_level: Optional[str] = None,
-        runtime_path: Optional[str] = None,
-    ) -> JobRecord:
-        self._ensure_no_running_jobs()
-        command = [sys.executable, str(self.project_root / "run_sync.py"), task]
-        if runtime_path:
-            command.extend(["--runtime-path", runtime_path])
-        code_items = [item.strip() for item in (codes or []) if str(item).strip()]
-        if code_items:
-            command.extend(["--codes", ",".join(code_items)])
-        if begin_date is not None:
-            command.extend(["--begin-date", str(begin_date)])
-        if end_date is not None:
-            command.extend(["--end-date", str(end_date)])
-        if limit:
-            command.extend(["--limit", str(limit)])
-        if force:
-            command.append("--force")
-        if resume:
-            command.append("--resume")
-        if log_level:
-            command.extend(["--log-level", str(log_level)])
-        return self._start_job(
-            kind="task",
-            command=command,
-            config_path=None,
-            task=task,
-            request_payload={
-                "task": task,
-                "codes": code_items,
-                "begin_date": begin_date,
-                "end_date": end_date,
-                "limit": limit,
-                "force": force,
-                "resume": resume,
                 "log_level": log_level,
                 "runtime_path": runtime_path,
             },
@@ -199,18 +150,13 @@ class SyncJobManager:
         return sorted(paths)
 
     def list_tasks(self) -> list[str]:
-        names = set()
-        try:
-            from sync_data_system.run_sync import TASK_CHOICES
-
-            names.update(TASK_CHOICES)
-        except Exception:
-            pass
-        names.update(task.name for task in TASK_REGISTRY.list_tasks())
-        return sorted(names)
+        return sorted(task.name for task in TASK_REGISTRY.list_tasks())
 
     def list_registered_tasks(self) -> list[dict[str, str | None]]:
         return TASK_REGISTRY.list_task_metadata()
+
+    def list_providers(self) -> list[dict[str, Any]]:
+        return load_provider_registry(self.project_root).to_metadata()
 
     def _start_job(
         self,
@@ -299,7 +245,7 @@ class SyncJobManager:
         log_path = self.logs_dir / f"{job_id}.log"
         command = [
             sys.executable,
-            str(self.project_root / "scripts" / "run_registered_task.py"),
+            str(self.project_root / "scripts" / "run_provider_sync.py"),
             "--job-id",
             job_id,
             "--task",

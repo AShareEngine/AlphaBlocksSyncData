@@ -11,9 +11,9 @@ try:
 except Exception:  # pragma: no cover
     pd = None  # type: ignore
 
-from sync_data_system.amazingdata_constants import FactorType
-from sync_data_system.amazingdata_sdk_provider import _normalize_single_price_factor_frame
-from sync_data_system.base_data import BaseData
+from sync_data_system.providers.amazingdata.constants import FactorType
+from sync_data_system.providers.amazingdata.provider import _normalize_single_price_factor_frame
+from sync_data_system.providers.amazingdata.base import BaseData
 from sync_data_system.data_models import PriceFactorRow
 
 

@@ -1,0 +1,231 @@
+name = "qmt"
+display_name = "QMT REST"
+version = "0.1.0"
+module = "sync_data_system.providers.qmt"
+runtime_config_key = "qmt"
+default_database = "qmt"
+plans_path = "plans"
+dependencies = ["clickhouse-connect"]
+import_modules = []
+
+[entrypoints]
+provider = "provider:QmtProvider"
+repository = "repository:QmtRepository"
+runner = "runner:run_sync_args"
+config_runner = "runner:run_config_file"
+context_builder = "runner:build_context"
+registered_task_runner = "runner:run_registered_task"
+specs = "specs:QMT_TASK_SPECS"
+
+[[tasks]]
+name = "kline_history"
+target = "qmt_kline_history"
+supports_incremental = true
+cursor_field = "time_ms"
+request_fields = ["name", "codes", "begin_date", "end_date", "period", "fields", "adjust_type", "fill_data", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "tick_history"
+target = "qmt_tick_history"
+supports_incremental = true
+cursor_field = "time_ms"
+request_fields = ["name", "codes", "begin_date", "end_date", "fields", "adjust_type", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "full_tick"
+target = "qmt_full_tick"
+supports_incremental = false
+request_fields = ["name", "codes", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "financial"
+target = "qmt_financial"
+supports_incremental = false
+request_fields = ["name", "codes", "table_names", "begin_date", "end_date", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "instrument"
+target = "qmt_instrument"
+supports_incremental = false
+request_fields = ["name", "codes", "complete", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "trading_calendar"
+target = "qmt_trading_calendar"
+supports_incremental = true
+cursor_field = "date"
+request_fields = ["name", "market", "begin_date", "end_date", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "index_weight"
+target = "qmt_index_weight"
+supports_incremental = false
+request_fields = ["name", "index_code", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "sectors"
+target = "qmt_sectors"
+supports_incremental = false
+request_fields = ["name", "sector_name", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "l2_quote"
+target = "qmt_l2_quote"
+supports_incremental = true
+cursor_field = "time_ms"
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "l2_order"
+target = "qmt_l2_order"
+supports_incremental = true
+cursor_field = "time_ms"
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "l2_transaction"
+target = "qmt_l2_transaction"
+supports_incremental = true
+cursor_field = "time_ms"
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "market_data_ex"
+target = "qmt_market_data_ex"
+supports_incremental = true
+cursor_field = "time_ms"
+request_fields = ["name", "codes", "begin_date", "end_date", "period", "fields", "adjust_type", "fill_data", "count", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "local_data"
+target = "qmt_local_data"
+supports_incremental = true
+cursor_field = "time_ms"
+request_fields = ["name", "codes", "begin_date", "end_date", "period", "fields", "adjust_type", "fill_data", "count", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "full_kline"
+target = "qmt_full_kline"
+supports_incremental = false
+request_fields = ["name", "codes", "period", "fields", "adjust_type", "fill_data", "count", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "instrument_type"
+target = "qmt_instrument_type"
+supports_incremental = false
+request_fields = ["name", "codes", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "trade_times"
+target = "qmt_trade_times"
+supports_incremental = false
+request_fields = ["name", "codes", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "main_contract"
+target = "qmt_main_contract"
+supports_incremental = false
+request_fields = ["name", "code_market", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "trading_dates"
+target = "qmt_trading_dates"
+supports_incremental = true
+cursor_field = "date"
+request_fields = ["name", "market", "begin_date", "end_date", "count", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "holidays"
+target = "qmt_holidays"
+supports_incremental = false
+request_fields = ["name", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "periods"
+target = "qmt_periods"
+supports_incremental = false
+request_fields = ["name", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "data_dir"
+target = "qmt_data_dir"
+supports_incremental = false
+request_fields = ["name", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "divid_factors"
+target = "qmt_divid_factors"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "cb_info"
+target = "qmt_cb_info"
+supports_incremental = false
+request_fields = ["name", "codes", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "ipo_info"
+target = "qmt_ipo_info"
+supports_incremental = false
+request_fields = ["name", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "etf_info"
+target = "qmt_etf_info"
+supports_incremental = false
+request_fields = ["name", "codes", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "download_history"
+target = "qmt_download_history"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "period", "incrementally", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "download_history_batch"
+target = "qmt_download_history_batch"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "period", "incrementally", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "download_financial"
+target = "qmt_download_financial"
+supports_incremental = false
+request_fields = ["name", "codes", "table_names", "begin_date", "end_date", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "download_index_weight"
+target = "qmt_download_index_weight"
+supports_incremental = false
+request_fields = ["name", "index_code", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "download_history_contracts"
+target = "qmt_download_history_contracts"
+supports_incremental = false
+request_fields = ["name", "market", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "download_sector"
+target = "qmt_download_sector"
+supports_incremental = false
+request_fields = ["name", "sector_name", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "download_holiday"
+target = "qmt_download_holiday"
+supports_incremental = false
+request_fields = ["name", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "download_cb"
+target = "qmt_download_cb"
+supports_incremental = false
+request_fields = ["name", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "download_etf"
+target = "qmt_download_etf"
+supports_incremental = false
+request_fields = ["name", "limit", "force", "log_level"]

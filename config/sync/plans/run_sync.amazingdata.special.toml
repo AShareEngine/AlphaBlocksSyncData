@@ -1,7 +1,7 @@
 # AmazingData 专项增量同步配置
 #
 # 用法：
-#   python3 run_sync.py --config run_sync.amazingdata.special.toml
+#   python3 scripts/run_provider_sync.py --config run_sync.amazingdata.special.toml
 #
 # 这份配置专门用来单独更新：
 # - 历史代码表

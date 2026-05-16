@@ -34,7 +34,7 @@ sync:
     password: YOUR_AMAZINGDATA_PASSWORD
     host: YOUR_AMAZINGDATA_HOST
     port: 8600
-    local_path: /home/mubin/local_amazing_data
+    local_path: /path/to/local_amazing_data
   baostock:
     user_id: anonymous
     password: 123456

@@ -7,8 +7,14 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from sync_data_system.amazingdata_constants import FactorType
-from sync_data_system.run_sync import TaskRunSpec, build_execution_plan, build_resume_scope_pairs, filter_code_list_for_resume, resolve_code_list
+from sync_data_system.providers.amazingdata.constants import FactorType
+from sync_data_system.providers.amazingdata.runner import (
+    TaskRunSpec,
+    build_execution_plan,
+    build_resume_scope_pairs,
+    filter_code_list_for_resume,
+    resolve_code_list,
+)
 
 
 class _FakeRepository:
@@ -319,7 +325,7 @@ class RunSyncResumeTest(unittest.TestCase):
             log_level=None,
         )
 
-        with patch("sync_data_system.run_sync.DEFAULT_PLAN_CONFIG", "run_sync.example.toml"):
+        with patch("sync_data_system.providers.amazingdata.runner.DEFAULT_PLAN_CONFIG", "run_sync.example.toml"):
             plan = build_execution_plan(args)
 
         self.assertTrue(plan.tasks)

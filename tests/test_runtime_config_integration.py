@@ -10,21 +10,21 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from sync_data_system.amazingdata_sdk_provider import AmazingDataSDKConfig
+from program_bootstrap import install_sync_data_system_alias
+from sync_data_system.providers.amazingdata.provider import AmazingDataSDKConfig
 from sync_data_system.runtime_config import load_runtime_config
 
 
 class RuntimeConfigIntegrationTest(unittest.TestCase):
-    def test_package_does_not_eagerly_import_run_sync(self) -> None:
-        sys.modules.pop("sync_data_system.run_sync", None)
+    def test_package_does_not_eagerly_import_provider_runner(self) -> None:
+        sys.modules.pop("sync_data_system.providers.amazingdata.runner", None)
         sys.modules.pop("sync_data_system", None)
+        install_sync_data_system_alias(Path(__file__).resolve().parents[1])
 
         pkg = importlib.import_module("sync_data_system")
 
-        self.assertNotIn("sync_data_system.run_sync", sys.modules)
-        module = pkg.run_sync
-        self.assertEqual(module.__name__, "sync_data_system.run_sync")
-        self.assertIn("sync_data_system.run_sync", sys.modules)
+        self.assertNotIn("sync_data_system.providers.amazingdata.runner", sys.modules)
+        self.assertEqual(pkg.__all__, ["wide_table_sync"])
 
     def test_amazingdata_config_reports_all_missing_runtime_fields(self) -> None:
         runtime_yaml = textwrap.dedent(

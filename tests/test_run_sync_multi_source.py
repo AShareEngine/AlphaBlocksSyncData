@@ -8,9 +8,9 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from sync_data_system.run_sync import detect_config_source
-from sync_data_system.sources.baostock.runner import load_execution_plan_from_toml
-from sync_data_system.sources.qmt.runner import load_execution_plan_from_toml as load_qmt_execution_plan_from_toml
+from sync_data_system.providers.amazingdata.runner import detect_config_source
+from sync_data_system.providers.baostock.runner import load_execution_plan_from_toml
+from sync_data_system.providers.qmt.runner import load_execution_plan_from_toml as load_qmt_execution_plan_from_toml
 
 
 class RunSyncMultiSourceTest(unittest.TestCase):

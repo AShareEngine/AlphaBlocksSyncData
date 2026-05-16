@@ -9,6 +9,7 @@ DEFAULT_SYNC_CONFIG_ROOT = SYNC_PACKAGE_ROOT / "config" / "sync"
 DEFAULT_SYNC_PLAN_ROOT = DEFAULT_SYNC_CONFIG_ROOT / "plans"
 DEFAULT_RUNTIME_CONFIG_PATH = SYNC_PACKAGE_ROOT / "config" / "runtime.local.yaml"
 DEFAULT_RUNTIME_EXAMPLE_PATH = SYNC_PACKAGE_ROOT / "config" / "runtime.example.yaml"
+DEFAULT_PROVIDER_ROOT = SYNC_PACKAGE_ROOT / "providers"
 
 
 def resolve_sync_config_root(project_root: str | Path | None = None) -> Path:
@@ -18,6 +19,11 @@ def resolve_sync_config_root(project_root: str | Path | None = None) -> Path:
 
 def resolve_sync_plan_root(project_root: str | Path | None = None) -> Path:
     return resolve_sync_config_root(project_root) / "plans"
+
+
+def resolve_provider_root(project_root: str | Path | None = None) -> Path:
+    root = Path(project_root).resolve() if project_root is not None else SYNC_PACKAGE_ROOT
+    return root / "providers"
 
 
 def resolve_runtime_config_path(path_like: str | Path | None = None) -> Path:

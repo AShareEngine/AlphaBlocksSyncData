@@ -28,7 +28,7 @@ for path in (str(REPO_ROOT), str(SRC_ROOT)):
 
 import pandas as pd
 
-from sync_data_system.amazingdata_sdk_provider import (
+from sync_data_system.providers.amazingdata.provider import (
     AmazingDataSDKConfig,
     AmazingDataSDKProvider,
     _as_date,

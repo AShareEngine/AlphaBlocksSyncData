@@ -196,10 +196,10 @@ OpenAPI：
 
 ```json
 {
-  "tasks": ["daily_kline", "minute_kline", "..."],
+  "tasks": ["amazingdata.daily_kline", "amazingdata.minute_kline", "..."],
   "registered_tasks": [
     {
-      "name": "daily_kline",
+      "name": "amazingdata.daily_kline",
       "source": "amazingdata",
       "target": "ad_market_kline_daily",
       "input_resolver": "market_kline_defaults",
@@ -252,7 +252,7 @@ OpenAPI：
 示例：
 
 ```bash
-curl http://127.0.0.1:18080/api/meta/tasks/daily_kline
+curl http://127.0.0.1:18080/api/meta/tasks/amazingdata.daily_kline
 ```
 
 如果是注册任务，会返回完整元信息。  
@@ -340,7 +340,7 @@ curl http://127.0.0.1:18080/api/meta/tasks/daily_kline
 
 ```json
 {
-  "name": "daily_kline",
+  "name": "amazingdata.daily_kline",
   "codes": ["000001.SZ", "510300.SH"],
   "begin_date": 20240101,
   "end_date": 20240131,
@@ -365,14 +365,14 @@ curl http://127.0.0.1:18080/api/meta/tasks/daily_kline
   "command": ["python3", "..."],
   "log_path": "/path/to/project/.service_state/logs/abc123def456.log",
   "config_path": null,
-  "task": "daily_kline",
+  "task": "amazingdata.daily_kline",
   "source": "amazingdata",
   "target": "ad_market_kline_daily",
   "pid": 12346,
   "return_code": null,
   "error": null,
   "request_payload": {
-    "name": "daily_kline",
+    "name": "amazingdata.daily_kline",
     "codes": ["000001.SZ", "510300.SH"],
     "begin_date": 20240101,
     "end_date": 20240131,
@@ -383,7 +383,7 @@ curl http://127.0.0.1:18080/api/meta/tasks/daily_kline
     "runtime_path": null
   },
   "task_metadata": {
-    "name": "daily_kline",
+    "name": "amazingdata.daily_kline",
     "source": "amazingdata",
     "target": "ad_market_kline_daily",
     "input_resolver": "market_kline_defaults",
@@ -408,7 +408,7 @@ curl http://127.0.0.1:18080/api/meta/tasks/daily_kline
 ```bash
 curl http://127.0.0.1:18080/api/jobs
 curl http://127.0.0.1:18080/api/jobs?status=running
-curl http://127.0.0.1:18080/api/jobs?task=daily_kline
+curl http://127.0.0.1:18080/api/jobs?task=amazingdata.daily_kline
 curl http://127.0.0.1:18080/api/jobs?kind=registered_task
 ```
 
@@ -428,14 +428,14 @@ curl http://127.0.0.1:18080/api/jobs?kind=registered_task
       "command": ["python3", "..."],
       "log_path": "/path/to/project/.service_state/logs/abc123def456.log",
       "config_path": null,
-      "task": "daily_kline",
+      "task": "amazingdata.daily_kline",
       "source": "amazingdata",
       "target": "ad_market_kline_daily",
       "pid": 12346,
       "return_code": null,
       "error": null,
       "request_payload": {
-        "name": "daily_kline",
+        "name": "amazingdata.daily_kline",
         "codes": [],
         "begin_date": 20240101,
         "end_date": 20240131,
@@ -472,14 +472,14 @@ curl http://127.0.0.1:18080/api/jobs?kind=registered_task
   "command": ["python3", "..."],
   "log_path": "/path/to/project/.service_state/logs/abc123def456.log",
   "config_path": null,
-  "task": "daily_kline",
+  "task": "amazingdata.daily_kline",
   "source": "amazingdata",
   "target": "ad_market_kline_daily",
   "pid": 12346,
   "return_code": null,
   "error": null,
   "request_payload": {
-    "name": "daily_kline",
+    "name": "amazingdata.daily_kline",
     "codes": [],
     "begin_date": 20240101,
     "end_date": 20240131,
@@ -533,7 +533,7 @@ curl http://127.0.0.1:18080/api/jobs?kind=registered_task
   "command": ["python3", "..."],
   "log_path": "/path/to/project/.service_state/logs/abc123def456.log",
   "config_path": null,
-  "task": "daily_kline",
+  "task": "amazingdata.daily_kline",
   "source": "amazingdata",
   "target": "ad_market_kline_daily",
   "pid": 12346,

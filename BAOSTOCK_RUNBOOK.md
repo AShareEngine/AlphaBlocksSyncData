@@ -6,27 +6,27 @@
 
 目录说明：
 
-- 统一入口：`/home/mubin/AlphaBlocksSyncData/run_sync.py`
-- BaoStock 全量配置：`/home/mubin/AlphaBlocksSyncData/config/sync/plans/run_sync.baostock.full.toml`
-- 独立脚本入口：`/home/mubin/AlphaBlocksSyncData/scripts/run_baostock_sync.py`
-- 正式实现：`/home/mubin/AlphaBlocksSyncData/sources/baostock/runner.py`
-- 规格定义：`/home/mubin/AlphaBlocksSyncData/sources/baostock/specs.py`
-- Provider：`/home/mubin/AlphaBlocksSyncData/sources/baostock/provider.py`
-- Repository：`/home/mubin/AlphaBlocksSyncData/sources/baostock/repository.py`
-- 公共层：`/home/mubin/AlphaBlocksSyncData/sync_core/`
+- 统一入口：`scripts/run_provider_sync.py`
+- BaoStock 全量配置：`config/sync/plans/run_sync.baostock.full.toml`
+- 统一脚本入口：`scripts/run_provider_sync.py`
+- 正式实现：`providers/baostock/runner.py`
+- 规格定义：`providers/baostock/specs.py`
+- Provider：`providers/baostock/provider.py`
+- Repository：`providers/baostock/repository.py`
+- 公共层：`sync_core/`
 
 ## 入口
 
 命令入口：
 
 ```bash
-python3 run_sync.py --config run_sync.baostock.full.toml
+python3 scripts/run_provider_sync.py --config run_sync.baostock.full.toml
 ```
 
 也保留独立脚本入口：
 
 ```bash
-python3 scripts/run_baostock_sync.py <task> [options]
+python3 scripts/run_provider_sync.py baostock.<task> [options]
 ```
 
 默认会使用现有 `CLICKHOUSE_*` 连接信息，把表写入 ClickHouse 的 `baostock` database。
@@ -56,7 +56,7 @@ ClickHouse：
 推荐先做一次连通性验证：
 
 ```bash
-python3 run_sync.py --config run_sync.baostock.full.toml
+python3 scripts/run_provider_sync.py --config run_sync.baostock.full.toml
 ```
 
 ## 已实现任务
@@ -104,59 +104,59 @@ BaoStock 原始代码格式是：
 交易日历：
 
 ```bash
-python3 scripts/run_baostock_sync.py trade_dates --begin-date 20240101 --end-date 20240131
+python3 scripts/run_provider_sync.py baostock.trade_dates --begin-date 20240101 --end-date 20240131
 ```
 
 全市场证券列表：
 
 ```bash
-python3 scripts/run_baostock_sync.py all_stock --day 20240110
+python3 scripts/run_provider_sync.py baostock.all_stock --day 20240110
 ```
 
 股票基本资料：
 
 ```bash
-python3 scripts/run_baostock_sync.py stock_basic --codes 600000.SH,000001.SZ
+python3 scripts/run_provider_sync.py baostock.stock_basic --codes 600000.SH,000001.SZ
 ```
 
 前后复权因子对应的复权信息：
 
 ```bash
-python3 scripts/run_baostock_sync.py adjust_factor --codes 600000.SH --begin-date 20240101 --end-date 20241231
+python3 scripts/run_provider_sync.py baostock.adjust_factor --codes 600000.SH --begin-date 20240101 --end-date 20241231
 ```
 
 日线 K 线：
 
 ```bash
-python3 scripts/run_baostock_sync.py daily_kline --codes 600000.SH --begin-date 20240101 --end-date 20240131 --adjustflag 3
+python3 scripts/run_provider_sync.py baostock.daily_kline --codes 600000.SH --begin-date 20240101 --end-date 20240131 --adjustflag 3
 ```
 
 行业分类：
 
 ```bash
-python3 scripts/run_baostock_sync.py stock_industry --codes 600000.SH --day 20240110
+python3 scripts/run_provider_sync.py baostock.stock_industry --codes 600000.SH --day 20240110
 ```
 
 沪深 300 成分：
 
 ```bash
-python3 scripts/run_baostock_sync.py hs300_stocks --day 20240110
+python3 scripts/run_provider_sync.py baostock.hs300_stocks --day 20240110
 ```
 
 季频财务类：
 
 ```bash
-python3 scripts/run_baostock_sync.py profit_data --codes 600000.SH --year 2023 --quarter 3
-python3 scripts/run_baostock_sync.py balance_data --codes 600000.SH --year 2023 --quarter 3
-python3 scripts/run_baostock_sync.py cash_flow_data --codes 600000.SH --year 2023 --quarter 3
+python3 scripts/run_provider_sync.py baostock.profit_data --codes 600000.SH --year 2023 --quarter 3
+python3 scripts/run_provider_sync.py baostock.balance_data --codes 600000.SH --year 2023 --quarter 3
+python3 scripts/run_provider_sync.py baostock.cash_flow_data --codes 600000.SH --year 2023 --quarter 3
 ```
 
 宏观数据：
 
 ```bash
-python3 scripts/run_baostock_sync.py deposit_rate_data --begin-date 20230101 --end-date 20241231
-python3 scripts/run_baostock_sync.py money_supply_data_month --begin-date 202301 --end-date 202412
-python3 scripts/run_baostock_sync.py money_supply_data_year --begin-date 2020 --end-date 2024
+python3 scripts/run_provider_sync.py baostock.deposit_rate_data --begin-date 20230101 --end-date 20241231
+python3 scripts/run_provider_sync.py baostock.money_supply_data_month --begin-date 202301 --end-date 202412
+python3 scripts/run_provider_sync.py baostock.money_supply_data_year --begin-date 2020 --end-date 2024
 ```
 
 ## 如何同步
@@ -166,9 +166,9 @@ python3 scripts/run_baostock_sync.py money_supply_data_year --begin-date 2020 --
 适合补数、排障、验证接口。
 
 ```bash
-python3 run_sync.py --config run_sync.baostock.full.toml
-python3 scripts/run_baostock_sync.py stock_basic --codes 600000.SH,000001.SZ
-python3 scripts/run_baostock_sync.py daily_kline --codes 600000.SH --begin-date 20240101 --end-date 20240131
+python3 scripts/run_provider_sync.py --config run_sync.baostock.full.toml
+python3 scripts/run_provider_sync.py baostock.stock_basic --codes 600000.SH,000001.SZ
+python3 scripts/run_provider_sync.py baostock.daily_kline --codes 600000.SH --begin-date 20240101 --end-date 20240131
 ```
 
 ### 方式二：自动展开代码池批量同步
@@ -176,7 +176,7 @@ python3 scripts/run_baostock_sync.py daily_kline --codes 600000.SH --begin-date 
 适合股票类批量任务。
 
 ```bash
-python3 scripts/run_baostock_sync.py daily_kline --begin-date 20240101 --end-date 20240131 --limit 100
+python3 scripts/run_provider_sync.py baostock.daily_kline --begin-date 20240101 --end-date 20240131 --limit 100
 ```
 
 说明：
@@ -187,7 +187,7 @@ python3 scripts/run_baostock_sync.py daily_kline --begin-date 20240101 --end-dat
 ### 方式三：容错批量执行
 
 ```bash
-python3 scripts/run_baostock_sync.py daily_kline --begin-date 20240101 --end-date 20240131 --limit 500 --continue-on-error
+python3 scripts/run_provider_sync.py baostock.daily_kline --begin-date 20240101 --end-date 20240131 --limit 500
 ```
 
 说明：
@@ -230,13 +230,13 @@ python3 scripts/run_baostock_sync.py daily_kline --begin-date 20240101 --end-dat
 终端 1：
 
 ```bash
-python3 run_sync.py --config run_sync.amazingdata.full.toml >> logs/amazingdata.log 2>&1
+python3 scripts/run_provider_sync.py --config run_sync.amazingdata.full.toml >> logs/amazingdata.log 2>&1
 ```
 
 终端 2：
 
 ```bash
-python3 run_sync.py --config run_sync.baostock.full.toml >> logs/baostock.log 2>&1
+python3 scripts/run_provider_sync.py --config run_sync.baostock.full.toml >> logs/baostock.log 2>&1
 ```
 
 原因：

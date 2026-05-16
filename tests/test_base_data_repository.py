@@ -11,7 +11,7 @@ except Exception:  # pragma: no cover
     pd = None  # type: ignore
 
 from sync_data_system.data_models import PriceFactorQuery
-from sync_data_system.repositories.base_data_repository import BaseDataRepository
+from sync_data_system.providers.amazingdata.base_repository import BaseDataRepository
 
 
 class _FakeClickHouseClient:

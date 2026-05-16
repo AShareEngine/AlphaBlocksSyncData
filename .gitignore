@@ -26,6 +26,8 @@ env/
 
 # Testing
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 
@@ -33,7 +35,9 @@ htmlcov/
 logs/
 *.log
 
-# Data
+# Runtime state and data
+.service_state/
+.tmp_ad_cache/
 data/
 amazing_data_cache/
 amazing_data_cache_fresh/
@@ -42,12 +46,3 @@ tmp/
 # OS
 .DS_Store
 Thumbs.db
-__pycache__/__pycache__/
-__pycache__/
-repositories/__pycache__/
-__pycache__/amazingdata_sdk_provider.cpython-313.pyc
-__pycache__/amazingdata_sdk_provider.cpython-313.pyc
-
-
-__pycache__/
-*.pyc

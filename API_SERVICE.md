@@ -61,11 +61,11 @@ Tasks are identified by `name`.
 
 Examples:
 
-- `daily_kline`
-- `minute_kline`
-- `option_basic_info`
-- `treasury_yield`
-- `margin_detail`
+- `amazingdata.daily_kline`
+- `amazingdata.minute_kline`
+- `amazingdata.option_basic_info`
+- `amazingdata.treasury_yield`
+- `amazingdata.margin_detail`
 
 Registered task metadata contains:
 
@@ -130,10 +130,10 @@ Response:
 
 ```json
 {
-  "tasks": ["daily_kline", "minute_kline", "..."],
+  "tasks": ["amazingdata.daily_kline", "amazingdata.minute_kline", "..."],
   "registered_tasks": [
     {
-      "name": "daily_kline",
+      "name": "amazingdata.daily_kline",
       "source": "amazingdata",
       "target": "ad_market_kline_daily",
       "input_resolver": "market_kline_defaults",
@@ -180,14 +180,14 @@ Response:
 Example:
 
 ```bash
-curl http://127.0.0.1:18080/api/meta/tasks/daily_kline
+curl http://127.0.0.1:18080/api/meta/tasks/amazingdata.daily_kline
 ```
 
 Response:
 
 ```json
 {
-  "name": "daily_kline",
+  "name": "amazingdata.daily_kline",
   "source": "amazingdata",
   "target": "ad_market_kline_daily",
   "input_resolver": "market_kline_defaults",
@@ -273,7 +273,7 @@ Success response:
   "started_at": "2026-04-21T09:00:00+00:00",
   "finished_at": null,
   "cwd": "/path/to/project",
-  "command": ["python3", "/path/to/project/run_sync.py", "--config", "/path/to/project/run_sync.full.toml"],
+  "command": ["python3", "/path/to/project/scripts/run_provider_sync.py", "--config", "/path/to/project/run_sync.full.toml"],
   "log_path": "/path/to/project/.service_state/logs/abc123def456.log",
   "config_path": "run_sync.full.toml",
   "task": null,
@@ -306,14 +306,13 @@ HTTP status:
 Request body:
 
 - `name` is recommended
-- `task` is still accepted as compatibility alias
 - `codes` should be `list[str]`
 
 Request example:
 
 ```json
 {
-  "name": "daily_kline",
+  "name": "amazingdata.daily_kline",
   "codes": ["000001.SZ", "510300.SH"],
   "begin_date": 20240101,
   "end_date": 20240131,
@@ -329,7 +328,7 @@ Example:
 ```bash
 curl -X POST http://127.0.0.1:18080/api/jobs/run-task \
   -H 'Content-Type: application/json' \
-  -d '{"name":"daily_kline","codes":["000001.SZ"],"begin_date":20240101,"end_date":20240131,"limit":20}'
+  -d '{"name":"amazingdata.daily_kline","codes":["000001.SZ"],"begin_date":20240101,"end_date":20240131,"limit":20}'
 ```
 
 Success response:
@@ -343,10 +342,10 @@ Success response:
   "started_at": "2026-04-21T09:05:00+00:00",
   "finished_at": null,
   "cwd": "/path/to/project",
-  "command": ["python3", "/path/to/project/scripts/run_registered_task.py", "..."],
+  "command": ["python3", "/path/to/project/scripts/run_provider_sync.py", "..."],
   "log_path": "/path/to/project/.service_state/logs/abc123def456.log",
   "config_path": null,
-  "task": "daily_kline",
+  "task": "amazingdata.daily_kline",
   "source": "amazingdata",
   "target": "ad_market_kline_daily",
   "pid": 12346,
@@ -376,7 +375,7 @@ Examples:
 ```bash
 curl http://127.0.0.1:18080/api/jobs
 curl http://127.0.0.1:18080/api/jobs?status=running
-curl http://127.0.0.1:18080/api/jobs?task=daily_kline
+curl http://127.0.0.1:18080/api/jobs?task=amazingdata.daily_kline
 curl http://127.0.0.1:18080/api/jobs?kind=registered_task
 ```
 
@@ -396,7 +395,7 @@ Response:
       "command": ["python3", "..."],
       "log_path": "/path/to/project/.service_state/logs/abc123def456.log",
       "config_path": null,
-      "task": "daily_kline",
+      "task": "amazingdata.daily_kline",
       "source": "amazingdata",
       "target": "ad_market_kline_daily",
       "pid": 12346,
@@ -435,7 +434,7 @@ Response:
   "command": ["python3", "..."],
   "log_path": "/path/to/project/.service_state/logs/abc123def456.log",
   "config_path": null,
-  "task": "daily_kline",
+  "task": "amazingdata.daily_kline",
   "source": "amazingdata",
   "target": "ad_market_kline_daily",
   "pid": 12346,
@@ -486,7 +485,7 @@ Response:
   "command": ["python3", "..."],
   "log_path": "/path/to/project/.service_state/logs/abc123def456.log",
   "config_path": null,
-  "task": "daily_kline",
+  "task": "amazingdata.daily_kline",
   "source": "amazingdata",
   "target": "ad_market_kline_daily",
   "pid": 12346,
@@ -525,15 +524,15 @@ AmazingData tasks currently registered in the task registry:
 
 Examples:
 
-- `daily_kline`
-- `minute_kline`
-- `option_basic_info`
-- `option_std_ctr_specs`
-- `option_mon_ctr_specs`
-- `treasury_yield`
-- `margin_detail`
-- `margin_summary`
-- `block_trading`
+- `amazingdata.daily_kline`
+- `amazingdata.minute_kline`
+- `amazingdata.option_basic_info`
+- `amazingdata.option_std_ctr_specs`
+- `amazingdata.option_mon_ctr_specs`
+- `amazingdata.treasury_yield`
+- `amazingdata.margin_detail`
+- `amazingdata.margin_summary`
+- `amazingdata.block_trading`
 - `long_hu_bang`
 
 Use `GET /api/meta/tasks` as the source of truth for the full current list.

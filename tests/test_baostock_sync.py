@@ -10,10 +10,10 @@ try:
 except Exception:  # pragma: no cover
     pd = None  # type: ignore
 
-from sync_data_system.sources.baostock.provider import normalize_baostock_code, normalize_baostock_code_list, to_baostock_code
-from sync_data_system.sources.baostock.repository import BaoStockRepository
-from sync_data_system.sources.baostock.runner import SyncArgs, resolve_all_stock_request_meta, resolve_code_list, resolve_effective_request_meta, run_code_task, run_sync_args
-from sync_data_system.sources.baostock.specs import BAOSTOCK_TASK_SPECS, camel_to_snake, table_columns_for_spec
+from sync_data_system.providers.baostock.provider import normalize_baostock_code, normalize_baostock_code_list, to_baostock_code
+from sync_data_system.providers.baostock.repository import BaoStockRepository
+from sync_data_system.providers.baostock.runner import SyncArgs, resolve_all_stock_request_meta, resolve_code_list, resolve_effective_request_meta, run_code_task, run_sync_args
+from sync_data_system.providers.baostock.specs import BAOSTOCK_TASK_SPECS, camel_to_snake, table_columns_for_spec
 from sync_data_system.sync_core.incremental import advance_cursor_value, normalize_request_value
 
 

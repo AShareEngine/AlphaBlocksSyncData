@@ -8,9 +8,9 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from sync_data_system.sources.qmt.provider import iter_qmt_rows, normalize_qmt_code, normalize_qmt_code_list
-from sync_data_system.sources.qmt.repository import QmtRepository
-from sync_data_system.sources.qmt.runner import (
+from sync_data_system.providers.qmt.provider import iter_qmt_rows, normalize_qmt_code, normalize_qmt_code_list
+from sync_data_system.providers.qmt.repository import QmtRepository
+from sync_data_system.providers.qmt.runner import (
     SyncArgs,
     build_fetch_kwargs,
     build_request_meta,
@@ -18,7 +18,7 @@ from sync_data_system.sources.qmt.runner import (
     resolve_effective_request_meta,
     run_sync_args,
 )
-from sync_data_system.sources.qmt.specs import QMT_TASK_SPECS
+from sync_data_system.providers.qmt.specs import QMT_TASK_SPECS
 
 
 class _FakeClickHouseClient:

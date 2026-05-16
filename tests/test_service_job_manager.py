@@ -51,8 +51,8 @@ class SyncJobManagerTest(unittest.TestCase):
             root.mkdir()
             manager = SyncJobManager(root, state_dir=root / ".service_state")
             items = manager.list_registered_tasks()
-            self.assertTrue(any(item["name"] == "daily_kline" for item in items))
-            daily = next(item for item in items if item["name"] == "daily_kline")
+            self.assertTrue(any(item["name"] == "amazingdata.daily_kline" for item in items))
+            daily = next(item for item in items if item["name"] == "amazingdata.daily_kline")
             self.assertEqual(daily["source"], "amazingdata")
             self.assertEqual(daily["target"], "ad_market_kline_daily")
 
@@ -69,10 +69,10 @@ class SyncJobManagerTest(unittest.TestCase):
                 started_at="2026-01-01T00:00:00+00:00",
                 finished_at=None,
                 cwd=str(root),
-                command=["python", "run_sync.py"],
+                command=["python", "scripts/run_provider_sync.py"],
                 log_path=str(root / "job1.log"),
                 config_path=None,
-                task="daily_kline",
+                task="amazingdata.daily_kline",
                 source="amazingdata",
                 target="ad_market_kline_daily",
                 pid=None,
@@ -95,10 +95,10 @@ class SyncJobManagerTest(unittest.TestCase):
                 started_at="2026-01-01T00:00:00+00:00",
                 finished_at=None,
                 cwd=str(root),
-                command=["python", "run_sync.py"],
+                command=["python", "scripts/run_provider_sync.py"],
                 log_path=str(root / "job1.log"),
                 config_path=None,
-                task="daily_kline",
+                task="amazingdata.daily_kline",
                 source="amazingdata",
                 target="ad_market_kline_daily",
                 pid=None,
@@ -113,7 +113,7 @@ class SyncJobManagerTest(unittest.TestCase):
                 started_at="2026-01-02T00:00:00+00:00",
                 finished_at="2026-01-02T00:01:00+00:00",
                 cwd=str(root),
-                command=["python", "run_sync.py", "--config"],
+                command=["python", "scripts/run_provider_sync.py", "--config"],
                 log_path=str(root / "job2.log"),
                 config_path="run_sync.full.toml",
                 task=None,
@@ -125,7 +125,7 @@ class SyncJobManagerTest(unittest.TestCase):
             )
             self.assertEqual([job.job_id for job in manager.list_jobs(status="running")], ["job1"])
             self.assertEqual([job.job_id for job in manager.list_jobs(kind="config")], ["job2"])
-            self.assertEqual([job.job_id for job in manager.list_jobs(task="daily_kline")], ["job1"])
+            self.assertEqual([job.job_id for job in manager.list_jobs(task="amazingdata.daily_kline")], ["job1"])
 
     def test_cancel_job_marks_job_cancelling_before_exit(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -140,10 +140,10 @@ class SyncJobManagerTest(unittest.TestCase):
                 started_at="2026-01-01T00:00:00+00:00",
                 finished_at=None,
                 cwd=str(root),
-                command=["python", "run_sync.py"],
+                command=["python", "scripts/run_provider_sync.py"],
                 log_path=str(root / "job1.log"),
                 config_path=None,
-                task="daily_kline",
+                task="amazingdata.daily_kline",
                 source="amazingdata",
                 target="ad_market_kline_daily",
                 pid=123,

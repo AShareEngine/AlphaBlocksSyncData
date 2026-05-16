@@ -1,7 +1,7 @@
 # AmazingData 龙虎榜 / 融资融券明细 接入测试配置
 #
 # 用法：
-#   python3 run_sync.py --config run_sync.amazingdata.lhb_margin_detail.test.toml
+#   python3 scripts/run_provider_sync.py --config run_sync.amazingdata.lhb_margin_detail.test.toml
 #
 # 说明：
 # - 只跑两个接口：

@@ -1,0 +1,321 @@
+name = "amazingdata"
+display_name = "AmazingData SDK"
+version = "0.1.0"
+module = "sync_data_system.providers.amazingdata"
+runtime_config_key = "amazingdata"
+default_database = "starlight"
+plans_path = "plans"
+dependencies = ["pandas", "clickhouse-connect"]
+import_modules = ["AmazingData"]
+
+[entrypoints]
+provider = "provider:AmazingDataSDKProvider"
+repository = "repository:BaseDataRepository"
+runner = "runner:run_config_file"
+config_runner = "runner:run_config_file"
+context_builder = "runner:build_context"
+registered_task_runner = "runner:run_registered_task"
+specs = "specs:AMAZINGDATA_TASK_SPECS"
+
+[[tasks]]
+name = "code_info"
+target = "ad_code_info"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "hist_code_list"
+target = "ad_hist_code_daily"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "bj_code_mapping"
+target = "ad_bj_code_mapping"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "stock_basic"
+target = "ad_stock_basic"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "history_stock_status"
+target = "ad_history_stock_status"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "adj_factor"
+target = "ad_adj_factor"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "backward_factor"
+target = "ad_backward_factor"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "balance_sheet"
+target = "ad_balance_sheet"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "cash_flow"
+target = "ad_cash_flow"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "income"
+target = "ad_income"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "profit_express"
+target = "ad_profit_express"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "profit_notice"
+target = "ad_profit_notice"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "share_holder"
+target = "ad_share_holder"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "holder_num"
+target = "ad_holder_num"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "equity_structure"
+target = "ad_equity_structure"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "equity_pledge_freeze"
+target = "ad_equity_pledge_freeze"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "equity_restricted"
+target = "ad_equity_restricted"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "dividend"
+target = "ad_dividend"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "right_issue"
+target = "ad_right_issue"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "index_constituent"
+target = "ad_index_constituent"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "index_weight"
+target = "ad_index_weight"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "industry_base_info"
+target = "ad_industry_base_info"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "industry_constituent"
+target = "ad_industry_constituent"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "industry_weight"
+target = "ad_industry_weight"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "industry_daily"
+target = "ad_industry_daily"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "etf_pcf"
+target = "ad_etf_pcf"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "fund_share"
+target = "ad_fund_share"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "fund_iopv"
+target = "ad_fund_iopv"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "kzz_issuance"
+target = "ad_kzz_issuance"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "kzz_share"
+target = "ad_kzz_share"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "kzz_suspend"
+target = "ad_kzz_suspend"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "kzz_put_call_item"
+target = "ad_kzz_put_call_item"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "kzz_put"
+target = "ad_kzz_put"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "kzz_call"
+target = "ad_kzz_call"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "kzz_conv"
+target = "ad_kzz_conv"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "option_basic_info"
+target = "ad_option_basic_info"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "option_std_ctr_specs"
+target = "ad_option_std_ctr_specs"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "option_mon_ctr_specs"
+target = "ad_option_mon_ctr_specs"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "treasury_yield"
+target = "ad_treasury_yield"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "kzz_conv_change"
+target = "ad_kzz_conv_change"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "kzz_corr"
+target = "ad_kzz_corr"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "kzz_call_explanation"
+target = "ad_kzz_call_explanation"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "kzz_put_explanation"
+target = "ad_kzz_put_explanation"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "block_trading"
+target = "ad_block_trading"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "long_hu_bang"
+target = "ad_long_hu_bang"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "margin_detail"
+target = "ad_margin_detail"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "margin_summary"
+target = "ad_margin_summary"
+supports_incremental = false
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "daily_kline"
+target = "ad_market_kline_daily"
+supports_incremental = true
+cursor_field = "trade_time"
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "minute_kline"
+target = "ad_market_kline_minute"
+supports_incremental = true
+cursor_field = "trade_time"
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+
+[[tasks]]
+name = "market_snapshot"
+target = "ad_market_snapshot"
+supports_incremental = true
+cursor_field = "trade_time"
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]

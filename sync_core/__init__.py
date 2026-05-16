@@ -2,6 +2,12 @@
 # -*- coding: utf-8 -*-
 """多数据源同步公共能力."""
 
+from pathlib import Path
+
+from program_bootstrap import install_sync_data_system_alias
+
+install_sync_data_system_alias(Path(__file__).resolve().parents[1])
+
 from .amazingdata import build_hashed_scope_key, resolve_incremental_start_date, safe_write_sync_log
 from .clickhouse import ClickHouseConfig, ClickHouseConnection, create_clickhouse_client
 from .incremental import advance_cursor_value, compare_cursor_values, default_request_end, normalize_request_value
