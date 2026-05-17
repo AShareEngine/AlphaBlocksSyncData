@@ -5,14 +5,19 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+import yaml
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from sync_data_system.clickhouse_client import ClickHouseConfig, create_clickhouse_client
+from sync_data_system.config_paths import resolve_runtime_config_path
+from sync_data_system.core.providers import load_provider_registry
 from sync_data_system.service.job_manager import SyncJobManager
+from sync_data_system.toml_compat import tomllib
 from sync_data_system.service.schedule_manager import SyncScheduleManager
 from sync_data_system.wide_table_sync import (
     WideTableSyncStateRepository,
@@ -41,20 +46,28 @@ DATE_FIELD_CANDIDATES = (
 )
 
 CONFIG_FILE_RE = re.compile(r"^run_sync.*\.toml$", re.IGNORECASE)
+PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+PROVIDER_PACKAGE_KIND = "alphablocks.sync.provider-package"
+PROVIDER_CODE_SUFFIXES = {".py"}
 
-DATE_FIELD_CANDIDATES = (
-    "trade_time",
-    "trade_date",
-    "ann_date",
-    "end_date",
-    "report_date",
-    "change_date",
-    "list_date",
-    "in_date",
-    "out_date",
-    "date",
-)
-
+PROVIDER_CONFIG_SCHEMAS: dict[str, list[dict[str, Any]]] = {
+    "amazingdata": [
+        {"key": "username", "label": "账号", "type": "text", "required": True},
+        {"key": "password", "label": "密码", "type": "password", "required": True, "sensitive": True},
+        {"key": "host", "label": "服务地址", "type": "text", "required": True},
+        {"key": "port", "label": "端口", "type": "number", "required": True},
+        {"key": "local_path", "label": "本地数据目录", "type": "text", "required": False},
+    ],
+    "baostock": [
+        {"key": "user_id", "label": "用户 ID", "type": "text", "required": False},
+        {"key": "password", "label": "密码", "type": "password", "required": False, "sensitive": True},
+    ],
+    "qmt": [
+        {"key": "base_url", "label": "服务地址", "type": "text", "required": True},
+        {"key": "api_key", "label": "API Key", "type": "password", "required": False, "sensitive": True},
+        {"key": "timeout", "label": "超时秒数", "type": "number", "required": False},
+    ],
+}
 
 def _job_error_to_http(exc: Exception) -> HTTPException:
     message = str(exc)
@@ -80,6 +93,18 @@ class RunConfigRequest(BaseModel):
 class SyncConfigWriteRequest(BaseModel):
     name: str
     content: str = ""
+
+
+class ProviderConfigUpdateRequest(BaseModel):
+    values: dict[str, Any] = Field(default_factory=dict)
+    runtime_path: Optional[str] = None
+
+
+class ProviderConfigImportRequest(BaseModel):
+    package: dict[str, Any]
+    include_code: bool = False
+    overwrite: bool = True
+    runtime_path: Optional[str] = None
 
 
 class RunTaskRequest(BaseModel):
@@ -170,6 +195,319 @@ def _resolve_sync_config_path(name: str) -> Path:
     return JOB_MANAGER.config_root / clean_name
 
 
+def _resolve_provider_config_path(runtime_path: Optional[str] = None) -> Path:
+    return resolve_runtime_config_path(runtime_path)
+
+
+def _load_runtime_payload(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    if not path.is_file():
+        raise ValueError(f"runtime config path is not a file: {path}")
+    with path.open("r", encoding="utf-8") as handle:
+        payload = yaml.safe_load(handle) or {}
+    if not isinstance(payload, dict):
+        raise ValueError(f"runtime config root must be a mapping: {path}")
+    return payload
+
+
+def _save_runtime_payload(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(payload, handle, allow_unicode=True, sort_keys=False)
+
+
+def _provider_config_schema(provider: str, values: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    schema = [dict(item) for item in PROVIDER_CONFIG_SCHEMAS.get(provider, [])]
+    known_keys = {str(item.get("key") or "") for item in schema}
+    for key, value in sorted((values or {}).items()):
+        if key in known_keys:
+            continue
+        schema.append(
+            {
+                "key": key,
+                "label": key,
+                "type": "number" if isinstance(value, int) and not isinstance(value, bool) else "text",
+                "required": False,
+                "sensitive": key.lower() in {"password", "token", "api_key", "secret"},
+            }
+        )
+    return schema
+
+
+def _is_empty_provider_config_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    return False
+
+
+def _coerce_provider_config_value(field: dict[str, Any], value: Any) -> Any:
+    field_type = str(field.get("type") or "text")
+    if field_type == "number":
+        if value is None or str(value).strip() == "":
+            return 0
+        return int(value)
+    if field_type == "boolean":
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on", "开启"}
+    return "" if value is None else str(value)
+
+
+def _provider_config_payload(provider: str, runtime_path: Optional[str] = None) -> dict[str, Any]:
+    registry = load_provider_registry(PROJECT_ROOT)
+    try:
+        manifest = registry.get(provider)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"unknown provider: {provider}")
+
+    config_path = _resolve_provider_config_path(runtime_path)
+    payload = _load_runtime_payload(config_path)
+    sync_payload = payload.get("sync") if isinstance(payload.get("sync"), dict) else {}
+    config_key = manifest.runtime_config_key or manifest.name
+    values = sync_payload.get(config_key) if isinstance(sync_payload.get(config_key), dict) else {}
+    values = dict(values or {})
+    fields = _provider_config_schema(manifest.name, values)
+    missing_required = [
+        str(field.get("key") or "")
+        for field in fields
+        if field.get("required") and _is_empty_provider_config_value(values.get(str(field.get("key") or "")))
+    ]
+    return {
+        "provider": manifest.name,
+        "display_name": manifest.display_name,
+        "runtime_config_key": config_key,
+        "default_database": manifest.default_database,
+        "config_path": str(config_path),
+        "configured": not missing_required,
+        "missing_required": missing_required,
+        "fields": fields,
+        "values": values,
+    }
+
+
+def _update_provider_config(provider: str, values: dict[str, Any], runtime_path: Optional[str] = None) -> dict[str, Any]:
+    registry = load_provider_registry(PROJECT_ROOT)
+    try:
+        manifest = registry.get(provider)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"unknown provider: {provider}")
+
+    config_path = _resolve_provider_config_path(runtime_path)
+    payload = _load_runtime_payload(config_path)
+    sync_payload = payload.setdefault("sync", {})
+    if not isinstance(sync_payload, dict):
+        raise ValueError("runtime config field sync must be a mapping")
+
+    config_key = manifest.runtime_config_key or manifest.name
+    current_values = sync_payload.get(config_key) if isinstance(sync_payload.get(config_key), dict) else {}
+    current_values = dict(current_values or {})
+    fields = _provider_config_schema(manifest.name, {**current_values, **(values or {})})
+    field_by_key = {str(field.get("key") or ""): field for field in fields}
+
+    next_values = dict(current_values)
+    for key, value in (values or {}).items():
+        clean_key = str(key or "").strip()
+        if not clean_key:
+            continue
+        next_values[clean_key] = _coerce_provider_config_value(field_by_key.get(clean_key, {"type": "text"}), value)
+
+    sync_payload[config_key] = next_values
+    _save_runtime_payload(config_path, payload)
+    return _provider_config_payload(manifest.name, runtime_path)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _clean_provider_name(provider: str) -> str:
+    provider_name = str(provider or "").strip()
+    if not provider_name or not PROVIDER_NAME_RE.match(provider_name):
+        raise HTTPException(status_code=400, detail="invalid provider name")
+    return provider_name
+
+
+def _read_text_package_file(path: Path) -> dict[str, str]:
+    return {
+        "path": path.resolve().relative_to(PROJECT_ROOT).as_posix(),
+        "content": path.read_text(encoding="utf-8"),
+    }
+
+
+def _provider_code_files(provider_root: Path) -> list[dict[str, str]]:
+    files: list[dict[str, str]] = []
+    if not provider_root.exists():
+        return files
+    for path in sorted(provider_root.rglob("*")):
+        if not path.is_file():
+            continue
+        if "__pycache__" in path.parts or path.suffix not in PROVIDER_CODE_SUFFIXES:
+            continue
+        files.append(_read_text_package_file(path))
+    return files
+
+
+def _provider_plan_files(provider_root: Path, plans_path: Optional[Path]) -> list[dict[str, str]]:
+    root = plans_path or (provider_root / "plans")
+    if not root.exists():
+        return []
+    return [_read_text_package_file(path) for path in sorted(root.glob("*.toml")) if path.is_file()]
+
+
+def _sync_config_files_for_provider(provider: str) -> list[dict[str, str]]:
+    files: list[dict[str, str]] = []
+    if not JOB_MANAGER.config_root.exists():
+        return files
+    for path in sorted(JOB_MANAGER.config_root.glob("run_sync*.toml")):
+        if not path.is_file():
+            continue
+        try:
+            with path.open("rb") as handle:
+                payload = tomllib.load(handle)
+        except Exception:
+            continue
+        if str(payload.get("source") or "").strip() == provider:
+            files.append(_read_text_package_file(path))
+    return files
+
+
+def _provider_export_package(provider: str, include_code: bool = False, runtime_path: Optional[str] = None) -> dict[str, Any]:
+    provider_name = _clean_provider_name(provider)
+    registry = load_provider_registry(PROJECT_ROOT)
+    try:
+        manifest = registry.get(provider_name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"unknown provider: {provider_name}")
+
+    config = _provider_config_payload(manifest.name, runtime_path)
+    provider_root = manifest.root.resolve()
+    manifest_file = provider_root / "provider.toml"
+    package: dict[str, Any] = {
+        "kind": PROVIDER_PACKAGE_KIND,
+        "version": 1,
+        "exported_at": _utc_now_iso(),
+        "provider": manifest.name,
+        "display_name": manifest.display_name,
+        "runtime_config_key": manifest.runtime_config_key or manifest.name,
+        "default_database": manifest.default_database,
+        "include_code": include_code,
+        "sections": {
+            "runtime": {
+                "config_path": config["config_path"],
+                "configured": config["configured"],
+                "values": config["values"],
+            },
+            "provider_manifest": _read_text_package_file(manifest_file) if manifest_file.is_file() else None,
+            "provider_plans": _provider_plan_files(provider_root, manifest.plans_path),
+            "sync_configs": _sync_config_files_for_provider(manifest.name),
+            "code_files": _provider_code_files(provider_root) if include_code else [],
+        },
+    }
+    return package
+
+
+def _safe_package_path(raw_path: str, *, provider: str, section: str) -> Path:
+    clean_path = str(raw_path or "").strip()
+    if not clean_path or Path(clean_path).is_absolute():
+        raise ValueError(f"{section} contains invalid path: {raw_path!r}")
+    path = (PROJECT_ROOT / clean_path).resolve()
+    provider_root = (PROJECT_ROOT / "providers" / provider).resolve()
+    sync_root = JOB_MANAGER.config_root.resolve()
+    project_root = PROJECT_ROOT.resolve()
+    try:
+        relative = path.relative_to(project_root)
+    except ValueError:
+        raise ValueError(f"{section} path escapes project root: {raw_path}")
+    if "__pycache__" in relative.parts:
+        raise ValueError(f"{section} path is not allowed: {raw_path}")
+    if section in {"provider_manifest", "provider_plans", "code_files"}:
+        path.relative_to(provider_root)
+    elif section == "sync_configs":
+        path.relative_to(sync_root)
+        if not CONFIG_FILE_RE.match(path.name):
+            raise ValueError(f"sync config name must match run_sync*.toml: {raw_path}")
+    else:
+        raise ValueError(f"unknown import section: {section}")
+    if section == "code_files" and path.suffix not in PROVIDER_CODE_SUFFIXES:
+        raise ValueError(f"code file suffix is not allowed: {raw_path}")
+    return path
+
+
+def _write_package_file(file_payload: dict[str, Any], *, provider: str, section: str, overwrite: bool) -> str:
+    if not isinstance(file_payload, dict):
+        raise ValueError(f"{section} item must be an object")
+    target = _safe_package_path(str(file_payload.get("path") or ""), provider=provider, section=section)
+    if target.exists() and not overwrite:
+        return target.relative_to(PROJECT_ROOT).as_posix()
+    content = file_payload.get("content")
+    if not isinstance(content, str):
+        raise ValueError(f"{section} item content must be a string: {file_payload.get('path')}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    return target.relative_to(PROJECT_ROOT).as_posix()
+
+
+def _import_provider_package(
+    package: dict[str, Any],
+    *,
+    include_code: bool = False,
+    overwrite: bool = True,
+    runtime_path: Optional[str] = None,
+) -> dict[str, Any]:
+    if not isinstance(package, dict) or package.get("kind") != PROVIDER_PACKAGE_KIND:
+        raise ValueError("not an AlphaBlocks provider sync package")
+    provider = _clean_provider_name(str(package.get("provider") or ""))
+    sections = package.get("sections")
+    if not isinstance(sections, dict):
+        raise ValueError("provider package sections must be an object")
+
+    imported_files: list[str] = []
+    manifest_payload = sections.get("provider_manifest")
+    if isinstance(manifest_payload, dict):
+        imported_files.append(
+            _write_package_file(
+                manifest_payload,
+                provider=provider,
+                section="provider_manifest",
+                overwrite=overwrite,
+            )
+        )
+
+    for item in sections.get("provider_plans") or []:
+        imported_files.append(
+            _write_package_file(item, provider=provider, section="provider_plans", overwrite=overwrite)
+        )
+
+    for item in sections.get("sync_configs") or []:
+        imported_files.append(
+            _write_package_file(item, provider=provider, section="sync_configs", overwrite=overwrite)
+        )
+
+    imported_code_files: list[str] = []
+    if include_code:
+        for item in sections.get("code_files") or []:
+            imported_code_files.append(
+                _write_package_file(item, provider=provider, section="code_files", overwrite=overwrite)
+            )
+        imported_files.extend(imported_code_files)
+
+    runtime_section = sections.get("runtime") if isinstance(sections.get("runtime"), dict) else {}
+    runtime_values = runtime_section.get("values") if isinstance(runtime_section.get("values"), dict) else {}
+    provider_config = None
+    if runtime_values:
+        provider_config = _update_provider_config(provider, runtime_values, runtime_path)
+
+    return {
+        "provider": provider,
+        "imported_files": imported_files,
+        "imported_code_files": imported_code_files,
+        "provider_config": provider_config or _provider_config_payload(provider, runtime_path),
+    }
+
+
 @app.get("/api/sync-configs")
 @app.get("/api/sync/configs")
 def sync_configs():
@@ -235,6 +573,77 @@ def list_configs():
 def list_providers():
     try:
         return {"providers": JOB_MANAGER.list_providers()}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/sync/provider-configs")
+@app.get("/api/provider-configs")
+def list_provider_configs(runtime_path: Optional[str] = Query(None)):
+    try:
+        providers = [item["name"] for item in JOB_MANAGER.list_providers()]
+        return {"providers": [_provider_config_payload(provider, runtime_path) for provider in providers]}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/sync/provider-configs/{provider}")
+@app.get("/api/provider-configs/{provider}")
+def get_provider_config(provider: str, runtime_path: Optional[str] = Query(None)):
+    try:
+        return _provider_config_payload(provider, runtime_path)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.patch("/api/sync/provider-configs/{provider}")
+@app.patch("/api/provider-configs/{provider}")
+def update_provider_config(
+    provider: str,
+    request: ProviderConfigUpdateRequest,
+    runtime_path: Optional[str] = Query(None),
+):
+    try:
+        provider_config = _update_provider_config(provider, request.values, runtime_path or request.runtime_path)
+        return {"ok": True, "provider_config": provider_config}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/sync/provider-configs/{provider}/export")
+@app.get("/api/provider-configs/{provider}/export")
+def export_provider_config_package(
+    provider: str,
+    include_code: bool = Query(False),
+    runtime_path: Optional[str] = Query(None),
+):
+    try:
+        return _provider_export_package(provider, include_code=include_code, runtime_path=runtime_path)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/sync/provider-configs/import")
+@app.post("/api/provider-configs/import")
+def import_provider_config_package(request: ProviderConfigImportRequest):
+    try:
+        result = _import_provider_package(
+            request.package,
+            include_code=request.include_code,
+            overwrite=request.overwrite,
+            runtime_path=request.runtime_path,
+        )
+        return {"ok": True, **result}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

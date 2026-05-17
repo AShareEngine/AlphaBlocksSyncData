@@ -241,6 +241,36 @@ Response:
 }
 ```
 
+### 6.4.1 Provider Runtime Configs
+
+`GET /api/sync/provider-configs`
+
+Returns provider runtime configuration metadata from `config/runtime.local.yaml`, including field schema, configured status, and current `sync.<provider>` values.
+
+`PATCH /api/sync/provider-configs/{provider}`
+
+Example:
+
+```bash
+curl -X PATCH http://127.0.0.1:18080/api/sync/provider-configs/qmt \
+  -H 'Content-Type: application/json' \
+  -d '{"values":{"base_url":"http://127.0.0.1:8000","api_key":"YOUR_KEY","timeout":60}}'
+```
+
+`GET /api/sync/provider-configs/{provider}/export?include_code=false`
+
+Exports an AlphaBlocks provider sync package. The package contains runtime values, `provider.toml`, provider plan files, and matching `run_sync*.toml` configs. When `include_code=true`, provider `.py` files under `providers/<provider>` are included as `code_files`.
+
+`POST /api/sync/provider-configs/import`
+
+Imports a provider sync package. Code files are ignored unless `include_code=true`.
+
+```bash
+curl -X POST http://127.0.0.1:18080/api/sync/provider-configs/import \
+  -H 'Content-Type: application/json' \
+  -d '{"package":{...},"include_code":false,"overwrite":true}'
+```
+
 ### 6.5 Start Config Job
 
 `POST /api/jobs/run-config`

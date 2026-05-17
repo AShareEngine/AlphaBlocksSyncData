@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import yaml
 from fastapi.testclient import TestClient
 
 from sync_data_system.service.api import app
@@ -15,6 +18,135 @@ from sync_data_system.wide_table_sync import WideTableRunResult
 
 
 class ServiceApiTest(unittest.TestCase):
+    def test_provider_configs_include_runtime_values(self) -> None:
+        client = TestClient(app)
+        with TemporaryDirectory() as tmp:
+            runtime_path = Path(tmp) / "runtime.local.yaml"
+            runtime_path.write_text(
+                """
+sync:
+  amazingdata:
+    username: demo-user
+    password: demo-pass
+    host: 127.0.0.1
+    port: 8600
+""",
+                encoding="utf-8",
+            )
+
+            response = client.get("/api/sync/provider-configs", params={"runtime_path": str(runtime_path)})
+
+        self.assertEqual(response.status_code, 200)
+        providers = {item["provider"]: item for item in response.json()["providers"]}
+        self.assertIn("amazingdata", providers)
+        self.assertEqual(providers["amazingdata"]["values"]["username"], "demo-user")
+        self.assertTrue(providers["amazingdata"]["configured"])
+
+    def test_update_provider_config_writes_runtime_yaml(self) -> None:
+        client = TestClient(app)
+        with TemporaryDirectory() as tmp:
+            runtime_path = Path(tmp) / "runtime.local.yaml"
+            runtime_path.write_text(
+                """
+sync:
+  qmt:
+    timeout: 30
+""",
+                encoding="utf-8",
+            )
+
+            response = client.patch(
+                "/api/sync/provider-configs/qmt",
+                params={"runtime_path": str(runtime_path)},
+                json={
+                    "values": {
+                        "base_url": "http://127.0.0.1:8000",
+                        "api_key": "secret",
+                        "timeout": "45",
+                    }
+                },
+            )
+            payload = yaml.safe_load(runtime_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["provider_config"]["configured"])
+        self.assertEqual(payload["sync"]["qmt"]["base_url"], "http://127.0.0.1:8000")
+        self.assertEqual(payload["sync"]["qmt"]["api_key"], "secret")
+        self.assertEqual(payload["sync"]["qmt"]["timeout"], 45)
+
+    def test_export_provider_config_package_contains_sync_sections(self) -> None:
+        client = TestClient(app)
+        with TemporaryDirectory() as tmp:
+            runtime_path = Path(tmp) / "runtime.local.yaml"
+            runtime_path.write_text(
+                """
+sync:
+  baostock:
+    user_id: demo
+    password: pass
+""",
+                encoding="utf-8",
+            )
+
+            response = client.get(
+                "/api/sync/provider-configs/baostock/export",
+                params={"runtime_path": str(runtime_path)},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        package = response.json()
+        self.assertEqual(package["kind"], "alphablocks.sync.provider-package")
+        self.assertEqual(package["provider"], "baostock")
+        self.assertEqual(package["sections"]["runtime"]["values"]["user_id"], "demo")
+        self.assertIsNotNone(package["sections"]["provider_manifest"])
+        self.assertGreaterEqual(len(package["sections"]["provider_plans"]), 1)
+        self.assertEqual(package["sections"]["code_files"], [])
+
+    def test_export_provider_config_package_can_include_code(self) -> None:
+        client = TestClient(app)
+        response = client.get(
+            "/api/sync/provider-configs/baostock/export",
+            params={"include_code": "true"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        code_paths = [item["path"] for item in response.json()["sections"]["code_files"]]
+        self.assertIn("providers/baostock/provider.py", code_paths)
+
+    def test_import_provider_config_package_writes_runtime_values(self) -> None:
+        client = TestClient(app)
+        with TemporaryDirectory() as tmp:
+            runtime_path = Path(tmp) / "runtime.local.yaml"
+            package = {
+                "kind": "alphablocks.sync.provider-package",
+                "version": 1,
+                "provider": "qmt",
+                "sections": {
+                    "runtime": {
+                        "values": {
+                            "base_url": "http://127.0.0.1:8999",
+                            "api_key": "imported",
+                            "timeout": "15",
+                        }
+                    },
+                    "provider_plans": [],
+                    "sync_configs": [],
+                    "code_files": [],
+                },
+            }
+
+            response = client.post(
+                "/api/sync/provider-configs/import",
+                json={"package": package, "runtime_path": str(runtime_path)},
+            )
+            payload = yaml.safe_load(runtime_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+        self.assertEqual(payload["sync"]["qmt"]["base_url"], "http://127.0.0.1:8999")
+        self.assertEqual(payload["sync"]["qmt"]["api_key"], "imported")
+        self.assertEqual(payload["sync"]["qmt"]["timeout"], 15)
+
     def test_sync_table_status(self) -> None:
         client = TestClient(app)
 
