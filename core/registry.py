@@ -11,6 +11,11 @@ from sync_data_system.core.providers import (  # noqa: F401
     load_provider_registry,
     provider_manifest_to_dict,
 )
+from sync_data_system.core.sync_plan import (  # noqa: F401
+    discover_sync_plan_paths,
+    validate_sync_plan,
+    validate_sync_plans,
+)
 
 __all__ = [
     "ProviderEntrypoints",
@@ -20,4 +25,7 @@ __all__ = [
     "load_provider_manifest",
     "load_provider_registry",
     "provider_manifest_to_dict",
+    "discover_sync_plan_paths",
+    "validate_sync_plan",
+    "validate_sync_plans",
 ]

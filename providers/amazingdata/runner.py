@@ -373,7 +373,7 @@ def load_execution_plan_from_toml(path: str) -> ExecutionPlan:
     if not isinstance(data, dict):
         raise ValueError("配置文件格式错误：顶层必须是 TOML table。")
 
-    unexpected_top_level_keys = set(data.keys()) - {"source", "runtime_path", "log_level", "continue_on_error", "defaults", "tasks"}
+    unexpected_top_level_keys = set(data.keys()) - {"source", "runtime_path", "log_level", "continue_on_error", "database", "defaults", "tasks"}
     if unexpected_top_level_keys:
         raise ValueError(f"配置文件存在未知顶层字段: {sorted(unexpected_top_level_keys)}")
 

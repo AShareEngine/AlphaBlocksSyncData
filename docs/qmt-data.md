@@ -7,7 +7,7 @@
 默认服务地址：
 
 ```text
-http://172.16.2.89:8000
+http://YOUR_QMT_HOST:8000
 ```
 
 统一接口前缀：
@@ -19,7 +19,7 @@ http://172.16.2.89:8000
 所有查询接口都需要在请求头中传 API Key：
 
 ```text
-Authorization: Bearer dev-api-key-001
+Authorization: Bearer YOUR_QMT_API_KEY
 Content-Type: application/json
 ```
 
@@ -27,9 +27,9 @@ Content-Type: application/json
 
 | 运行模式 | 默认 API Key |
 | --- | --- |
-| mock | `mock-api-key-001` |
-| dev | `dev-api-key-001` |
-| prod | `prod-api-key-001` |
+| mock | `YOUR_QMT_MOCK_API_KEY` |
+| dev | `YOUR_QMT_API_KEY` |
+| prod | `YOUR_QMT_PROD_API_KEY` |
 
 如果启动服务时设置过 `APP_API_KEYS=xxx,yyy`，以环境变量中的值为准。
 
@@ -94,8 +94,8 @@ POST /api/v1/data/kline-history
 示例：
 
 ```bash
-curl -X POST "http://172.16.2.89:8000/api/v1/data/kline-history" \
-  -H "Authorization: Bearer dev-api-key-001" \
+curl -X POST "http://YOUR_QMT_HOST:8000/api/v1/data/kline-history" \
+  -H "Authorization: Bearer YOUR_QMT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "symbols": ["600000.SH"],
@@ -157,8 +157,8 @@ POST /api/v1/data/tick-history
 示例：
 
 ```bash
-curl -X POST "http://172.16.2.89:8000/api/v1/data/tick-history" \
-  -H "Authorization: Bearer dev-api-key-001" \
+curl -X POST "http://YOUR_QMT_HOST:8000/api/v1/data/tick-history" \
+  -H "Authorization: Bearer YOUR_QMT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "symbols": ["600000.SH"],
@@ -224,8 +224,8 @@ POST /api/v1/data/full-tick
 示例：
 
 ```bash
-curl -X POST "http://172.16.2.89:8000/api/v1/data/full-tick" \
-  -H "Authorization: Bearer dev-api-key-001" \
+curl -X POST "http://YOUR_QMT_HOST:8000/api/v1/data/full-tick" \
+  -H "Authorization: Bearer YOUR_QMT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "symbols": ["600000.SH", "000001.SZ"]
@@ -283,8 +283,8 @@ POST /api/v1/data/financial
 示例：
 
 ```bash
-curl -X POST "http://172.16.2.89:8000/api/v1/data/financial" \
-  -H "Authorization: Bearer dev-api-key-001" \
+curl -X POST "http://YOUR_QMT_HOST:8000/api/v1/data/financial" \
+  -H "Authorization: Bearer YOUR_QMT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "symbols": ["600000.SH"],
@@ -339,8 +339,8 @@ Query 参数：
 示例：
 
 ```bash
-curl -X GET "http://172.16.2.89:8000/api/v1/data/instrument/600000.SH?complete=false" \
-  -H "Authorization: Bearer dev-api-key-001"
+curl -X GET "http://YOUR_QMT_HOST:8000/api/v1/data/instrument/600000.SH?complete=false" \
+  -H "Authorization: Bearer YOUR_QMT_API_KEY"
 ```
 
 返回 data：
@@ -376,8 +376,8 @@ POST /api/v1/data/trading-calendar
 示例：
 
 ```bash
-curl -X POST "http://172.16.2.89:8000/api/v1/data/trading-calendar" \
-  -H "Authorization: Bearer dev-api-key-001" \
+curl -X POST "http://YOUR_QMT_HOST:8000/api/v1/data/trading-calendar" \
+  -H "Authorization: Bearer YOUR_QMT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "market": "SH",
@@ -414,8 +414,8 @@ POST /api/v1/data/index-weight
 示例：
 
 ```bash
-curl -X POST "http://172.16.2.89:8000/api/v1/data/index-weight" \
-  -H "Authorization: Bearer dev-api-key-001" \
+curl -X POST "http://YOUR_QMT_HOST:8000/api/v1/data/index-weight" \
+  -H "Authorization: Bearer YOUR_QMT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "index_code": "000300.SH"
@@ -453,16 +453,16 @@ Query 参数：
 示例：
 
 ```bash
-curl -X GET "http://172.16.2.89:8000/api/v1/data/sectors" \
-  -H "Authorization: Bearer dev-api-key-001"
+curl -X GET "http://YOUR_QMT_HOST:8000/api/v1/data/sectors" \
+  -H "Authorization: Bearer YOUR_QMT_API_KEY"
 ```
 
 只获取 `沪深A股`：
 
 ```bash
-curl -G "http://172.16.2.89:8000/api/v1/data/sectors" \
+curl -G "http://YOUR_QMT_HOST:8000/api/v1/data/sectors" \
   --data-urlencode "sector_name=沪深A股" \
-  -H "Authorization: Bearer dev-api-key-001"
+  -H "Authorization: Bearer YOUR_QMT_API_KEY"
 ```
 
 返回 data：
@@ -499,8 +499,8 @@ POST /api/v1/data/l2/quote
 示例：
 
 ```bash
-curl -X POST "http://172.16.2.89:8000/api/v1/data/l2/quote" \
-  -H "Authorization: Bearer dev-api-key-001" \
+curl -X POST "http://YOUR_QMT_HOST:8000/api/v1/data/l2/quote" \
+  -H "Authorization: Bearer YOUR_QMT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "symbols": ["600000.SH"],
@@ -561,8 +561,8 @@ POST /api/v1/data/l2/order
 示例：
 
 ```bash
-curl -X POST "http://172.16.2.89:8000/api/v1/data/l2/order" \
-  -H "Authorization: Bearer dev-api-key-001" \
+curl -X POST "http://YOUR_QMT_HOST:8000/api/v1/data/l2/order" \
+  -H "Authorization: Bearer YOUR_QMT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "symbols": ["600000.SH"],
@@ -612,8 +612,8 @@ POST /api/v1/data/l2/transaction
 示例：
 
 ```bash
-curl -X POST "http://172.16.2.89:8000/api/v1/data/l2/transaction" \
-  -H "Authorization: Bearer dev-api-key-001" \
+curl -X POST "http://YOUR_QMT_HOST:8000/api/v1/data/l2/transaction" \
+  -H "Authorization: Bearer YOUR_QMT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "symbols": ["600000.SH"],
@@ -653,7 +653,7 @@ curl -X POST "http://172.16.2.89:8000/api/v1/data/l2/transaction" \
 2. Headers 添加：
 
 ```text
-Authorization: Bearer dev-api-key-001
+Authorization: Bearer YOUR_QMT_API_KEY
 Content-Type: application/json
 ```
 
@@ -750,8 +750,8 @@ GET /api/v1/data/instrument-type/{symbol}
 示例：
 
 ```bash
-curl "http://172.16.2.89:8000/api/v1/data/instrument-type/600000.SH" \
-  -H "Authorization: Bearer dev-api-key-001"
+curl "http://YOUR_QMT_HOST:8000/api/v1/data/instrument-type/600000.SH" \
+  -H "Authorization: Bearer YOUR_QMT_API_KEY"
 ```
 
 ### 获取交易时间段
@@ -842,7 +842,7 @@ GET /api/v1/data/etf-info/{symbol}
 下载接口同样需要：
 
 ```text
-Authorization: Bearer dev-api-key-001
+Authorization: Bearer YOUR_QMT_API_KEY
 Content-Type: application/json
 ```
 

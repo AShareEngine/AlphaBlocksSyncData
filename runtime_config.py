@@ -66,8 +66,8 @@ class SyncBaoStockConfig:
 
 @dataclass(slots=True)
 class SyncQmtConfig:
-    base_url: str = "http://172.16.2.89:8000"
-    api_key: str = "dev-api-key-001"
+    base_url: str = ""
+    api_key: str = ""
     timeout: int = 60
 
 

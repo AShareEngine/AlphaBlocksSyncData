@@ -46,6 +46,7 @@ default_database = "qmt"
 plans_path = "plans"
 dependencies = ["clickhouse-connect"]
 import_modules = []
+plan_fields = ["codes", "begin_date", "end_date", "period", "limit", "force", "continue_on_error"]
 
 [entrypoints]
 provider = "provider:QmtProvider"
@@ -73,6 +74,7 @@ request_fields = ["name", "codes", "begin_date", "end_date", "period", "limit", 
 - `supports_incremental = true` 的任务必须有 `cursor_field`
 - `dependencies` 声明可用 pip 安装的 provider 额外依赖
 - `import_modules` 声明运行时必须能 import 的模块；适合 AmazingData 这类不一定能直接从公开 pip 源安装的 SDK
+- `plan_fields` 声明 `run_sync*.toml` 中 `[defaults]` 和 `[[tasks]]` 允许出现的 provider 参数字段；跨 provider 的证券列表字段统一叫 `codes`
 
 API 任务元数据会从 `provider.toml` 的 `[[tasks]]` 自动注册。新增 provider 后，任务名会以 `<provider>.<task>` 形式暴露，例如 `qmt.kline_history`。
 
@@ -87,7 +89,7 @@ API 任务元数据会从 `provider.toml` 的 `[[tasks]]` 自动注册。新增 
 ## 新增 Provider 流程
 
 1. 新建 `providers/<name>/`，补齐 `provider.toml`、`provider.py`、`repository.py`、`runner.py`、`specs.py`
-2. 在 `provider.toml` 声明依赖、入口和 `[[tasks]]`
+2. 在 `provider.toml` 声明依赖、运行时 import、同步计划字段、入口和 `[[tasks]]`
 3. 在 `runner.py` 提供：
    - `run_config_file(path, log_level_override=None)`
    - `build_context(runtime_path=None, database="<default>")`
@@ -100,9 +102,12 @@ API 任务元数据会从 `provider.toml` 的 `[[tasks]]` 自动注册。新增 
 ```bash
 python3 scripts/validate_provider.py
 python3 scripts/validate_provider.py --provider qmt --load-entrypoints
+python3 scripts/validate_sync_config.py
+python3 scripts/validate_sync_config.py config/sync/plans/run_sync.qmt.sample.toml
 ```
 
 `--load-entrypoints` 会导入 provider 配置的入口对象，用来发现 import 路径错误。
+`validate_sync_config.py` 会校验同步计划的顶层字段、`[defaults]`、`[[tasks]]`、任务名、字段白名单和基础类型。
 
 ## 依赖
 

@@ -31,6 +31,7 @@ ClickHouse：
 推荐先做一次最小验证：
 
 ```bash
+python3 scripts/validate_sync_config.py
 python3 scripts/install_provider_deps.py amazingdata --check
 python3 scripts/run_provider_sync.py amazingdata.code_info --limit 10 --force --log-level INFO
 ```

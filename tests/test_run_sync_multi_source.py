@@ -79,7 +79,7 @@ class RunSyncMultiSourceTest(unittest.TestCase):
             database = "qmt"
 
             [defaults]
-            symbols = ["600000.SH"]
+            codes = ["600000.SH"]
 
             [[tasks]]
             task = "kline_history"

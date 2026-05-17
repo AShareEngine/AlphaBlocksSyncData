@@ -1,0 +1,8 @@
+baostock
+clickhouse-connect
+fastapi
+httpx
+pandas
+pydantic
+PyYAML
+uvicorn

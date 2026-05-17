@@ -468,7 +468,7 @@ CONFIG_TOP_LEVEL_KEYS = frozenset(
 )
 CONFIG_DEFAULT_KEYS = frozenset(
     {
-        "symbols",
+        "codes",
         "symbol",
         "market",
         "index_code",
@@ -545,7 +545,7 @@ def load_execution_plan_from_toml(path: str, *, log_level_override: str | None =
         task_specs.append(
             SyncArgs(
                 task=task_name,
-                symbols_raw=_normalize_config_list(merged.get("symbols"), field_name=f"tasks[{index}].symbols"),
+                symbols_raw=_normalize_config_list(merged.get("codes"), field_name=f"tasks[{index}].codes"),
                 symbol=str(merged.get("symbol") or "").strip(),
                 market=str(merged.get("market") or "").strip(),
                 index_code=str(merged.get("index_code") or "").strip(),

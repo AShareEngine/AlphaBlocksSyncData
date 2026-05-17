@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class QmtConfig:
-    base_url: str = "http://172.16.2.89:8000"
-    api_key: str = "dev-api-key-001"
+    base_url: str = ""
+    api_key: str = ""
     timeout: int = 60
 
     @classmethod
@@ -33,9 +33,21 @@ class QmtConfig:
         resolved_runtime_path = resolve_runtime_config_path(runtime_path)
         runtime = load_runtime_config(resolved_runtime_path)
         sync_config = runtime.sync.qmt
+        base_url = str(sync_config.base_url or "").strip().rstrip("/")
+        api_key = str(sync_config.api_key or "").strip()
+        missing_fields: list[str] = []
+        if not base_url:
+            missing_fields.append("sync.qmt.base_url")
+        if not api_key:
+            missing_fields.append("sync.qmt.api_key")
+        if missing_fields:
+            raise ValueError(
+                "缺少 QMT 运行配置 %s；请在 runtime.local.yaml 中配置真实 QMT REST 地址和 API Key。"
+                % ", ".join(missing_fields)
+            )
         return cls(
-            base_url=str(sync_config.base_url or "http://172.16.2.89:8000").strip().rstrip("/"),
-            api_key=str(sync_config.api_key or "dev-api-key-001").strip(),
+            base_url=base_url,
+            api_key=api_key,
             timeout=max(1, int(sync_config.timeout or 60)),
         )
 

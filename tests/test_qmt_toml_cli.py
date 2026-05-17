@@ -28,7 +28,7 @@ class QmtTomlCliTest(unittest.TestCase):
             source = "qmt"
             [[tasks]]
             task = "kline_history"
-            symbols = ["600000.SH"]
+            codes = ["600000.SH"]
             begin_date = 20240101
             end_date = 20240131
             """
@@ -64,12 +64,12 @@ class QmtTomlCliTest(unittest.TestCase):
             source = "qmt"
             [[tasks]]
             task = "kline_history"
-            symbols = ["600000.SH"]
+            codes = ["600000.SH"]
             begin_date = 20240101
             end_date = 20240131
             [[tasks]]
             task = "full_tick"
-            symbols = ["600000.SH"]
+            codes = ["600000.SH"]
             """
         )
         calls = []

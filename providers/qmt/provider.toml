@@ -7,6 +7,7 @@ default_database = "qmt"
 plans_path = "plans"
 dependencies = ["clickhouse-connect"]
 import_modules = []
+plan_fields = ["codes", "symbol", "market", "index_code", "stock_code", "table_names", "sector_name", "code_market", "begin_time", "end_time", "begin_date", "end_date", "period", "fields", "adjust_type", "fill_data", "count", "incrementally", "complete", "limit", "force", "continue_on_error"]
 
 [entrypoints]
 provider = "provider:QmtProvider"

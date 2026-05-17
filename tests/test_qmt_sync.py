@@ -195,7 +195,7 @@ class QmtRunnerTest(unittest.TestCase):
             database = "qmt"
 
             [defaults]
-            symbols = ["600000.SH"]
+            codes = ["600000.SH"]
             begin_date = 20240101
             end_date = 20240131
 

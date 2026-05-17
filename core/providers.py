@@ -46,6 +46,7 @@ class ProviderManifest:
     default_database: str
     dependencies: tuple[str, ...]
     import_modules: tuple[str, ...]
+    plan_fields: tuple[str, ...]
     entrypoints: ProviderEntrypoints
     tasks: tuple[ProviderTaskManifest, ...]
     manifest_path: Path
@@ -156,6 +157,7 @@ def load_provider_manifest(path: str | Path) -> ProviderManifest:
         "default_database",
         "dependencies",
         "import_modules",
+        "plan_fields",
         "entrypoints",
         "tasks",
         "plans_path",
@@ -177,6 +179,7 @@ def load_provider_manifest(path: str | Path) -> ProviderManifest:
         default_database=_optional_string(data, "default_database", name),
         dependencies=_string_tuple(data.get("dependencies"), field_name="dependencies", manifest_path=manifest_path),
         import_modules=_string_tuple(data.get("import_modules"), field_name="import_modules", manifest_path=manifest_path),
+        plan_fields=_string_tuple(data.get("plan_fields"), field_name="plan_fields", manifest_path=manifest_path),
         entrypoints=_parse_entrypoints(data.get("entrypoints"), manifest_path=manifest_path),
         tasks=_parse_tasks(data.get("tasks"), manifest_path=manifest_path),
         manifest_path=manifest_path,
@@ -195,6 +198,7 @@ def provider_manifest_to_dict(manifest: ProviderManifest) -> dict[str, Any]:
         "default_database": manifest.default_database,
         "dependencies": list(manifest.dependencies),
         "import_modules": list(manifest.import_modules),
+        "plan_fields": list(manifest.plan_fields),
         "entrypoints": {
             "provider": manifest.entrypoints.provider,
             "repository": manifest.entrypoints.repository,

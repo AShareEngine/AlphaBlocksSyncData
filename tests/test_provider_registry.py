@@ -21,6 +21,7 @@ class ProviderRegistryTest(unittest.TestCase):
         self.assertEqual(registry.names(), ["amazingdata", "baostock", "qmt"])
         self.assertGreater(len(registry.get("amazingdata").tasks), 10)
         self.assertIn("AmazingData", registry.get("amazingdata").import_modules)
+        self.assertIn("codes", registry.get("qmt").plan_fields)
         self.assertIn("daily_kline", registry.get("amazingdata").task_names)
         self.assertIn("daily_kline", registry.get("baostock").task_names)
         self.assertIn("kline_history", registry.get("qmt").task_names)
@@ -45,6 +46,7 @@ class ProviderRegistryTest(unittest.TestCase):
                     """
                     name = "bad"
                     module = "sync_data_system.providers.qmt"
+                    plan_fields = ["codes"]
 
                     [entrypoints]
                     config_runner = "runner:run_config_file"
@@ -70,7 +72,7 @@ class ProviderRegistryTest(unittest.TestCase):
                     source = "qmt"
                     [[tasks]]
                     task = "kline_history"
-                    symbols = ["600000.SH"]
+                    codes = ["600000.SH"]
                     begin_date = 20240101
                     end_date = 20240131
                     """

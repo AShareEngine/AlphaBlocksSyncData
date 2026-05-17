@@ -6,7 +6,7 @@
 # 说明：
 # - QMT 走 docs/qmt-data.md 里的 REST 服务
 # - 需要先在 config/runtime.local.yaml 配置 sync.qmt.base_url / sync.qmt.api_key
-# - 首次验证建议显式传少量 symbols
+# - 首次验证建议显式传少量 codes；同步计划里统一使用 codes，runner 会映射到 QMT REST 的 symbols
 
 source = "qmt"
 log_level = "INFO"
@@ -14,7 +14,7 @@ continue_on_error = true
 database = "qmt"
 
 [defaults]
-symbols = ["600000.SH"]
+codes = ["600000.SH"]
 begin_date = 20240101
 end_date = 20240131
 limit = 0
@@ -41,4 +41,3 @@ sector_name = "沪深A股"
 task = "trading_calendar"
 enabled = false
 market = "SH"
-

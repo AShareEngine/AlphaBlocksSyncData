@@ -30,8 +30,8 @@ from toml_compat import tomllib
 
 
 DEFAULT_CONFIG = "run_sync.qmt.sample.toml"
-DEFAULT_BASE_URL = "http://172.16.2.89:8000"
-DEFAULT_API_KEY = "dev-api-key-001"
+DEFAULT_BASE_URL = "http://YOUR_QMT_HOST:8000"
+DEFAULT_API_KEY = "YOUR_QMT_API_KEY"
 DEFAULT_TIMEOUT = 60
 
 
@@ -245,7 +245,7 @@ def load_qmt_toml_tasks(path_like: str) -> tuple[list[QmtTomlTask], str | None]:
         tasks.append(
             QmtTomlTask(
                 task=task_name,
-                symbols_raw=normalize_config_list(merged.get("symbols")),
+                symbols_raw=normalize_config_list(merged.get("codes")),
                 symbol=str(merged.get("symbol") or "").strip(),
                 market=str(merged.get("market") or "").strip(),
                 index_code=str(merged.get("index_code") or "").strip(),
@@ -308,7 +308,7 @@ def expand_task(task: QmtTomlTask) -> list[QmtTomlTask]:
     if task.limit > 0:
         symbols = symbols[: task.limit]
     if not symbols:
-        raise ValueError(f"QMT 任务 {task.task} 需要 symbols 参数。")
+        raise ValueError(f"QMT 任务 {task.task} 需要 codes 参数。")
     if task.task == "download_history_batch":
         return [replace_task(task, symbols_raw=",".join(symbols))]
     return [
@@ -606,7 +606,6 @@ def resolve_runtime_path(path_like: str | None) -> Path:
         or os.environ.get("ALPHABLOCKS_SYNC_DATA_RUNTIME_CONFIG")
         or os.environ.get("ALPHABLOCKS_RUNTIME_CONFIG")
         or os.environ.get("RUNTIME_CONFIG_PATH")
-        or os.environ.get("AIQUANTBASE_RUNTIME_CONFIG")
     )
     if path_like:
         candidate = Path(path_like).expanduser()
@@ -699,4 +698,3 @@ def _normalize_task_name(value: str) -> str:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

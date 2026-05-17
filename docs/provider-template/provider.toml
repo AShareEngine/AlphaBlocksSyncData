@@ -1,0 +1,26 @@
+name = "demo"
+display_name = "Demo Provider"
+version = "0.1.0"
+module = "sync_data_system.providers.demo"
+runtime_config_key = "demo"
+default_database = "demo"
+plans_path = "plans"
+dependencies = ["clickhouse-connect"]
+import_modules = []
+plan_fields = ["codes", "begin_date", "end_date", "limit", "force", "continue_on_error"]
+
+[entrypoints]
+provider = "provider:DemoProvider"
+repository = "repository:DemoRepository"
+runner = "runner:run_config_file"
+config_runner = "runner:run_config_file"
+context_builder = "runner:build_context"
+registered_task_runner = "runner:run_registered_task"
+specs = "specs:DEMO_TASK_SPECS"
+
+[[tasks]]
+name = "daily_kline"
+target = "demo_daily_kline"
+supports_incremental = true
+cursor_field = "trade_date"
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]

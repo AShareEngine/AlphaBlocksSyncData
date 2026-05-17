@@ -50,6 +50,8 @@ def main() -> int:
 def validate_manifest(manifest: ProviderManifest, *, load_entrypoints: bool) -> None:
     if not manifest.tasks:
         raise ValueError(f"{manifest.name}: provider must expose at least one task")
+    if manifest.entrypoints.config_runner and not manifest.plan_fields:
+        raise ValueError(f"{manifest.name}: provider with config_runner must declare plan_fields")
     task_names = [task.name for task in manifest.tasks]
     if len(task_names) != len(set(task_names)):
         raise ValueError(f"{manifest.name}: duplicate task names")

@@ -7,6 +7,7 @@ default_database = "starlight"
 plans_path = "plans"
 dependencies = ["pandas", "clickhouse-connect"]
 import_modules = ["AmazingData"]
+plan_fields = ["codes", "begin_date", "end_date", "limit", "force", "resume"]
 
 [entrypoints]
 provider = "provider:AmazingDataSDKProvider"

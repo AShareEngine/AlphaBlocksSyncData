@@ -39,6 +39,6 @@ sync:
     user_id: anonymous
     password: 123456
   qmt:
-    base_url: http://172.16.2.89:8000
-    api_key: dev-api-key-001
+    base_url: http://YOUR_QMT_HOST:8000
+    api_key: YOUR_QMT_API_KEY
     timeout: 60

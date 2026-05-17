@@ -17,6 +17,7 @@ from .providers import (
     ProviderTaskManifest,
     load_provider_registry,
 )
+from .sync_plan import discover_sync_plan_paths, validate_sync_plan, validate_sync_plans
 
 __all__ = [
     "detect_plan_source",
@@ -27,4 +28,7 @@ __all__ = [
     "ProviderTaskManifest",
     "load_provider_registry",
     "run_provider_config",
+    "discover_sync_plan_paths",
+    "validate_sync_plan",
+    "validate_sync_plans",
 ]
