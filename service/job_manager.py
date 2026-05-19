@@ -117,6 +117,37 @@ class SyncJobManager:
             },
         )
 
+    def create_configs_job(
+        self,
+        config_paths: list[str],
+        log_level: Optional[str] = None,
+        runtime_path: Optional[str] = None,
+    ) -> JobRecord:
+        self._ensure_no_running_jobs()
+        if not config_paths:
+            raise ValueError("configs must not be empty")
+
+        resolved_configs = [self._resolve_config_path(item) for item in config_paths]
+        relative_config_paths = [str(item.relative_to(self.config_root)) for item in resolved_configs]
+        command = [sys.executable, str(self.project_root / "scripts" / "run_provider_sync.py")]
+        for resolved_config in resolved_configs:
+            command.extend(["--config", str(resolved_config)])
+        if runtime_path:
+            command.extend(["--runtime-path", runtime_path])
+        if log_level:
+            command.extend(["--log-level", str(log_level)])
+        return self._start_job(
+            kind="config",
+            command=command,
+            config_path=",".join(relative_config_paths),
+            task=None,
+            request_payload={
+                "configs": relative_config_paths,
+                "log_level": log_level,
+                "runtime_path": runtime_path,
+            },
+        )
+
     def cancel_job(self, job_id: str) -> JobRecord:
         with self._lock:
             process = self._processes.get(job_id)

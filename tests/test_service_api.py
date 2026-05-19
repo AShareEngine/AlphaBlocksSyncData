@@ -185,6 +185,44 @@ sync:
         self.assertEqual(payload["items"][0]["latest_date"], "2026-04-22 00:00:00")
         self.assertEqual(payload["items"][0]["row_count"], 123)
 
+    def test_run_configs_endpoint_creates_single_batch_job(self) -> None:
+        client = TestClient(app)
+        fake_job = JobRecord(
+            job_id="job-batch",
+            kind="config",
+            status="running",
+            created_at="2026-01-01T00:00:00+00:00",
+            started_at="2026-01-01T00:00:00+00:00",
+            finished_at=None,
+            cwd="/tmp/project",
+            command=["python", "scripts/run_provider_sync.py"],
+            log_path="/tmp/job.log",
+            config_path="run_sync.a.toml,run_sync.b.toml",
+            task=None,
+            source=None,
+            target=None,
+            pid=123,
+            return_code=None,
+            error=None,
+        )
+
+        with patch("sync_data_system.service.api.JOB_MANAGER.create_configs_job", return_value=fake_job) as create_job:
+            response = client.post(
+                "/api/sync/jobs/run-configs",
+                json={
+                    "configs": ["run_sync.a.toml", "run_sync.b.toml"],
+                    "log_level": "INFO",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["configs"], ["run_sync.a.toml", "run_sync.b.toml"])
+        create_job.assert_called_once_with(
+            ["run_sync.a.toml", "run_sync.b.toml"],
+            log_level="INFO",
+            runtime_path=None,
+        )
+
     def test_run_wide_table_inline_uses_payload_execution(self) -> None:
         client = TestClient(app)
         payload = {

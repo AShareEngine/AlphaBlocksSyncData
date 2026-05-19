@@ -90,6 +90,12 @@ class RunConfigRequest(BaseModel):
     runtime_path: Optional[str] = None
 
 
+class RunConfigsRequest(BaseModel):
+    configs: list[str] = Field(..., description="workspace-relative config paths")
+    log_level: Optional[str] = None
+    runtime_path: Optional[str] = None
+
+
 class SyncConfigWriteRequest(BaseModel):
     name: str
     content: str = ""
@@ -996,6 +1002,23 @@ def run_config(request: RunConfigRequest):
     return {
         **job.__dict__,
         "config": request.config,
+    }
+
+
+@app.post("/api/sync/jobs/run-configs")
+@app.post("/api/jobs/run-configs")
+def run_configs(request: RunConfigsRequest):
+    try:
+        job = JOB_MANAGER.create_configs_job(
+            request.configs,
+            log_level=request.log_level,
+            runtime_path=request.runtime_path,
+        )
+    except Exception as exc:
+        raise _job_error_to_http(exc)
+    return {
+        **job.__dict__,
+        "configs": request.configs,
     }
 
 

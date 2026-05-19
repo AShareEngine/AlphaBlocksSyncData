@@ -6,7 +6,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from sync_data_system.service.job_manager import JobRecord, SyncJobManager
 
@@ -55,6 +55,33 @@ class SyncJobManagerTest(unittest.TestCase):
             daily = next(item for item in items if item["name"] == "amazingdata.daily_kline")
             self.assertEqual(daily["source"], "amazingdata")
             self.assertEqual(daily["target"], "ad_market_kline_daily")
+
+    def test_create_configs_job_runs_multiple_configs_in_one_process(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            config_root = root / "config" / "sync" / "plans"
+            config_root.mkdir(parents=True, exist_ok=True)
+            (config_root / "run_sync.amazingdata.temp.toml").write_text("source = 'amazingdata'\n[[tasks]]\ntask='code_info'\n", encoding="utf-8")
+            (config_root / "run_sync.baostock.temp.toml").write_text("source = 'baostock'\n[[tasks]]\ntask='all_stock'\n", encoding="utf-8")
+            manager = SyncJobManager(root, state_dir=root / ".service_state")
+            fake_process = Mock()
+            fake_process.pid = 123
+            fake_process.wait.return_value = 0
+
+            with patch("sync_data_system.service.job_manager.subprocess.Popen", return_value=fake_process) as popen:
+                job = manager.create_configs_job(
+                    ["run_sync.amazingdata.temp.toml", "run_sync.baostock.temp.toml"],
+                    log_level="INFO",
+                )
+
+            command = popen.call_args.args[0]
+            self.assertEqual(job.kind, "config")
+            self.assertEqual(job.config_path, "run_sync.amazingdata.temp.toml,run_sync.baostock.temp.toml")
+            self.assertEqual(job.request_payload["configs"], ["run_sync.amazingdata.temp.toml", "run_sync.baostock.temp.toml"])
+            self.assertEqual(command.count("--config"), 2)
+            self.assertIn(str((config_root / "run_sync.amazingdata.temp.toml").resolve()), command)
+            self.assertIn(str((config_root / "run_sync.baostock.temp.toml").resolve()), command)
 
     def test_rejects_new_job_when_running_job_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -9,6 +9,7 @@ import logging
 import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -23,6 +24,8 @@ from sync_data_system.core.engine import run_provider_config
 from sync_data_system.providers.amazingdata import runner as amazingdata_runner
 from sync_data_system.service.task_registry import TASK_REGISTRY, build_provider_context, create_probe
 
+logger = logging.getLogger(__name__)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run sync provider tasks")
@@ -33,7 +36,7 @@ def parse_args() -> argparse.Namespace:
         choices=task_choices,
         help="Registered provider task name, for example amazingdata.daily_kline.",
     )
-    parser.add_argument("--config", help="TOML sync plan path")
+    parser.add_argument("--config", action="append", default=[], help="TOML sync plan path. Repeat to run multiple configs in one job.")
     parser.add_argument("--task", dest="task_option", choices=task_choices, help=argparse.SUPPRESS)
     parser.add_argument("--job-id", default="cli", help=argparse.SUPPRESS)
     parser.add_argument("--log-path", default=None, help=argparse.SUPPRESS)
@@ -103,31 +106,55 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     if args.config:
-        source = detect_plan_source(args.config, project_root=PROJECT_ROOT, default_source="amazingdata")
-        if source == "amazingdata" and args.resume:
-            plan = amazingdata_runner.load_execution_plan_from_toml(args.config)
-            plan = _apply_amazingdata_overrides(plan, runtime_path=args.runtime_path, log_level=args.log_level, resume=True)
-            return amazingdata_runner.execute_execution_plan(plan)
-        return run_provider_config(
-            source=source,
-            config_path=args.config,
-            project_root=PROJECT_ROOT,
-            log_level_override=args.log_level,
-            resume=args.resume,
-        )
+        return run_config_sequence(args.config, args)
 
     if args.task is None:
         default_config = str(PROJECT_ROOT / "config" / "sync" / "plans" / amazingdata_runner.DEFAULT_PLAN_CONFIG)
-        plan = amazingdata_runner.load_execution_plan_from_toml(default_config)
-        plan = _apply_amazingdata_overrides(
-            plan,
-            runtime_path=args.runtime_path,
-            log_level=args.log_level,
-            resume=args.resume,
-        )
-        return amazingdata_runner.execute_execution_plan(plan)
+        return run_config_sequence([default_config], args)
 
     return run_registered_task(args)
+
+
+def run_config_sequence(config_paths: Sequence[str], args: argparse.Namespace) -> int:
+    if len(config_paths) == 1:
+        return run_single_config(config_paths[0], args)
+
+    final_code = 0
+    for index, config_path in enumerate(config_paths, start=1):
+        logger.info("config batch start progress=%s/%s config=%s", index, len(config_paths), config_path)
+        try:
+            return_code = run_single_config(config_path, args)
+        except Exception:
+            logger.exception("config batch failed progress=%s/%s config=%s", index, len(config_paths), config_path)
+            final_code = 1
+            continue
+        if return_code:
+            logger.error(
+                "config batch returned non-zero progress=%s/%s config=%s return_code=%s",
+                index,
+                len(config_paths),
+                config_path,
+                return_code,
+            )
+            final_code = return_code
+        else:
+            logger.info("config batch finished progress=%s/%s config=%s", index, len(config_paths), config_path)
+    return final_code
+
+
+def run_single_config(config_path: str, args: argparse.Namespace) -> int:
+    source = detect_plan_source(config_path, project_root=PROJECT_ROOT, default_source="amazingdata")
+    if source == "amazingdata" and args.resume:
+        plan = amazingdata_runner.load_execution_plan_from_toml(config_path)
+        plan = _apply_amazingdata_overrides(plan, runtime_path=args.runtime_path, log_level=args.log_level, resume=True)
+        return amazingdata_runner.execute_execution_plan(plan)
+    return run_provider_config(
+        source=source,
+        config_path=config_path,
+        project_root=PROJECT_ROOT,
+        log_level_override=args.log_level,
+        resume=args.resume,
+    )
 
 
 def run_registered_task(args: argparse.Namespace) -> int:
