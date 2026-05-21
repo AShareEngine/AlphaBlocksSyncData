@@ -24,6 +24,10 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def utc_iso_from_timestamp(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, timezone.utc).replace(microsecond=0).isoformat()
+
+
 @dataclass
 class JobRecord:
     job_id: str
@@ -43,6 +47,7 @@ class JobRecord:
     return_code: Optional[int] = None
     error: Optional[str] = None
     request_payload: Optional[dict[str, Any]] = None
+    updated_at: Optional[str] = None
 
 
 class SyncJobManager:
@@ -156,6 +161,7 @@ class SyncJobManager:
             job = self._jobs.get(job_id)
             if job is not None and job.status == "running":
                 job.status = "cancelling"
+                job.updated_at = utc_now_iso()
                 self._save_job(job)
             process.terminate()
         return self.get_job(job_id)
@@ -211,12 +217,13 @@ class SyncJobManager:
             stderr=subprocess.STDOUT,
             text=True,
         )
+        now = utc_now_iso()
         job = JobRecord(
             job_id=job_id,
             kind=kind,
             status="running",
-            created_at=utc_now_iso(),
-            started_at=utc_now_iso(),
+            created_at=now,
+            started_at=now,
             finished_at=None,
             cwd=str(self.project_root),
             command=command,
@@ -229,6 +236,7 @@ class SyncJobManager:
             return_code=None,
             error=None,
             request_payload=request_payload,
+            updated_at=now,
         )
         with self._lock:
             self._jobs[job_id] = job
@@ -386,6 +394,7 @@ class SyncJobManager:
                 return
             job.return_code = return_code
             job.finished_at = utc_now_iso()
+            job.updated_at = job.finished_at
             if job.status == "cancelling":
                 job.status = "cancelled"
             elif job.status != "cancelled":
@@ -401,10 +410,12 @@ class SyncJobManager:
             return
         return_code = process.poll()
         if return_code is None:
+            self._refresh_running_job_updated_at(job_id)
             return
         with self._lock:
             job.return_code = return_code
             job.finished_at = utc_now_iso()
+            job.updated_at = job.finished_at
             if job.status != "cancelled":
                 job.status = "success" if return_code == 0 else "failed"
             self._processes.pop(job_id, None)
@@ -433,6 +444,25 @@ class SyncJobManager:
         path = self.jobs_dir / f"{job.job_id}.json"
         path.write_text(json.dumps(asdict(job), ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def _refresh_running_job_updated_at(self, job_id: str) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.status not in {"running", "cancelling"}:
+                return
+            updated_at = self._log_updated_at(job) or job.updated_at or job.started_at or job.created_at
+            if updated_at == job.updated_at:
+                return
+            job.updated_at = updated_at
+            self._save_job(job)
+
+    def _log_updated_at(self, job: JobRecord) -> Optional[str]:
+        if not job.log_path:
+            return None
+        try:
+            return utc_iso_from_timestamp(Path(job.log_path).stat().st_mtime)
+        except OSError:
+            return None
+
     def _load_existing_jobs(self) -> None:
         for path in sorted(self.jobs_dir.glob("*.json")):
             try:
@@ -441,6 +471,10 @@ class SyncJobManager:
                 if job.status == "running":
                     job.status = "interrupted"
                     job.finished_at = job.finished_at or utc_now_iso()
+                    job.updated_at = job.updated_at or job.finished_at
+                    self._save_job(job)
+                elif not job.updated_at:
+                    job.updated_at = job.finished_at or job.started_at or job.created_at
                     self._save_job(job)
                 self._jobs[job.job_id] = job
             except Exception:

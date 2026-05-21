@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -79,9 +81,46 @@ class SyncJobManagerTest(unittest.TestCase):
             self.assertEqual(job.kind, "config")
             self.assertEqual(job.config_path, "run_sync.amazingdata.temp.toml,run_sync.baostock.temp.toml")
             self.assertEqual(job.request_payload["configs"], ["run_sync.amazingdata.temp.toml", "run_sync.baostock.temp.toml"])
+            self.assertIsNotNone(job.updated_at)
             self.assertEqual(command.count("--config"), 2)
             self.assertIn(str((config_root / "run_sync.amazingdata.temp.toml").resolve()), command)
             self.assertIn(str((config_root / "run_sync.baostock.temp.toml").resolve()), command)
+
+    def test_list_jobs_refreshes_running_job_updated_at_from_log_mtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            manager = SyncJobManager(root, state_dir=root / ".service_state")
+            log_path = root / "job1.log"
+            log_path.write_text("running\n", encoding="utf-8")
+            updated_at = datetime(2026, 1, 1, 0, 10, 0, tzinfo=timezone.utc)
+            os.utime(log_path, (updated_at.timestamp(), updated_at.timestamp()))
+            manager._jobs["job1"] = JobRecord(
+                job_id="job1",
+                kind="task",
+                status="running",
+                created_at="2026-01-01T00:00:00+00:00",
+                started_at="2026-01-01T00:00:00+00:00",
+                finished_at=None,
+                cwd=str(root),
+                command=["python", "scripts/run_provider_sync.py"],
+                log_path=str(log_path),
+                config_path=None,
+                task="amazingdata.daily_kline",
+                source="amazingdata",
+                target="ad_market_kline_daily",
+                pid=None,
+                return_code=None,
+                error=None,
+                updated_at="2026-01-01T00:00:00+00:00",
+            )
+            process = Mock()
+            process.poll.return_value = None
+            manager._processes["job1"] = process
+
+            jobs = manager.list_jobs()
+
+            self.assertEqual(jobs[0].updated_at, "2026-01-01T00:10:00+00:00")
 
     def test_rejects_new_job_when_running_job_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
