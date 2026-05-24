@@ -307,7 +307,11 @@ class MarketData:
             latest_date = latest_date_map.get(code)
             if latest_date is not None:
                 latest_date = to_ch_date(latest_date)
-            sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
+            sync_start = self._resolve_market_sync_start_date(
+                latest_date=latest_date,
+                requested_begin_date=begin,
+                force=force,
+            )
             if sync_start is not None and sync_start > end:
                 logger.info(
                     "sync_kline code=%s progress=%s/%s latest_date=%s sync_start=%s end_date=%s no_new_window_skip",
@@ -387,7 +391,11 @@ class MarketData:
             latest_date = latest_date_map.get(code)
             if latest_date is not None:
                 latest_date = to_ch_date(latest_date)
-            sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
+            sync_start = self._resolve_market_sync_start_date(
+                latest_date=latest_date,
+                requested_begin_date=begin,
+                force=force,
+            )
             if sync_start is not None and sync_start > end:
                 logger.info(
                     "sync_kline_minute code=%s progress=%s/%s latest_date=%s sync_start=%s end_date=%s no_new_window_skip",
@@ -703,6 +711,19 @@ class MarketData:
         if requested_begin_date is None:
             return next_date
         return max(next_date, requested_begin_date)
+
+    @staticmethod
+    def _resolve_market_sync_start_date(
+        latest_date: Optional[date],
+        requested_begin_date: Optional[date],
+        force: bool,
+    ) -> Optional[date]:
+        if force:
+            return requested_begin_date
+        return MarketData._resolve_incremental_start_date(
+            latest_date=latest_date,
+            requested_begin_date=requested_begin_date,
+        )
 
     @staticmethod
     def _validate_date_range(begin_date: date, end_date: date) -> None:
