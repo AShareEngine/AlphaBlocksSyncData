@@ -1,0 +1,20 @@
+# AmazingData single-stock minute K-line backfill.
+#
+# Target table: starlight.ad_market_kline_minute
+# Stock code: 000001.SZ
+# End date is omitted so the runner resolves it to the latest trade date.
+
+source = "amazingdata"
+database = "starlight"
+log_level = "INFO"
+continue_on_error = false
+
+[defaults]
+begin_date = 20100101
+limit = 0
+force = true
+
+[[tasks]]
+task = "minute_kline"
+enabled = true
+codes = ["000001.SZ"]
