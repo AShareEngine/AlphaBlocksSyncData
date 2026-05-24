@@ -86,6 +86,27 @@ class SyncJobManagerTest(unittest.TestCase):
             self.assertIn(str((config_root / "run_sync.amazingdata.temp.toml").resolve()), command)
             self.assertIn(str((config_root / "run_sync.baostock.temp.toml").resolve()), command)
 
+    def test_create_config_job_uses_configured_job_python(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            config_root = root / "config" / "sync" / "plans"
+            config_root.mkdir(parents=True, exist_ok=True)
+            (config_root / "run_sync.amazingdata.temp.toml").write_text("source = 'amazingdata'\n[[tasks]]\ntask='code_info'\n", encoding="utf-8")
+            manager = SyncJobManager(root, state_dir=root / ".service_state")
+            fake_process = Mock()
+            fake_process.pid = 123
+            fake_process.wait.return_value = 0
+
+            with (
+                patch.dict(os.environ, {"SYNC_JOB_PYTHON_BIN": "/opt/conda/envs/amazing_data/bin/python3"}),
+                patch("sync_data_system.service.job_manager.subprocess.Popen", return_value=fake_process) as popen,
+            ):
+                manager.create_config_job("run_sync.amazingdata.temp.toml", log_level="INFO")
+
+            command = popen.call_args.args[0]
+            self.assertEqual(command[0], "/opt/conda/envs/amazing_data/bin/python3")
+
     def test_list_jobs_refreshes_running_job_updated_at_from_log_mtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "sync_project"

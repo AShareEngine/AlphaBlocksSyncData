@@ -105,7 +105,7 @@ class SyncJobManager:
         self._ensure_no_running_jobs()
         resolved_config = self._resolve_config_path(config_path)
         relative_config_path = str(resolved_config.relative_to(self.config_root))
-        command = [sys.executable, str(self.project_root / "scripts" / "run_provider_sync.py"), "--config", str(resolved_config)]
+        command = [self._python_executable(), str(self.project_root / "scripts" / "run_provider_sync.py"), "--config", str(resolved_config)]
         if runtime_path:
             command.extend(["--runtime-path", runtime_path])
         if log_level:
@@ -134,7 +134,7 @@ class SyncJobManager:
 
         resolved_configs = [self._resolve_config_path(item) for item in config_paths]
         relative_config_paths = [str(item.relative_to(self.config_root)) for item in resolved_configs]
-        command = [sys.executable, str(self.project_root / "scripts" / "run_provider_sync.py")]
+        command = [self._python_executable(), str(self.project_root / "scripts" / "run_provider_sync.py")]
         for resolved_config in resolved_configs:
             command.extend(["--config", str(resolved_config)])
         if runtime_path:
@@ -283,7 +283,7 @@ class SyncJobManager:
         job_id = uuid.uuid4().hex[:12]
         log_path = self.logs_dir / f"{job_id}.log"
         command = [
-            sys.executable,
+            self._python_executable(),
             str(self.project_root / "scripts" / "run_provider_sync.py"),
             "--job-id",
             job_id,
@@ -489,6 +489,14 @@ class SyncJobManager:
             items.insert(0, parent)
         env["PYTHONPATH"] = os.pathsep.join(items)
         return env
+
+    def _python_executable(self) -> str:
+        configured = (
+            os.environ.get("SYNC_JOB_PYTHON_BIN")
+            or os.environ.get("ALPHABLOCKS_SYNC_JOB_PYTHON_BIN")
+            or ""
+        ).strip()
+        return configured or sys.executable
 
 
 __all__ = ["JobRecord", "SyncJobManager"]
