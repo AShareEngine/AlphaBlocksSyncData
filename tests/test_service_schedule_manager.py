@@ -137,7 +137,7 @@ class SyncScheduleManagerTest(unittest.TestCase):
                 log_level="INFO",
             )
 
-    def test_list_schedules_advances_stale_next_run_time(self) -> None:
+    def test_list_schedules_keeps_due_next_run_until_scheduler_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             job_manager = Mock()
@@ -160,9 +160,79 @@ class SyncScheduleManagerTest(unittest.TestCase):
             items = manager.list_schedules()
 
             self.assertEqual(len(items), 1)
+            self.assertEqual(items[0].next_run_at, "2020-01-01T00:00:00+00:00")
+
+    def test_run_due_schedules_starts_due_config_job_and_advances_next_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            job_manager = Mock()
+            job_manager.state_dir = root / ".service_state"
+            job_manager.list_configs.return_value = ["run_sync.daily.toml"]
+            job_manager.list_registered_tasks.return_value = []
+            job_manager.create_config_job.return_value = _fake_job(job_id="job_due")
+            manager = SyncScheduleManager(root, job_manager, state_dir=job_manager.state_dir)
+            schedule = manager.create_schedule(
+                {
+                    "name": "每日基础数据",
+                    "target_type": "config",
+                    "target": "run_sync.daily.toml",
+                    "frequency": "daily",
+                    "time": "18:30",
+                    "timezone": "Asia/Shanghai",
+                }
+            )
+            schedule.next_run_at = "2026-05-16T10:30:00+00:00"
+            manager._save_schedule(schedule)
+
+            results = manager.run_due_schedules(now=datetime(2026, 5, 16, 10, 31, tzinfo=timezone.utc))
+
+            self.assertEqual(len(results), 1)
+            updated, job = results[0]
+            self.assertEqual(job.job_id, "job_due")
+            self.assertEqual(updated.last_job_id, "job_due")
+            self.assertEqual(updated.last_status, "running")
             self.assertGreater(
-                datetime.fromisoformat(items[0].next_run_at).astimezone(timezone.utc),
-                datetime.now(timezone.utc),
+                datetime.fromisoformat(updated.next_run_at).astimezone(timezone.utc),
+                datetime(2026, 5, 16, 10, 31, tzinfo=timezone.utc),
+            )
+            job_manager.create_config_job.assert_called_once_with(
+                "run_sync.daily.toml",
+                log_level="INFO",
+            )
+
+    def test_run_due_schedules_skips_overlap_without_marking_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            job_manager = Mock()
+            job_manager.state_dir = root / ".service_state"
+            job_manager.list_configs.return_value = ["run_sync.daily.toml"]
+            job_manager.list_registered_tasks.return_value = []
+            job_manager.create_config_job.side_effect = RuntimeError("another sync job is running job_id=abc")
+            manager = SyncScheduleManager(root, job_manager, state_dir=job_manager.state_dir)
+            schedule = manager.create_schedule(
+                {
+                    "name": "每日基础数据",
+                    "target_type": "config",
+                    "target": "run_sync.daily.toml",
+                    "frequency": "daily",
+                    "time": "18:30",
+                    "timezone": "Asia/Shanghai",
+                    "concurrency_policy": "skip",
+                }
+            )
+            schedule.next_run_at = "2026-05-16T10:30:00+00:00"
+            manager._save_schedule(schedule)
+
+            results = manager.run_due_schedules(now=datetime(2026, 5, 16, 10, 31, tzinfo=timezone.utc))
+
+            self.assertEqual(len(results), 1)
+            updated, job = results[0]
+            self.assertIsNone(job)
+            self.assertEqual(updated.last_status, "pending")
+            self.assertIn("another sync job is running", updated.last_error or "")
+            self.assertGreater(
+                datetime.fromisoformat(updated.next_run_at).astimezone(timezone.utc),
+                datetime(2026, 5, 16, 10, 31, tzinfo=timezone.utc),
             )
 
 

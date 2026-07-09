@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import re
+import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -31,6 +33,35 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 JOB_MANAGER = SyncJobManager(PROJECT_ROOT)
 SCHEDULE_MANAGER = SyncScheduleManager(PROJECT_ROOT, JOB_MANAGER)
 app = FastAPI(title="AmazingData Sync Service", version="0.1.0")
+
+
+def _truthy_env(value: str | None, *, default: bool) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _scheduler_autostart_enabled() -> bool:
+    default = "pytest" not in sys.modules and not os.environ.get("PYTEST_CURRENT_TEST")
+    return _truthy_env(os.environ.get("SYNC_SCHEDULER_ENABLED"), default=default)
+
+
+def _scheduler_poll_seconds() -> float:
+    try:
+        return float(os.environ.get("SYNC_SCHEDULER_POLL_SECONDS") or "30")
+    except ValueError:
+        return 30.0
+
+
+@app.on_event("startup")
+def start_schedule_runner() -> None:
+    if _scheduler_autostart_enabled():
+        SCHEDULE_MANAGER.start_scheduler(interval_seconds=_scheduler_poll_seconds())
+
+
+@app.on_event("shutdown")
+def stop_schedule_runner() -> None:
+    SCHEDULE_MANAGER.stop_scheduler()
 
 DATE_FIELD_CANDIDATES = (
     "trade_time",

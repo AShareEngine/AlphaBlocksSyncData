@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 import uuid
@@ -24,6 +25,7 @@ FREQUENCIES = {"daily", "weekly", "interval"}
 CONCURRENCY_POLICIES = {"skip", "replace", "allow"}
 DEFAULT_WEEKDAYS = ["1", "2", "3", "4", "5"]
 RUNNING_STATUSES = {"running", "cancelling"}
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -64,6 +66,8 @@ class SyncScheduleManager:
         self.schedules_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._schedules: dict[str, ScheduleRecord] = {}
+        self._scheduler_stop = threading.Event()
+        self._scheduler_thread: threading.Thread | None = None
         self._load_existing_schedules()
 
     def list_schedules(
@@ -72,7 +76,7 @@ class SyncScheduleManager:
         enabled: Optional[bool] = None,
         target_type: Optional[str] = None,
     ) -> list[ScheduleRecord]:
-        self._refresh_next_run_times()
+        self._ensure_next_run_times()
         self._refresh_last_job_statuses()
         with self._lock:
             items = list(self._schedules.values())
@@ -83,7 +87,7 @@ class SyncScheduleManager:
         return sorted(items, key=lambda item: item.created_at, reverse=True)
 
     def get_schedule(self, schedule_id: str) -> ScheduleRecord:
-        self._refresh_next_run_time(schedule_id)
+        self._ensure_next_run_time(schedule_id)
         self._refresh_last_job_status(schedule_id)
         with self._lock:
             if schedule_id not in self._schedules:
@@ -158,21 +162,7 @@ class SyncScheduleManager:
 
     def run_schedule_now(self, schedule_id: str) -> tuple[ScheduleRecord, JobRecord]:
         schedule = self.get_schedule(schedule_id)
-        if schedule.target_type == "config":
-            job = self.job_manager.create_config_job(
-                schedule.target,
-                log_level=schedule.log_level,
-            )
-        elif schedule.target_type == "task":
-            known_tasks = {item["name"] for item in self.job_manager.list_registered_tasks()}
-            if schedule.target not in known_tasks:
-                raise ValueError(f"unknown registered task: {schedule.target}")
-            job = self.job_manager.create_registered_task_job(
-                task=schedule.target,
-                log_level=schedule.log_level,
-            )
-        else:
-            raise ValueError(f"unsupported schedule target_type: {schedule.target_type}")
+        job = self._start_schedule_job(schedule)
 
         with self._lock:
             current = self._schedules[schedule_id]
@@ -184,6 +174,158 @@ class SyncScheduleManager:
             current.next_run_at = self.compute_next_run_at(current) if current.enabled else ""
             self._save_schedule(current)
             return current, job
+
+    def run_due_schedules(self, now: Optional[datetime] = None) -> list[tuple[ScheduleRecord, Optional[JobRecord]]]:
+        """Run enabled schedules whose next_run_at is due.
+
+        The list endpoint intentionally does not advance overdue plans. This
+        method is the single place that consumes a due next_run_at by starting a
+        job or recording why the due run could not be started.
+        """
+        now_utc = self._normalize_now(now)
+        self._refresh_last_job_statuses()
+        due_ids: list[str] = []
+        with self._lock:
+            for schedule in self._schedules.values():
+                if not schedule.enabled:
+                    continue
+                next_run = self._parse_iso_datetime(schedule.next_run_at)
+                if next_run is None:
+                    schedule.next_run_at = self.compute_next_run_at(schedule, now=now_utc)
+                    schedule.updated_at = utc_now_iso()
+                    self._save_schedule(schedule)
+                    continue
+                if next_run <= now_utc:
+                    due_ids.append(schedule.id)
+
+        results: list[tuple[ScheduleRecord, Optional[JobRecord]]] = []
+        for schedule_id in due_ids:
+            results.append(self._run_due_schedule(schedule_id, now_utc))
+        return results
+
+    def start_scheduler(self, *, interval_seconds: float = 30.0) -> bool:
+        with self._lock:
+            if self._scheduler_thread is not None and self._scheduler_thread.is_alive():
+                return False
+            self._scheduler_stop.clear()
+            self._scheduler_thread = threading.Thread(
+                target=self._scheduler_loop,
+                args=(max(float(interval_seconds), 1.0),),
+                name="sync-schedule-runner",
+                daemon=True,
+            )
+            self._scheduler_thread.start()
+            return True
+
+    def stop_scheduler(self, *, timeout: float = 5.0) -> None:
+        self._scheduler_stop.set()
+        thread = self._scheduler_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=timeout)
+
+    def _scheduler_loop(self, interval_seconds: float) -> None:
+        while not self._scheduler_stop.is_set():
+            try:
+                self.run_due_schedules()
+            except Exception:
+                logger.exception("scheduled sync polling failed")
+            self._scheduler_stop.wait(interval_seconds)
+
+    def _run_due_schedule(
+        self,
+        schedule_id: str,
+        now_utc: datetime,
+    ) -> tuple[ScheduleRecord, Optional[JobRecord]]:
+        replace_job_id: Optional[str] = None
+        with self._lock:
+            schedule = self._schedules.get(schedule_id)
+            if schedule is None:
+                raise KeyError(f"schedule not found: {schedule_id}")
+            if not schedule.enabled:
+                return schedule, None
+            next_run = self._parse_iso_datetime(schedule.next_run_at)
+            if next_run is None or next_run > now_utc:
+                return schedule, None
+            if schedule.last_status in RUNNING_STATUSES:
+                if schedule.concurrency_policy == "skip":
+                    schedule.next_run_at = self.compute_next_run_at(schedule, now=now_utc)
+                    schedule.updated_at = utc_now_iso()
+                    self._save_schedule(schedule)
+                    return schedule, None
+                if schedule.concurrency_policy == "replace":
+                    replace_job_id = schedule.last_job_id
+            schedule_snapshot = ScheduleRecord(**asdict(schedule))
+
+        if replace_job_id:
+            try:
+                self.job_manager.cancel_job(replace_job_id)
+            except Exception as exc:
+                logger.warning("failed to cancel previous scheduled job %s: %s", replace_job_id, exc)
+
+        try:
+            job = self._start_schedule_job(schedule_snapshot)
+        except Exception as exc:
+            if schedule_snapshot.concurrency_policy == "skip" and "another sync job is running" in str(exc):
+                return self._skip_due_schedule(schedule_id, now_utc, reason=str(exc)), None
+            return self._record_due_schedule_error(schedule_id, exc, now_utc), None
+
+        with self._lock:
+            current = self._schedules[schedule_id]
+            current.last_run_at = job.started_at or utc_now_iso()
+            current.last_status = job.status
+            current.last_job_id = job.job_id
+            current.last_error = job.error
+            current.updated_at = utc_now_iso()
+            current.next_run_at = self.compute_next_run_at(current, now=now_utc) if current.enabled else ""
+            self._save_schedule(current)
+            return current, job
+
+    def _record_due_schedule_error(
+        self,
+        schedule_id: str,
+        exc: Exception,
+        now_utc: datetime,
+    ) -> ScheduleRecord:
+        with self._lock:
+            current = self._schedules[schedule_id]
+            current.last_run_at = utc_now_iso()
+            current.last_status = "failed"
+            current.last_error = str(exc)
+            current.updated_at = utc_now_iso()
+            current.next_run_at = self.compute_next_run_at(current, now=now_utc) if current.enabled else ""
+            self._save_schedule(current)
+            return current
+
+    def _skip_due_schedule(
+        self,
+        schedule_id: str,
+        now_utc: datetime,
+        *,
+        reason: str,
+    ) -> ScheduleRecord:
+        with self._lock:
+            current = self._schedules[schedule_id]
+            current.last_error = reason
+            current.updated_at = utc_now_iso()
+            current.next_run_at = self.compute_next_run_at(current, now=now_utc) if current.enabled else ""
+            self._save_schedule(current)
+            return current
+
+    def _start_schedule_job(self, schedule: ScheduleRecord) -> JobRecord:
+        if schedule.target_type == "config":
+            return self.job_manager.create_config_job(
+                schedule.target,
+                log_level=schedule.log_level,
+            )
+        elif schedule.target_type == "task":
+            known_tasks = {item["name"] for item in self.job_manager.list_registered_tasks()}
+            if schedule.target not in known_tasks:
+                raise ValueError(f"unknown registered task: {schedule.target}")
+            return self.job_manager.create_registered_task_job(
+                task=schedule.target,
+                log_level=schedule.log_level,
+            )
+        raise ValueError(f"unsupported schedule target_type: {schedule.target_type}")
 
     def compute_next_run_at(
         self,
@@ -307,13 +449,13 @@ class SyncScheduleManager:
         for schedule_id in schedule_ids:
             self._refresh_last_job_status(schedule_id)
 
-    def _refresh_next_run_times(self) -> None:
+    def _ensure_next_run_times(self) -> None:
         with self._lock:
             schedule_ids = list(self._schedules.keys())
         for schedule_id in schedule_ids:
-            self._refresh_next_run_time(schedule_id)
+            self._ensure_next_run_time(schedule_id)
 
-    def _refresh_next_run_time(self, schedule_id: str) -> None:
+    def _ensure_next_run_time(self, schedule_id: str) -> None:
         now = datetime.now(timezone.utc).replace(microsecond=0)
         with self._lock:
             schedule = self._schedules.get(schedule_id)
@@ -322,7 +464,7 @@ class SyncScheduleManager:
             if schedule.last_status == "paused":
                 schedule.last_status = "pending"
             next_run = self._parse_iso_datetime(schedule.next_run_at)
-            if next_run is not None and next_run > now:
+            if next_run is not None:
                 return
             schedule.next_run_at = self.compute_next_run_at(schedule, now=now)
             schedule.updated_at = utc_now_iso()
@@ -439,6 +581,13 @@ class SyncScheduleManager:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed.astimezone(timezone.utc).replace(microsecond=0)
+
+    @staticmethod
+    def _normalize_now(value: Optional[datetime]) -> datetime:
+        current = value or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        return current.astimezone(timezone.utc).replace(microsecond=0)
 
 
 __all__ = ["ScheduleRecord", "SyncScheduleManager"]
