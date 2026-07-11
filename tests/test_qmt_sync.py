@@ -39,12 +39,15 @@ class _FakeClickHouseClient:
 
 
 class _FakeQmtProvider:
-    def __init__(self, envelope) -> None:
+    def __init__(self, envelope, *, sector_envelope=None) -> None:
         self.envelope = envelope
+        self.sector_envelope = sector_envelope
         self.fetch_calls: list[dict] = []
 
     def fetch_task(self, task: str, **kwargs):
         self.fetch_calls.append({"task": task, **kwargs})
+        if task == "sectors" and self.sector_envelope is not None:
+            return self.sector_envelope
         return self.envelope
 
 
@@ -171,6 +174,32 @@ class QmtRunnerTest(unittest.TestCase):
         row = dict(zip(columns, rows[0]))
         self.assertEqual(row["symbol"], "600000.SH")
         self.assertEqual(row["time_ms"], 1704038400000)
+
+    def test_run_sync_args_auto_resolves_qmt_symbol_universe(self) -> None:
+        provider = _FakeQmtProvider(
+            {"success": True, "data": {"items": [{"symbol": "600000.SH", "bars": [{"time_ms": 1704038400000, "open": 8.1}]}]}},
+            sector_envelope={
+                "success": True,
+                "data": {"items": [{"sector_name": "沪深A股", "symbols": ["sh.600000", "sz.000001"]}]},
+            },
+        )
+        client = _FakeClickHouseClient()
+        repository = QmtRepository(client, database="qmt")
+
+        inserted = run_sync_args(self._args(symbols_raw="", limit=1), provider, repository)
+
+        self.assertEqual(inserted, 1)
+        self.assertEqual(provider.fetch_calls[0]["task"], "sectors")
+        self.assertEqual(provider.fetch_calls[0]["sector_name"], "沪深A股")
+        self.assertEqual(provider.fetch_calls[1]["task"], "kline_history")
+        self.assertEqual(provider.fetch_calls[1]["symbols"], ["600000.SH"])
+
+    def test_run_sync_args_requires_codes_when_task_has_no_auto_universe(self) -> None:
+        provider = _FakeQmtProvider({"success": True, "data": {"items": []}})
+        repository = QmtRepository(_FakeClickHouseClient(), database="qmt")
+
+        with self.assertRaisesRegex(ValueError, "需要 codes 参数"):
+            run_sync_args(self._args(task="tick_history", symbols_raw=""), provider, repository)
 
     def test_tick_history_keeps_intraday_time_window(self) -> None:
         args = self._args(

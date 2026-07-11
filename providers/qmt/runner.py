@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from sync_data_system.config_paths import resolve_config_candidate
-from sync_data_system.providers.qmt.provider import QmtConfig, QmtProvider, normalize_qmt_code_list
+from sync_data_system.providers.qmt.provider import QmtConfig, QmtProvider, iter_qmt_rows, normalize_qmt_code_list
 from sync_data_system.providers.qmt.repository import QmtRepository
 from sync_data_system.providers.qmt.specs import QMT_TASK_CHOICES, QMT_TASK_SPECS
 from sync_data_system.sync_core.clickhouse import ClickHouseConfig, create_clickhouse_client
@@ -27,6 +27,8 @@ from sync_data_system.toml_compat import tomllib
 
 
 logger = logging.getLogger(__name__)
+
+QMT_DEFAULT_SYMBOL_UNIVERSE_SECTOR = "沪深A股"
 
 
 @dataclass(frozen=True)
@@ -202,6 +204,7 @@ def main() -> int:
 
 
 def run_sync_args(args: SyncArgs, provider: QmtProvider, repository: QmtRepository) -> int:
+    args = resolve_auto_symbol_universe(args, provider)
     specs = expand_task_args(args)
     if not specs:
         raise ValueError(f"QMT 任务 {args.task} 未解析出可执行请求，请检查参数。")
@@ -261,6 +264,37 @@ def _format_optional_int(value: Any) -> str:
     return "" if value is None else str(value)
 
 
+def resolve_auto_symbol_universe(args: SyncArgs, provider: QmtProvider) -> SyncArgs:
+    spec = QMT_TASK_SPECS[args.task]
+    if not spec.uses_symbols or parse_symbol_list(args.symbols_raw):
+        return args
+    if not spec.auto_symbol_universe:
+        return args
+
+    sector_name = args.sector_name.strip() or QMT_DEFAULT_SYMBOL_UNIVERSE_SECTOR
+    envelope = provider.fetch_task("sectors", sector_name=sector_name)
+    rows = iter_qmt_rows(QMT_TASK_SPECS["sectors"], envelope, {"sector_name": sector_name})
+    symbols = normalize_qmt_code_list([str(row.get("symbol") or "") for row in rows])
+    if not symbols:
+        raise ValueError(
+            f"QMT 任务 {args.task} 未传 codes，且无法从板块 {sector_name!r} 获取 symbols；"
+            "请在请求或 TOML 配置中填写 codes，或确认 QMT sectors 接口可用。"
+        )
+    logger.info(
+        "resolved QMT symbol universe task=%s sector=%s count=%s",
+        args.task,
+        sector_name,
+        len(symbols),
+    )
+    return SyncArgs(
+        **{
+            **args.__dict__,
+            "symbols_raw": ",".join(symbols),
+            "sector_name": sector_name,
+        }
+    )
+
+
 def expand_task_args(args: SyncArgs) -> list[SyncArgs]:
     spec = QMT_TASK_SPECS[args.task]
     if not spec.uses_symbols:
@@ -270,7 +304,7 @@ def expand_task_args(args: SyncArgs) -> list[SyncArgs]:
     if args.limit > 0:
         symbols = symbols[: args.limit]
     if not symbols:
-        raise ValueError(f"QMT 任务 {args.task} 需要 symbols 参数。")
+        raise ValueError(f"QMT 任务 {args.task} 需要 codes 参数（会映射为 QMT REST symbols）。")
     if spec.task in {"download_history_batch"}:
         return [
             SyncArgs(
