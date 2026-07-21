@@ -102,7 +102,7 @@ PROVIDER_CONFIG_SCHEMAS: dict[str, list[dict[str, Any]]] = {
 
 def _job_error_to_http(exc: Exception) -> HTTPException:
     message = str(exc)
-    if "another sync job is running" in message:
+    if "already queued or running" in message or "enable the schedule before editing" in message:
         return HTTPException(status_code=409, detail=message)
     if isinstance(exc, (FileNotFoundError, ValueError)):
         return HTTPException(status_code=400, detail=message)
@@ -188,34 +188,15 @@ class RunTaskRequest(BaseModel):
         return task_name
 
 
-class ScheduleCreateRequest(BaseModel):
-    name: str
-    enabled: bool = True
-    target_type: str = "config"
-    target: str
+class ScheduleSettingsUpdateRequest(BaseModel):
     frequency: str = "daily"
     time: str = "18:00"
     weekdays: list[str] = Field(default_factory=lambda: ["1", "2", "3", "4", "5"])
     interval_minutes: int = 60
-    timezone: str = "Asia/Shanghai"
-    log_level: Optional[str] = "INFO"
-    concurrency_policy: str = "skip"
-    retry_attempts: int = 0
 
 
-class ScheduleUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    enabled: Optional[bool] = None
-    target_type: Optional[str] = None
-    target: Optional[str] = None
-    frequency: Optional[str] = None
-    time: Optional[str] = None
-    weekdays: Optional[list[str]] = None
-    interval_minutes: Optional[int] = None
-    timezone: Optional[str] = None
-    log_level: Optional[str] = None
-    concurrency_policy: Optional[str] = None
-    retry_attempts: Optional[int] = None
+class ScheduleEnabledRequest(BaseModel):
+    enabled: bool
 
 
 class WideTableInlineRunRequest(BaseModel):
@@ -533,11 +514,18 @@ def _sync_config_response(config: dict[str, Any]) -> dict[str, Any]:
         return payload
     try:
         job = JOB_MANAGER.get_job(job_id)
-        payload["last_job"] = job.__dict__
+        payload["last_job"] = _job_response(job)
         payload["last_task_results"] = JOB_MANAGER.read_task_results(job_id).get("tasks", [])
     except KeyError:
         pass
     return payload
+
+
+def _job_response(job) -> dict[str, Any]:
+    return {
+        **job.__dict__,
+        "queue_position": JOB_MANAGER.queue_position(job.job_id),
+    }
 
 
 @app.get("/api/sync/configs")
@@ -581,15 +569,17 @@ def update_sync_config(config_id: str, request: SyncConfigUpdateRequest):
 def delete_sync_config(config_id: str):
     try:
         CONFIG_MANAGER.get_config(config_id)
-        deleted_schedules = SCHEDULE_MANAGER.delete_by_target("config", config_id)
+        active = JOB_MANAGER.find_active_config_job(config_id)
+        if active is not None:
+            raise RuntimeError(
+                f"sync config already queued or running config_id={config_id} job_id={active.job_id}"
+            )
         config = CONFIG_MANAGER.delete_config(config_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="sync config not found")
-    return {
-        "ok": True,
-        "config": config,
-        "deleted_schedules": [item.__dict__ for item in deleted_schedules],
-    }
+    except Exception as exc:
+        raise _job_error_to_http(exc)
+    return {"ok": True, "config": config}
 
 
 @app.post("/api/sync/configs/{config_id}/run")
@@ -602,13 +592,14 @@ def run_sync_config(config_id: str):
             continue_on_error=config["continue_on_error"],
             log_level=config["log_level"],
             config_id=config["id"],
+            trigger="manual",
         )
-        CONFIG_MANAGER.mark_started(config_id, job.job_id, started_at=job.started_at)
+        CONFIG_MANAGER.mark_started(config_id, job.job_id, started_at=job.started_at or job.created_at)
     except KeyError:
         raise HTTPException(status_code=404, detail="sync config not found")
     except Exception as exc:
         raise _job_error_to_http(exc)
-    return {"ok": True, "job": job.__dict__}
+    return {"ok": True, "job": _job_response(job)}
 
 @app.get("/api/sync/meta/tasks")
 @app.get("/api/meta/tasks")
@@ -717,108 +708,34 @@ def import_provider_config_package(request: ProviderConfigImportRequest):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@app.get("/api/sync/schedules")
-@app.get("/api/schedules")
-def list_schedules(
-    enabled: Optional[bool] = Query(None),
-    target_type: Optional[str] = Query(None),
-):
+@app.get("/api/sync/configs/{config_id}/schedule")
+def get_config_schedule(config_id: str):
     try:
-        return {
-            "schedules": [
-                schedule.__dict__
-                for schedule in SCHEDULE_MANAGER.list_schedules(
-                    enabled=enabled,
-                    target_type=target_type,
-                )
-            ]
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        return SCHEDULE_MANAGER.get_schedule(config_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="sync config not found")
 
 
-@app.post("/api/sync/schedules")
-@app.post("/api/schedules")
-def create_schedule(request: ScheduleCreateRequest):
+@app.put("/api/sync/configs/{config_id}/schedule")
+def update_config_schedule(config_id: str, request: ScheduleSettingsUpdateRequest):
     try:
-        schedule = SCHEDULE_MANAGER.create_schedule(_model_to_dict(request))
+        schedule = SCHEDULE_MANAGER.update_schedule(config_id, _model_to_dict(request))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="sync config not found")
     except Exception as exc:
         raise _job_error_to_http(exc)
-    return {"ok": True, "schedule": schedule.__dict__}
+    return {"ok": True, "schedule": schedule}
 
 
-@app.get("/api/sync/schedules/{schedule_id}")
-@app.get("/api/schedules/{schedule_id}")
-def get_schedule(schedule_id: str):
+@app.patch("/api/sync/configs/{config_id}/schedule/enabled")
+def set_config_schedule_enabled(config_id: str, request: ScheduleEnabledRequest):
     try:
-        schedule = SCHEDULE_MANAGER.get_schedule(schedule_id)
+        schedule = SCHEDULE_MANAGER.set_enabled(config_id, request.enabled)
     except KeyError:
-        raise HTTPException(status_code=404, detail="schedule not found")
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    return schedule.__dict__
-
-
-@app.patch("/api/sync/schedules/{schedule_id}")
-@app.patch("/api/schedules/{schedule_id}")
-def update_schedule(schedule_id: str, request: ScheduleUpdateRequest):
-    try:
-        schedule = SCHEDULE_MANAGER.update_schedule(schedule_id, _model_to_dict(request, exclude_unset=True))
-    except KeyError:
-        raise HTTPException(status_code=404, detail="schedule not found")
+        raise HTTPException(status_code=404, detail="sync config not found")
     except Exception as exc:
         raise _job_error_to_http(exc)
-    return {"ok": True, "schedule": schedule.__dict__}
-
-
-@app.delete("/api/sync/schedules/{schedule_id}")
-@app.delete("/api/schedules/{schedule_id}")
-def delete_schedule(schedule_id: str):
-    try:
-        schedule = SCHEDULE_MANAGER.delete_schedule(schedule_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="schedule not found")
-    return {"ok": True, "schedule": schedule.__dict__}
-
-
-@app.post("/api/sync/schedules/{schedule_id}/pause")
-@app.post("/api/schedules/{schedule_id}/pause")
-def pause_schedule(schedule_id: str):
-    try:
-        schedule = SCHEDULE_MANAGER.set_enabled(schedule_id, False)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="schedule not found")
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    return {"ok": True, "schedule": schedule.__dict__}
-
-
-@app.post("/api/sync/schedules/{schedule_id}/resume")
-@app.post("/api/schedules/{schedule_id}/resume")
-def resume_schedule(schedule_id: str):
-    try:
-        schedule = SCHEDULE_MANAGER.set_enabled(schedule_id, True)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="schedule not found")
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    return {"ok": True, "schedule": schedule.__dict__}
-
-
-@app.post("/api/sync/schedules/{schedule_id}/run-now")
-@app.post("/api/schedules/{schedule_id}/run-now")
-def run_schedule_now(schedule_id: str):
-    try:
-        schedule, job = SCHEDULE_MANAGER.run_schedule_now(schedule_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="schedule not found")
-    except Exception as exc:
-        raise _job_error_to_http(exc)
-    return {
-        "ok": True,
-        "schedule": schedule.__dict__,
-        "job": job.__dict__,
-    }
+    return {"ok": True, "schedule": schedule}
 
 
 @app.get("/api/sync-table-status")
@@ -1025,7 +942,7 @@ def list_jobs(
     kind: Optional[str] = Query(None),
 ):
     return {
-        "jobs": [job.__dict__ for job in JOB_MANAGER.list_jobs(status=status, task=task, kind=kind)]
+        "jobs": [_job_response(job) for job in JOB_MANAGER.list_jobs(status=status, task=task, kind=kind)]
     }
 
 
@@ -1037,7 +954,7 @@ def get_job(job_id: str, tail_lines: int = Query(100, ge=1, le=2000)):
     except KeyError:
         raise HTTPException(status_code=404, detail="job not found")
     payload = {
-        **job.__dict__,
+        **_job_response(job),
         "logs_tail": JOB_MANAGER.read_job_log(job_id, tail_lines=tail_lines),
     }
     if job.task_results_path:
@@ -1067,7 +984,7 @@ def run_task_batch(request: RunTaskBatchRequest):
         )
     except Exception as exc:
         raise _job_error_to_http(exc)
-    return {"ok": True, "job": job.__dict__}
+    return {"ok": True, "job": _job_response(job)}
 
 
 @app.post("/api/sync/jobs/run-task")
@@ -1113,7 +1030,7 @@ def run_task(request: RunTaskRequest):
     except Exception as exc:
         raise _job_error_to_http(exc)
     return {
-        **job.__dict__,
+        **_job_response(job),
         "task_metadata": task_metadata,
     }
 
@@ -1125,4 +1042,4 @@ def cancel_job(job_id: str):
         job = JOB_MANAGER.cancel_job(job_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="job not found")
-    return job.__dict__
+    return _job_response(job)

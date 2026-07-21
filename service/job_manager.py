@@ -50,6 +50,7 @@ class JobRecord:
     config_id: Optional[str] = None
     config_name: Optional[str] = None
     task_results_path: Optional[str] = None
+    trigger: Optional[str] = None
 
 
 class SyncJobManager:
@@ -58,12 +59,16 @@ class SyncJobManager:
         self.state_dir = (state_dir or (self.project_root / ".service_state")).resolve()
         self.jobs_dir = self.state_dir / "jobs"
         self.logs_dir = self.state_dir / "logs"
+        self.queue_path = self.state_dir / "job_queue.json"
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._jobs: dict[str, JobRecord] = {}
         self._processes: dict[str, subprocess.Popen] = {}
+        self._queue: list[str] = []
         self._load_existing_jobs()
+        self._load_queue()
+        self._dispatch_next()
 
     def list_jobs(
         self,
@@ -97,6 +102,43 @@ class SyncJobManager:
         jobs = self.list_jobs()
         return [job for job in jobs if job.status in {"running", "cancelling"}]
 
+    def get_active_jobs(self, *, config_id: Optional[str] = None) -> list[JobRecord]:
+        jobs = self.list_jobs()
+        items = [job for job in jobs if job.status in {"queued", "running", "cancelling"}]
+        if config_id:
+            items = [job for job in items if job.config_id == config_id]
+        return items
+
+    def find_active_config_job(self, config_id: str) -> Optional[JobRecord]:
+        items = self.get_active_jobs(config_id=config_id)
+        return sorted(items, key=lambda item: item.created_at)[0] if items else None
+
+    def queue_position(self, job_id: str) -> Optional[int]:
+        with self._lock:
+            try:
+                return self._queue.index(job_id) + 1
+            except ValueError:
+                return None
+
+    def cancel_pending_jobs(self, *, config_id: str, trigger: Optional[str] = None) -> list[JobRecord]:
+        cancelled: list[JobRecord] = []
+        with self._lock:
+            for job_id in list(self._queue):
+                job = self._jobs.get(job_id)
+                if job is None or job.status != "queued" or job.config_id != config_id:
+                    continue
+                if trigger and job.trigger != trigger:
+                    continue
+                self._queue.remove(job_id)
+                job.status = "cancelled"
+                job.finished_at = utc_now_iso()
+                job.updated_at = job.finished_at
+                job.error = "cancelled before execution"
+                self._save_job(job)
+                cancelled.append(job)
+            self._save_queue()
+        return cancelled
+
     def create_task_batch_job(
         self,
         *,
@@ -106,13 +148,20 @@ class SyncJobManager:
         log_level: str = "INFO",
         runtime_path: Optional[str] = None,
         config_id: Optional[str] = None,
+        trigger: str = "manual",
     ) -> JobRecord:
-        self._ensure_no_running_jobs()
         clean_name = str(name or "").strip()
         if not clean_name:
             raise ValueError("task batch name is required")
         if not tasks or not any(item.get("enabled", True) for item in tasks):
             raise ValueError("task batch must contain at least one enabled task")
+        clean_config_id = str(config_id or "").strip() or None
+        if clean_config_id:
+            active = self.find_active_config_job(clean_config_id)
+            if active is not None:
+                raise RuntimeError(
+                    f"sync config already queued or running config_id={clean_config_id} job_id={active.job_id}"
+                )
 
         job_id = uuid.uuid4().hex[:12]
         log_path = self.logs_dir / f"{job_id}.log"
@@ -121,7 +170,7 @@ class SyncJobManager:
         snapshot = {
             "job_id": job_id,
             "name": clean_name,
-            "config_id": str(config_id or "").strip() or None,
+            "config_id": clean_config_id,
             "continue_on_error": bool(continue_on_error),
             "log_level": str(log_level or "INFO").strip() or "INFO",
             "runtime_path": runtime_path,
@@ -139,25 +188,38 @@ class SyncJobManager:
             str(log_path),
         ]
         return self._start_job(
-            kind="sync_config" if config_id else "task_batch",
+            kind="sync_config" if clean_config_id else "task_batch",
             command=command,
             config_path=None,
             task=None,
             request_payload=snapshot,
             job_id=job_id,
             log_path=log_path,
-            config_id=str(config_id or "").strip() or None,
+            config_id=clean_config_id,
             config_name=clean_name,
             task_results_path=str(results_path),
+            trigger=str(trigger or "manual").strip() or "manual",
         )
 
     def cancel_job(self, job_id: str) -> JobRecord:
         with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise KeyError(f"job not found: {job_id}")
+            if job.status == "queued":
+                if job_id in self._queue:
+                    self._queue.remove(job_id)
+                job.status = "cancelled"
+                job.finished_at = utc_now_iso()
+                job.updated_at = job.finished_at
+                job.error = "cancelled before execution"
+                self._save_job(job)
+                self._save_queue()
+                return job
             process = self._processes.get(job_id)
             if process is None:
-                return self.get_job(job_id)
-            job = self._jobs.get(job_id)
-            if job is not None and job.status == "running":
+                return job
+            if job.status == "running":
                 job.status = "cancelling"
                 job.updated_at = utc_now_iso()
                 self._save_job(job)
@@ -210,25 +272,17 @@ class SyncJobManager:
         config_id: Optional[str] = None,
         config_name: Optional[str] = None,
         task_results_path: Optional[str] = None,
+        trigger: Optional[str] = None,
     ) -> JobRecord:
         job_id = job_id or uuid.uuid4().hex[:12]
         log_path = log_path or (self.logs_dir / f"{job_id}.log")
-        log_fp = log_path.open("a", encoding="utf-8")
-        process = subprocess.Popen(
-            command,
-            cwd=str(self.project_root),
-            env=self._build_subprocess_env(),
-            stdout=log_fp,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
         now = utc_now_iso()
         job = JobRecord(
             job_id=job_id,
             kind=kind,
-            status="running",
+            status="queued",
             created_at=now,
-            started_at=now,
+            started_at=None,
             finished_at=None,
             cwd=str(self.project_root),
             command=command,
@@ -237,7 +291,7 @@ class SyncJobManager:
             task=task,
             source=source,
             target=target,
-            pid=process.pid,
+            pid=None,
             return_code=None,
             error=None,
             request_payload=request_payload,
@@ -245,14 +299,16 @@ class SyncJobManager:
             config_id=config_id,
             config_name=config_name,
             task_results_path=task_results_path,
+            trigger=str(trigger or "manual").strip() or "manual",
         )
         with self._lock:
             self._jobs[job_id] = job
-            self._processes[job_id] = process
+            self._queue.append(job_id)
             self._save_job(job)
-        watcher = threading.Thread(target=self._watch_process, args=(job_id, process, log_fp), daemon=True)
-        watcher.start()
-        return job
+            self._save_queue()
+        self._dispatch_next()
+        with self._lock:
+            return self._jobs[job_id]
 
     def create_registered_task_job(
         self,
@@ -286,7 +342,6 @@ class SyncJobManager:
         log_level: Optional[str] = None,
         runtime_path: Optional[str] = None,
     ) -> JobRecord:
-        self._ensure_no_running_jobs()
         definition = TASK_REGISTRY.get_task(task)
         job_id = uuid.uuid4().hex[:12]
         log_path = self.logs_dir / f"{job_id}.log"
@@ -391,6 +446,7 @@ class SyncJobManager:
                 "log_level": log_level,
                 "runtime_path": runtime_path,
             },
+            trigger="manual",
         )
 
     def _watch_process(self, job_id: str, process: subprocess.Popen, log_fp) -> None:
@@ -409,6 +465,7 @@ class SyncJobManager:
                 job.status = self._status_from_return_code(return_code)
             self._processes.pop(job_id, None)
             self._save_job(job)
+        self._dispatch_next()
 
     def _refresh_job(self, job_id: str) -> None:
         with self._lock:
@@ -428,15 +485,7 @@ class SyncJobManager:
                 job.status = self._status_from_return_code(return_code)
             self._processes.pop(job_id, None)
             self._save_job(job)
-
-    def _ensure_no_running_jobs(self) -> None:
-        running_jobs = self.get_running_jobs()
-        if not running_jobs:
-            return
-        running = running_jobs[0]
-        raise RuntimeError(
-            f"another sync job is running job_id={running.job_id} task={running.task or running.config_path}; wait for it to finish before starting a new sync job"
-        )
+        self._dispatch_next()
 
     def _save_job(self, job: JobRecord) -> None:
         path = self.jobs_dir / f"{job.job_id}.json"
@@ -466,7 +515,7 @@ class SyncJobManager:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 job = JobRecord(**data)
-                if job.status == "running":
+                if job.status in {"running", "cancelling"}:
                     job.status = "interrupted"
                     job.finished_at = job.finished_at or utc_now_iso()
                     job.updated_at = job.updated_at or job.finished_at
@@ -477,6 +526,89 @@ class SyncJobManager:
                 self._jobs[job.job_id] = job
             except Exception:
                 continue
+
+    def _load_queue(self) -> None:
+        persisted: list[str] = []
+        try:
+            payload = json.loads(self.queue_path.read_text(encoding="utf-8"))
+            if isinstance(payload, list):
+                persisted = [str(item) for item in payload]
+        except (OSError, json.JSONDecodeError):
+            persisted = []
+        queued_ids = {
+            job.job_id
+            for job in self._jobs.values()
+            if job.status == "queued"
+        }
+        ordered = [job_id for job_id in persisted if job_id in queued_ids]
+        remaining = sorted(
+            (self._jobs[job_id] for job_id in queued_ids if job_id not in ordered),
+            key=lambda item: (item.created_at, item.job_id),
+        )
+        self._queue = ordered + [job.job_id for job in remaining]
+        self._save_queue()
+
+    def _dispatch_next(self) -> None:
+        while True:
+            watcher: Optional[threading.Thread] = None
+            with self._lock:
+                if any(job.status in {"running", "cancelling"} for job in self._jobs.values()):
+                    return
+                job: Optional[JobRecord] = None
+                queue_changed = False
+                while self._queue:
+                    job_id = self._queue.pop(0)
+                    queue_changed = True
+                    candidate = self._jobs.get(job_id)
+                    if candidate is not None and candidate.status == "queued":
+                        job = candidate
+                        break
+                if queue_changed:
+                    self._save_queue()
+                if job is None:
+                    return
+
+                log_path = Path(job.log_path)
+                log_fp = log_path.open("a", encoding="utf-8")
+                try:
+                    process = subprocess.Popen(
+                        job.command,
+                        cwd=str(self.project_root),
+                        env=self._build_subprocess_env(),
+                        stdout=log_fp,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
+                except Exception as exc:
+                    log_fp.close()
+                    job.status = "failed"
+                    job.error = str(exc)
+                    job.finished_at = utc_now_iso()
+                    job.updated_at = job.finished_at
+                    self._save_job(job)
+                    continue
+
+                now = utc_now_iso()
+                job.status = "running"
+                job.started_at = now
+                job.updated_at = now
+                job.pid = process.pid
+                self._processes[job.job_id] = process
+                self._save_job(job)
+                watcher = threading.Thread(
+                    target=self._watch_process,
+                    args=(job.job_id, process, log_fp),
+                    daemon=True,
+                )
+            if watcher is not None:
+                watcher.start()
+            return
+
+    def _save_queue(self) -> None:
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        temp_path = self.queue_path.with_suffix(".json.tmp")
+        temp_path.write_text(json.dumps(self._queue, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(self.queue_path)
 
     def _build_subprocess_env(self) -> dict[str, str]:
         env = os.environ.copy()

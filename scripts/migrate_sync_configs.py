@@ -63,7 +63,7 @@ def migrate(project_root: Path, state_dir: Path | None = None) -> dict[str, Any]
             existing_ids.add(config_id)
         migrated.append(record)
 
-    schedules = _migrate_schedules(manager.state_dir / "schedules")
+    schedules = _migrate_schedules(manager, manager.state_dir / "schedules")
     return {
         "configs": [
             {"id": item["id"], "name": item["name"], "task_count": len(item["tasks"])}
@@ -118,7 +118,7 @@ def _convert_legacy_config(
     }
 
 
-def _migrate_schedules(schedules_dir: Path) -> list[dict[str, str]]:
+def _migrate_schedules(manager: SyncConfigManager, schedules_dir: Path) -> list[dict[str, str]]:
     migrated: list[dict[str, str]] = []
     if not schedules_dir.exists():
         return migrated
@@ -127,17 +127,31 @@ def _migrate_schedules(schedules_dir: Path) -> list[dict[str, str]]:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if payload.get("target_type") != "config":
-            continue
         old_target = str(payload.get("target") or "")
-        new_target = LEGACY_TARGETS.get(old_target)
-        if not new_target:
+        new_target = LEGACY_TARGETS.get(old_target, old_target)
+        try:
+            manager.get_config(new_target)
+        except KeyError:
+            path.unlink(missing_ok=True)
             continue
-        payload["target"] = new_target
-        temp_path = path.with_suffix(".json.tmp")
-        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp_path.replace(path)
-        migrated.append({"id": str(payload.get("id") or path.stem), "from": old_target, "to": new_target})
+        if payload.get("target_type") == "config":
+            enabled = _coerce_bool(payload.get("enabled", False))
+            manager.update_schedule(
+                new_target,
+                {
+                    "enabled": enabled,
+                    "frequency": payload.get("frequency") or "daily",
+                    "time": payload.get("time") or "18:00",
+                    "weekdays": payload.get("weekdays") or ["1", "2", "3", "4", "5"],
+                    "interval_minutes": payload.get("interval_minutes") or 60,
+                    "next_run_at": payload.get("next_run_at") if enabled else "",
+                    "last_trigger_at": payload.get("last_run_at"),
+                    "last_trigger_result": "started" if payload.get("last_job_id") else None,
+                    "last_trigger_message": None,
+                },
+            )
+            migrated.append({"id": new_target, "from": old_target, "to": new_target})
+        path.unlink(missing_ok=True)
     return migrated
 
 

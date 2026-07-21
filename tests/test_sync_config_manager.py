@@ -35,6 +35,8 @@ class SyncConfigManagerTest(unittest.TestCase):
             self.assertEqual([item["name"] for item in config["tasks"]].count("baostock.daily_kline"), 2)
             self.assertEqual(config["tasks"][0]["database"], "starlight")
             self.assertEqual(config["tasks"][1]["database"], "baostock")
+            self.assertFalse(config["schedule"]["enabled"])
+            self.assertEqual(config["schedule"]["time"], "18:00")
             self.assertTrue((root / ".service_state" / "sync_configs" / "sync_config_daily.json").is_file())
 
             reloaded = SyncConfigManager(root)

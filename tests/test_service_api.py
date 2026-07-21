@@ -6,7 +6,6 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import yaml
@@ -354,22 +353,6 @@ sync:
         self.assertEqual(len(payload["jobs"]), 1)
         self.assertEqual(payload["jobs"][0]["status"], "running")
 
-    def test_run_task_returns_409_when_another_job_running(self) -> None:
-        client = TestClient(app)
-        with patch(
-            "sync_data_system.service.api.JOB_MANAGER.create_registered_task_job",
-            side_effect=RuntimeError("another sync job is running job_id=job1 task=daily_kline; cancel it first"),
-        ), patch(
-            "sync_data_system.service.api.JOB_MANAGER.list_registered_tasks",
-            return_value=[{"name": "amazingdata.daily_kline"}],
-        ):
-            response = client.post(
-                "/api/jobs/run-task",
-                json={"name": "amazingdata.daily_kline"},
-            )
-        self.assertEqual(response.status_code, 409)
-        self.assertIn("another sync job is running", response.json()["detail"])
-
     def test_run_task_returns_task_metadata(self) -> None:
         client = TestClient(app)
         fake_job = JobRecord(
@@ -413,84 +396,95 @@ sync:
         self.assertEqual(payload["job_id"], "job1")
         self.assertEqual(payload["task_metadata"]["name"], "amazingdata.daily_kline")
 
-    def test_list_schedules_returns_schedule_records(self) -> None:
+    def test_config_schedule_uses_config_scoped_endpoint(self) -> None:
         client = TestClient(app)
 
-        fake_schedule = SimpleNamespace(
-            id="schedule_1",
-            name="每日基础数据",
-            enabled=True,
-            target_type="config",
-            target="run_sync.daily.toml",
-            frequency="daily",
-        )
-
-        with patch("sync_data_system.service.api.SCHEDULE_MANAGER.list_schedules", return_value=[fake_schedule]):
-            response = client.get("/api/sync/schedules")
+        fake_schedule = {
+            "enabled": True,
+            "frequency": "daily",
+            "time": "18:00",
+            "next_run_at": "2026-01-02T10:00:00+00:00",
+        }
+        with patch(
+            "sync_data_system.service.api.SCHEDULE_MANAGER.get_schedule",
+            return_value=fake_schedule,
+        ) as get_schedule:
+            response = client.get("/api/sync/configs/sync_config_daily/schedule")
 
         self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertEqual(payload["schedules"][0]["id"], "schedule_1")
+        self.assertEqual(response.json(), fake_schedule)
+        get_schedule.assert_called_once_with("sync_config_daily")
 
-    def test_create_schedule_returns_validation_error(self) -> None:
+    def test_schedule_switch_uses_dedicated_immediate_endpoint(self) -> None:
         client = TestClient(app)
         with patch(
-            "sync_data_system.service.api.SCHEDULE_MANAGER.create_schedule",
-            side_effect=ValueError("unknown sync config: missing.toml"),
+            "sync_data_system.service.api.SCHEDULE_MANAGER.set_enabled",
+            return_value={"enabled": True, "frequency": "daily"},
+        ) as set_enabled:
+            response = client.patch(
+                "/api/sync/configs/sync_config_daily/schedule/enabled",
+                json={"enabled": True},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["schedule"]["enabled"])
+        set_enabled.assert_called_once_with("sync_config_daily", True)
+
+    def test_update_schedule_rejects_editing_while_disabled(self) -> None:
+        client = TestClient(app)
+        with patch(
+            "sync_data_system.service.api.SCHEDULE_MANAGER.update_schedule",
+            side_effect=ValueError("enable the schedule before editing its settings"),
         ):
-            response = client.post(
-                "/api/sync/schedules",
+            response = client.put(
+                "/api/sync/configs/sync_config_daily/schedule",
                 json={
-                    "name": "缺失配置",
-                    "target_type": "config",
-                    "target": "missing.toml",
+                    "frequency": "daily",
+                    "time": "18:00",
+                    "weekdays": ["1", "2", "3", "4", "5"],
+                    "interval_minutes": 60,
                 },
             )
 
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("unknown sync config", response.json()["detail"])
+        self.assertEqual(response.status_code, 409)
 
-    def test_run_schedule_now_returns_job(self) -> None:
+    def test_removed_schedule_collection_routes_return_not_found(self) -> None:
         client = TestClient(app)
-        fake_job = JobRecord(
-            job_id="job1",
-            kind="registered_task",
-            status="running",
+        for method, path in [
+            ("get", "/api/sync/schedules"),
+            ("post", "/api/sync/schedules"),
+            ("get", "/api/sync/schedules/schedule_1"),
+            ("delete", "/api/sync/schedules/schedule_1"),
+        ]:
+            self.assertEqual(getattr(client, method)(path).status_code, 404)
+
+    def test_config_cannot_be_deleted_while_queued(self) -> None:
+        client = TestClient(app)
+        queued_job = JobRecord(
+            job_id="queued-job",
+            kind="sync_config",
+            status="queued",
             created_at="2026-01-01T00:00:00+00:00",
-            started_at="2026-01-01T00:00:00+00:00",
+            started_at=None,
             finished_at=None,
             cwd="/tmp",
-            command=["python", "scripts/run_provider_sync.py"],
-            log_path="/tmp/job1.log",
-            config_path=None,
-            task="amazingdata.daily_kline",
-            source="amazingdata",
-            target="ad_market_kline_daily",
-            pid=123,
-            return_code=None,
-            error=None,
-            request_payload={"name": "amazingdata.daily_kline"},
+            command=["python"],
+            log_path="/tmp/queued-job.log",
+            config_id="sync_config_daily",
         )
-
-        fake_schedule = SimpleNamespace(
-            id="schedule_1",
-            name="日线同步",
-            enabled=True,
-            target_type="task",
-            target="amazingdata.daily_kline",
-            last_job_id="job1",
-        )
-
         with patch(
-            "sync_data_system.service.api.SCHEDULE_MANAGER.run_schedule_now",
-            return_value=(fake_schedule, fake_job),
-        ):
-            response = client.post("/api/sync/schedules/schedule_1/run-now")
+            "sync_data_system.service.api.CONFIG_MANAGER.get_config",
+            return_value={"id": "sync_config_daily"},
+        ), patch(
+            "sync_data_system.service.api.JOB_MANAGER.find_active_config_job",
+            return_value=queued_job,
+        ), patch(
+            "sync_data_system.service.api.CONFIG_MANAGER.delete_config",
+        ) as delete_config:
+            response = client.delete("/api/sync/configs/sync_config_daily")
 
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertEqual(payload["schedule"]["last_job_id"], "job1")
-        self.assertEqual(payload["job"]["job_id"], "job1")
+        self.assertEqual(response.status_code, 409)
+        delete_config.assert_not_called()
 
 
 if __name__ == "__main__":

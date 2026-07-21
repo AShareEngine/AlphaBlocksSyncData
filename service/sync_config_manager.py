@@ -17,7 +17,10 @@ from sync_data_system.service.task_registry import TASK_REGISTRY
 
 
 CONFIG_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
 DATE_MODES = {"incremental", "fixed", "provider_default"}
+SCHEDULE_FREQUENCIES = {"daily", "weekly", "interval"}
+DEFAULT_WEEKDAYS = ["1", "2", "3", "4", "5"]
 
 
 def utc_now_iso() -> str:
@@ -100,6 +103,32 @@ class SyncConfigManager:
                 path.unlink()
             return deepcopy(record)
 
+    def get_schedule(self, config_id: str) -> dict[str, Any]:
+        clean_id = self._clean_id(config_id)
+        with self._lock:
+            if clean_id not in self._configs:
+                raise KeyError(clean_id)
+            return deepcopy(self._configs[clean_id]["schedule"])
+
+    def update_schedule(self, config_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+        clean_id = self._clean_id(config_id)
+        with self._lock:
+            if clean_id not in self._configs:
+                raise KeyError(clean_id)
+            current = self._configs[clean_id]
+            schedule = self._normalize_schedule(
+                {
+                    **current["schedule"],
+                    **updates,
+                    "created_at": current["schedule"]["created_at"],
+                    "updated_at": utc_now_iso(),
+                }
+            )
+            current["schedule"] = schedule
+            current["updated_at"] = utc_now_iso()
+            self._save_config(current)
+            return deepcopy(schedule)
+
     def mark_started(self, config_id: str, job_id: str, *, started_at: str | None = None) -> dict[str, Any]:
         clean_id = self._clean_id(config_id)
         with self._lock:
@@ -135,6 +164,49 @@ class SyncConfigManager:
             "legacy_source": self._clean_text(payload.get("legacy_source")) or None,
             "last_job_id": self._clean_text(payload.get("last_job_id")) or None,
             "last_run_at": self._clean_text(payload.get("last_run_at")) or None,
+            "schedule": self._normalize_schedule(payload.get("schedule") or {}),
+            "created_at": created_at,
+            "updated_at": updated_at,
+        }
+
+    def _normalize_schedule(self, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("sync config schedule must be an object")
+        frequency = self._clean_text(payload.get("frequency")) or "daily"
+        if frequency not in SCHEDULE_FREQUENCIES:
+            raise ValueError(f"schedule frequency must be one of {sorted(SCHEDULE_FREQUENCIES)}")
+        time_value = self._clean_text(payload.get("time")) or "18:00"
+        if frequency != "interval":
+            match = TIME_RE.match(time_value)
+            if not match or int(match.group(1)) > 23 or int(match.group(2)) > 59:
+                raise ValueError("schedule time must use HH:mm")
+        weekdays = payload.get("weekdays") or list(DEFAULT_WEEKDAYS)
+        if not isinstance(weekdays, list):
+            weekdays = [weekdays]
+        clean_weekdays = sorted({self._clean_text(item) for item in weekdays if self._clean_text(item)})
+        if any(item not in {"1", "2", "3", "4", "5", "6", "7"} for item in clean_weekdays):
+            raise ValueError("schedule weekdays must use values 1 through 7")
+        if frequency == "weekly" and not clean_weekdays:
+            raise ValueError("schedule weekdays are required for weekly frequency")
+        try:
+            interval_minutes = int(payload.get("interval_minutes") or 60)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("schedule interval_minutes must be an integer") from exc
+        if frequency == "interval" and interval_minutes < 5:
+            raise ValueError("schedule interval_minutes must be at least 5")
+        enabled = self._coerce_bool(payload.get("enabled"), default=False)
+        created_at = self._clean_text(payload.get("created_at")) or utc_now_iso()
+        updated_at = self._clean_text(payload.get("updated_at")) or created_at
+        return {
+            "enabled": enabled,
+            "frequency": frequency,
+            "time": time_value,
+            "weekdays": clean_weekdays or list(DEFAULT_WEEKDAYS),
+            "interval_minutes": interval_minutes,
+            "next_run_at": self._clean_text(payload.get("next_run_at")) if enabled else "",
+            "last_trigger_at": self._clean_text(payload.get("last_trigger_at")) or None,
+            "last_trigger_result": self._clean_text(payload.get("last_trigger_result")) or None,
+            "last_trigger_message": self._clean_text(payload.get("last_trigger_message")) or None,
             "created_at": created_at,
             "updated_at": updated_at,
         }
@@ -195,6 +267,8 @@ class SyncConfigManager:
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 record = self._normalize_record(payload)
                 self._configs[record["id"]] = record
+                if payload != record:
+                    self._save_config(record)
             except Exception:
                 continue
 

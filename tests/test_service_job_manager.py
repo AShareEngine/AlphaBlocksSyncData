@@ -112,7 +112,7 @@ class SyncJobManagerTest(unittest.TestCase):
 
             self.assertEqual(jobs[0].updated_at, "2026-01-01T00:10:00+00:00")
 
-    def test_rejects_new_job_when_running_job_exists(self) -> None:
+    def test_new_job_is_queued_when_another_job_is_running(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "sync_project"
             root.mkdir()
@@ -135,8 +135,111 @@ class SyncJobManagerTest(unittest.TestCase):
                 return_code=None,
                 error=None,
             )
-            with self.assertRaisesRegex(RuntimeError, "another sync job is running"):
-                manager._ensure_no_running_jobs()
+            job = manager.create_task_batch_job(
+                name="排队任务",
+                tasks=[{"id": "a", "name": "baostock.daily_kline", "enabled": True}],
+            )
+
+            self.assertEqual(job.status, "queued")
+            self.assertEqual(manager.queue_position(job.job_id), 1)
+
+    def test_same_config_cannot_be_queued_twice(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            manager = SyncJobManager(root, state_dir=root / ".service_state")
+            manager._jobs["job1"] = JobRecord(
+                job_id="job1",
+                kind="sync_config",
+                status="running",
+                created_at="2026-01-01T00:00:00+00:00",
+                started_at="2026-01-01T00:00:00+00:00",
+                finished_at=None,
+                cwd=str(root),
+                command=["python"],
+                log_path=str(root / "job1.log"),
+                config_id="sync_config_daily",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "already queued or running"):
+                manager.create_task_batch_job(
+                    name="重复配置",
+                    tasks=[{"id": "a", "name": "baostock.daily_kline", "enabled": True}],
+                    config_id="sync_config_daily",
+                )
+
+    def test_cancel_pending_scheduled_jobs_does_not_cancel_manual_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            manager = SyncJobManager(root, state_dir=root / ".service_state")
+            manager._jobs["running"] = JobRecord(
+                job_id="running",
+                kind="registered_task",
+                status="running",
+                created_at="2026-01-01T00:00:00+00:00",
+                started_at="2026-01-01T00:00:00+00:00",
+                finished_at=None,
+                cwd=str(root),
+                command=["python"],
+                log_path=str(root / "running.log"),
+            )
+            scheduled = manager.create_task_batch_job(
+                name="定时配置",
+                tasks=[{"id": "a", "name": "baostock.daily_kline", "enabled": True}],
+                config_id="sync_config_daily",
+                trigger="schedule",
+            )
+            manual = manager.create_task_batch_job(
+                name="手动临时任务",
+                tasks=[{"id": "b", "name": "baostock.daily_kline", "enabled": True}],
+            )
+
+            cancelled = manager.cancel_pending_jobs(
+                config_id="sync_config_daily",
+                trigger="schedule",
+            )
+
+            self.assertEqual([item.job_id for item in cancelled], [scheduled.job_id])
+            self.assertEqual(manager.get_job(scheduled.job_id).status, "cancelled")
+            self.assertEqual(manager.get_job(manual.job_id).status, "queued")
+
+    def test_persisted_queue_resumes_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            state_dir = root / ".service_state"
+            manager = SyncJobManager(root, state_dir=state_dir)
+            blocker = JobRecord(
+                job_id="blocker",
+                kind="registered_task",
+                status="running",
+                created_at="2026-01-01T00:00:00+00:00",
+                started_at="2026-01-01T00:00:00+00:00",
+                finished_at=None,
+                cwd=str(root),
+                command=["python"],
+                log_path=str(root / "blocker.log"),
+            )
+            manager._jobs[blocker.job_id] = blocker
+            manager._save_job(blocker)
+            queued = manager.create_task_batch_job(
+                name="恢复任务",
+                tasks=[{"id": "a", "name": "baostock.daily_kline", "enabled": True}],
+            )
+            self.assertEqual(queued.status, "queued")
+
+            fake_process = Mock()
+            fake_process.pid = 321
+            fake_process.poll.return_value = 0
+            fake_process.wait.return_value = 0
+            with patch("sync_data_system.service.job_manager.subprocess.Popen", return_value=fake_process) as popen:
+                reloaded = SyncJobManager(root, state_dir=state_dir)
+                resumed = reloaded.get_job(queued.job_id)
+
+            self.assertTrue(popen.called)
+            self.assertEqual(resumed.status, "success")
+            self.assertEqual(reloaded.get_job("blocker").status, "interrupted")
 
     def test_list_jobs_supports_filters(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
