@@ -16,6 +16,7 @@ from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sync_data_system.service.job_manager import JobRecord, SyncJobManager, utc_now_iso
+from sync_data_system.service.sync_config_manager import SyncConfigManager
 
 
 SCHEDULE_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -57,10 +58,12 @@ class SyncScheduleManager:
         self,
         project_root: Path,
         job_manager: SyncJobManager,
+        config_manager: SyncConfigManager,
         state_dir: Optional[Path] = None,
     ) -> None:
         self.project_root = Path(project_root).resolve()
         self.job_manager = job_manager
+        self.config_manager = config_manager
         self.state_dir = (state_dir or job_manager.state_dir).resolve()
         self.schedules_dir = self.state_dir / "schedules"
         self.schedules_dir.mkdir(parents=True, exist_ok=True)
@@ -141,6 +144,16 @@ class SyncScheduleManager:
             if path.exists():
                 path.unlink()
         return schedule
+
+    def delete_by_target(self, target_type: str, target: str) -> list[ScheduleRecord]:
+        """Delete schedules that directly reference a removed business object."""
+        with self._lock:
+            schedule_ids = [
+                item.id
+                for item in self._schedules.values()
+                if item.target_type == target_type and item.target == target
+            ]
+        return [self.delete_schedule(schedule_id) for schedule_id in schedule_ids]
 
     def set_enabled(self, schedule_id: str, enabled: bool) -> ScheduleRecord:
         with self._lock:
@@ -313,10 +326,20 @@ class SyncScheduleManager:
 
     def _start_schedule_job(self, schedule: ScheduleRecord) -> JobRecord:
         if schedule.target_type == "config":
-            return self.job_manager.create_config_job(
-                schedule.target,
-                log_level=schedule.log_level,
+            config = self.config_manager.get_config(schedule.target)
+            job = self.job_manager.create_task_batch_job(
+                name=config["name"],
+                tasks=config["tasks"],
+                continue_on_error=config["continue_on_error"],
+                log_level=schedule.log_level or config["log_level"],
+                config_id=config["id"],
             )
+            self.config_manager.mark_started(
+                config["id"],
+                job.job_id,
+                started_at=job.started_at,
+            )
+            return job
         elif schedule.target_type == "task":
             known_tasks = {item["name"] for item in self.job_manager.list_registered_tasks()}
             if schedule.target not in known_tasks:
@@ -435,8 +458,9 @@ class SyncScheduleManager:
 
     def _validate_target(self, target_type: str, target: str) -> None:
         if target_type == "config":
-            known_configs = set(self.job_manager.list_configs())
-            if target not in known_configs:
+            try:
+                self.config_manager.get_config(target)
+            except KeyError:
                 raise ValueError(f"unknown sync config: {target}")
             return
         known_tasks = {item["name"] for item in self.job_manager.list_registered_tasks()}

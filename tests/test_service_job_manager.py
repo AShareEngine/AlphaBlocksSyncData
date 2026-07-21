@@ -14,39 +14,6 @@ from sync_data_system.service.job_manager import JobRecord, SyncJobManager
 
 
 class SyncJobManagerTest(unittest.TestCase):
-    def test_list_configs_discovers_run_sync_toml_files(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir) / "sync_project"
-            root.mkdir()
-            config_root = root / "config" / "sync" / "plans"
-            config_root.mkdir(parents=True, exist_ok=True)
-            (config_root / "run_sync.full.toml").write_text("source = 'amazingdata'\n[[tasks]]\ntask='code_info'\n", encoding="utf-8")
-            (config_root / "run_sync.baostock.full.toml").write_text("source = 'baostock'\n[[tasks]]\ntask='all_stock'\n", encoding="utf-8")
-            manager = SyncJobManager(root, state_dir=root / ".service_state")
-            self.assertEqual(manager.list_configs(), ["run_sync.baostock.full.toml", "run_sync.full.toml"])
-
-    def test_list_configs_ignores_legacy_project_root_files(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir) / "sync_project"
-            root.mkdir()
-            (root / "run_sync.legacy.toml").write_text("source = 'amazingdata'\n[[tasks]]\ntask='code_info'\n", encoding="utf-8")
-            manager = SyncJobManager(root, state_dir=root / ".service_state")
-            self.assertEqual(manager.list_configs(), [])
-
-    def test_resolve_config_path_rejects_outside_project(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir) / "sync_project"
-            root.mkdir()
-            other = Path(tmpdir).parent / "outside.toml"
-            other.write_text("source = 'amazingdata'\n[[tasks]]\ntask='code_info'\n", encoding="utf-8")
-            try:
-                manager = SyncJobManager(root, state_dir=root / ".service_state")
-                with self.assertRaises(ValueError):
-                    manager._resolve_config_path(str(other))
-            finally:
-                if other.exists():
-                    other.unlink()
-
     def test_list_registered_tasks_returns_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "sync_project"
@@ -58,41 +25,40 @@ class SyncJobManagerTest(unittest.TestCase):
             self.assertEqual(daily["source"], "amazingdata")
             self.assertEqual(daily["target"], "ad_market_kline_daily")
 
-    def test_create_configs_job_runs_multiple_configs_in_one_process(self) -> None:
+    def test_create_task_batch_job_persists_cross_provider_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "sync_project"
             root.mkdir()
-            config_root = root / "config" / "sync" / "plans"
-            config_root.mkdir(parents=True, exist_ok=True)
-            (config_root / "run_sync.amazingdata.temp.toml").write_text("source = 'amazingdata'\n[[tasks]]\ntask='code_info'\n", encoding="utf-8")
-            (config_root / "run_sync.baostock.temp.toml").write_text("source = 'baostock'\n[[tasks]]\ntask='all_stock'\n", encoding="utf-8")
             manager = SyncJobManager(root, state_dir=root / ".service_state")
             fake_process = Mock()
             fake_process.pid = 123
             fake_process.wait.return_value = 0
+            tasks = [
+                {"id": "a", "name": "amazingdata.daily_kline", "enabled": True},
+                {"id": "b", "name": "baostock.daily_kline", "enabled": True},
+            ]
 
             with patch("sync_data_system.service.job_manager.subprocess.Popen", return_value=fake_process) as popen:
-                job = manager.create_configs_job(
-                    ["run_sync.amazingdata.temp.toml", "run_sync.baostock.temp.toml"],
+                job = manager.create_task_batch_job(
+                    name="跨源日线",
+                    tasks=tasks,
                     log_level="INFO",
+                    config_id="sync_config_daily",
                 )
 
             command = popen.call_args.args[0]
-            self.assertEqual(job.kind, "config")
-            self.assertEqual(job.config_path, "run_sync.amazingdata.temp.toml,run_sync.baostock.temp.toml")
-            self.assertEqual(job.request_payload["configs"], ["run_sync.amazingdata.temp.toml", "run_sync.baostock.temp.toml"])
+            self.assertEqual(job.kind, "sync_config")
+            self.assertEqual(job.config_id, "sync_config_daily")
+            self.assertEqual(job.request_payload["tasks"], tasks)
             self.assertIsNotNone(job.updated_at)
-            self.assertEqual(command.count("--config"), 2)
-            self.assertIn(str((config_root / "run_sync.amazingdata.temp.toml").resolve()), command)
-            self.assertIn(str((config_root / "run_sync.baostock.temp.toml").resolve()), command)
+            self.assertEqual(Path(command[1]).name, "run_task_batch.py")
+            snapshot = Path(job.request_payload and manager.jobs_dir / f"{job.job_id}.batch.json")
+            self.assertTrue(snapshot.is_file())
 
-    def test_create_config_job_uses_configured_job_python(self) -> None:
+    def test_create_task_batch_job_uses_configured_job_python(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "sync_project"
             root.mkdir()
-            config_root = root / "config" / "sync" / "plans"
-            config_root.mkdir(parents=True, exist_ok=True)
-            (config_root / "run_sync.amazingdata.temp.toml").write_text("source = 'amazingdata'\n[[tasks]]\ntask='code_info'\n", encoding="utf-8")
             manager = SyncJobManager(root, state_dir=root / ".service_state")
             fake_process = Mock()
             fake_process.pid = 123
@@ -102,7 +68,10 @@ class SyncJobManagerTest(unittest.TestCase):
                 patch.dict(os.environ, {"SYNC_JOB_PYTHON_BIN": "/opt/conda/envs/amazing_data/bin/python3"}),
                 patch("sync_data_system.service.job_manager.subprocess.Popen", return_value=fake_process) as popen,
             ):
-                manager.create_config_job("run_sync.amazingdata.temp.toml", log_level="INFO")
+                manager.create_task_batch_job(
+                    name="日线",
+                    tasks=[{"id": "a", "name": "amazingdata.daily_kline", "enabled": True}],
+                )
 
             command = popen.call_args.args[0]
             self.assertEqual(command[0], "/opt/conda/envs/amazing_data/bin/python3")

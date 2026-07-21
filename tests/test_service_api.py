@@ -185,19 +185,19 @@ sync:
         self.assertEqual(payload["items"][0]["latest_date"], "2026-04-22 00:00:00")
         self.assertEqual(payload["items"][0]["row_count"], 123)
 
-    def test_run_configs_endpoint_creates_single_batch_job(self) -> None:
+    def test_run_batch_endpoint_creates_transient_task_snapshot(self) -> None:
         client = TestClient(app)
         fake_job = JobRecord(
             job_id="job-batch",
-            kind="config",
+            kind="task_batch",
             status="running",
             created_at="2026-01-01T00:00:00+00:00",
             started_at="2026-01-01T00:00:00+00:00",
             finished_at=None,
             cwd="/tmp/project",
-            command=["python", "scripts/run_provider_sync.py"],
+            command=["python", "scripts/run_task_batch.py"],
             log_path="/tmp/job.log",
-            config_path="run_sync.a.toml,run_sync.b.toml",
+            config_path=None,
             task=None,
             source=None,
             target=None,
@@ -206,19 +206,26 @@ sync:
             error=None,
         )
 
-        with patch("sync_data_system.service.api.JOB_MANAGER.create_configs_job", return_value=fake_job) as create_job:
+        tasks = [
+            {"id": "one", "name": "amazingdata.daily_kline", "enabled": True},
+            {"id": "two", "name": "baostock.daily_kline", "enabled": True},
+        ]
+        with patch("sync_data_system.service.api.JOB_MANAGER.create_task_batch_job", return_value=fake_job) as create_job:
             response = client.post(
-                "/api/sync/jobs/run-configs",
+                "/api/sync/jobs/run-batch",
                 json={
-                    "configs": ["run_sync.a.toml", "run_sync.b.toml"],
+                    "name": "临时日线同步",
+                    "tasks": tasks,
                     "log_level": "INFO",
                 },
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["configs"], ["run_sync.a.toml", "run_sync.b.toml"])
+        self.assertEqual(response.json()["job"]["job_id"], "job-batch")
         create_job.assert_called_once_with(
-            ["run_sync.a.toml", "run_sync.b.toml"],
+            name="临时日线同步",
+            tasks=tasks,
+            continue_on_error=True,
             log_level="INFO",
             runtime_path=None,
         )

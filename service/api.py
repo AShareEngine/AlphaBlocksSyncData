@@ -19,8 +19,8 @@ from sync_data_system.clickhouse_client import ClickHouseConfig, create_clickhou
 from sync_data_system.config_paths import resolve_runtime_config_path
 from sync_data_system.core.providers import load_provider_registry
 from sync_data_system.service.job_manager import SyncJobManager
-from sync_data_system.toml_compat import tomllib
 from sync_data_system.service.schedule_manager import SyncScheduleManager
+from sync_data_system.service.sync_config_manager import SyncConfigManager
 from sync_data_system.wide_table_sync import (
     WideTableSyncStateRepository,
     build_wide_table_metadata,
@@ -31,7 +31,8 @@ from sync_data_system.wide_table_sync import (
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 JOB_MANAGER = SyncJobManager(PROJECT_ROOT)
-SCHEDULE_MANAGER = SyncScheduleManager(PROJECT_ROOT, JOB_MANAGER)
+CONFIG_MANAGER = SyncConfigManager(PROJECT_ROOT)
+SCHEDULE_MANAGER = SyncScheduleManager(PROJECT_ROOT, JOB_MANAGER, CONFIG_MANAGER)
 app = FastAPI(title="AmazingData Sync Service", version="0.1.0")
 
 
@@ -76,7 +77,6 @@ DATE_FIELD_CANDIDATES = (
     "date",
 )
 
-CONFIG_FILE_RE = re.compile(r"^run_sync.*\.toml$", re.IGNORECASE)
 PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 PROVIDER_PACKAGE_KIND = "alphablocks.sync.provider-package"
 PROVIDER_CODE_SUFFIXES = {".py"}
@@ -115,21 +115,28 @@ def _model_to_dict(model: BaseModel, **kwargs) -> dict[str, Any]:
     return model.dict(**kwargs)
 
 
-class RunConfigRequest(BaseModel):
-    config: str = Field(..., description="workspace-relative config path")
-    log_level: Optional[str] = None
-    runtime_path: Optional[str] = None
-
-
-class RunConfigsRequest(BaseModel):
-    configs: list[str] = Field(..., description="workspace-relative config paths")
-    log_level: Optional[str] = None
-    runtime_path: Optional[str] = None
-
-
-class SyncConfigWriteRequest(BaseModel):
+class SyncConfigCreateRequest(BaseModel):
     name: str
-    content: str = ""
+    description: str = ""
+    log_level: str = "INFO"
+    continue_on_error: bool = True
+    tasks: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SyncConfigUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    log_level: Optional[str] = None
+    continue_on_error: Optional[bool] = None
+    tasks: Optional[list[dict[str, Any]]] = None
+
+
+class RunTaskBatchRequest(BaseModel):
+    name: str = "临时同步任务"
+    tasks: list[dict[str, Any]] = Field(default_factory=list)
+    continue_on_error: bool = True
+    log_level: str = "INFO"
+    runtime_path: Optional[str] = None
 
 
 class ProviderConfigUpdateRequest(BaseModel):
@@ -223,13 +230,6 @@ class WideTableInlineRunRequest(BaseModel):
 @app.get("/api/sync/health")
 def health():
     return {"status": "ok"}
-
-
-def _resolve_sync_config_path(name: str) -> Path:
-    clean_name = Path(str(name or "")).name
-    if not clean_name or not CONFIG_FILE_RE.match(clean_name):
-        raise HTTPException(status_code=400, detail="config name must match run_sync*.toml")
-    return JOB_MANAGER.config_root / clean_name
 
 
 def _resolve_provider_config_path(runtime_path: Optional[str] = None) -> Path:
@@ -395,20 +395,9 @@ def _provider_plan_files(provider_root: Path, plans_path: Optional[Path]) -> lis
 
 
 def _sync_config_files_for_provider(provider: str) -> list[dict[str, str]]:
-    files: list[dict[str, str]] = []
-    if not JOB_MANAGER.config_root.exists():
-        return files
-    for path in sorted(JOB_MANAGER.config_root.glob("run_sync*.toml")):
-        if not path.is_file():
-            continue
-        try:
-            with path.open("rb") as handle:
-                payload = tomllib.load(handle)
-        except Exception:
-            continue
-        if str(payload.get("source") or "").strip() == provider:
-            files.append(_read_text_package_file(path))
-    return files
+    # Sync configurations are first-class, potentially cross-provider business
+    # objects. They are deliberately not bundled into a provider package.
+    return []
 
 
 def _provider_export_package(provider: str, include_code: bool = False, runtime_path: Optional[str] = None) -> dict[str, Any]:
@@ -452,7 +441,6 @@ def _safe_package_path(raw_path: str, *, provider: str, section: str) -> Path:
         raise ValueError(f"{section} contains invalid path: {raw_path!r}")
     path = (PROJECT_ROOT / clean_path).resolve()
     provider_root = (PROJECT_ROOT / "providers" / provider).resolve()
-    sync_root = JOB_MANAGER.config_root.resolve()
     project_root = PROJECT_ROOT.resolve()
     try:
         relative = path.relative_to(project_root)
@@ -462,10 +450,6 @@ def _safe_package_path(raw_path: str, *, provider: str, section: str) -> Path:
         raise ValueError(f"{section} path is not allowed: {raw_path}")
     if section in {"provider_manifest", "provider_plans", "code_files"}:
         path.relative_to(provider_root)
-    elif section == "sync_configs":
-        path.relative_to(sync_root)
-        if not CONFIG_FILE_RE.match(path.name):
-            raise ValueError(f"sync config name must match run_sync*.toml: {raw_path}")
     else:
         raise ValueError(f"unknown import section: {section}")
     if section == "code_files" and path.suffix not in PROVIDER_CODE_SUFFIXES:
@@ -518,11 +502,6 @@ def _import_provider_package(
             _write_package_file(item, provider=provider, section="provider_plans", overwrite=overwrite)
         )
 
-    for item in sections.get("sync_configs") or []:
-        imported_files.append(
-            _write_package_file(item, provider=provider, section="sync_configs", overwrite=overwrite)
-        )
-
     imported_code_files: list[str] = []
     if include_code:
         for item in sections.get("code_files") or []:
@@ -545,38 +524,91 @@ def _import_provider_package(
     }
 
 
-@app.get("/api/sync-configs")
+def _sync_config_response(config: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(config)
+    job_id = str(config.get("last_job_id") or "").strip()
+    payload["last_job"] = None
+    payload["last_task_results"] = []
+    if not job_id:
+        return payload
+    try:
+        job = JOB_MANAGER.get_job(job_id)
+        payload["last_job"] = job.__dict__
+        payload["last_task_results"] = JOB_MANAGER.read_task_results(job_id).get("tasks", [])
+    except KeyError:
+        pass
+    return payload
+
+
 @app.get("/api/sync/configs")
 def sync_configs():
-    return {"items": JOB_MANAGER.list_configs()}
+    return {"configs": [_sync_config_response(item) for item in CONFIG_MANAGER.list_configs()]}
 
 
-@app.post("/api/sync-configs")
 @app.post("/api/sync/configs")
-def save_sync_config(request: SyncConfigWriteRequest):
-    file_path = _resolve_sync_config_path(request.name)
-    JOB_MANAGER.config_root.mkdir(parents=True, exist_ok=True)
-    file_path.write_text(request.content or "", encoding="utf-8")
-    return {"ok": True, "name": file_path.name}
+def create_sync_config(request: SyncConfigCreateRequest):
+    try:
+        config = CONFIG_MANAGER.create_config(_model_to_dict(request))
+    except Exception as exc:
+        raise _job_error_to_http(exc)
+    return {"ok": True, "config": _sync_config_response(config)}
 
 
-@app.get("/api/sync-configs/{name:path}")
-@app.get("/api/sync/configs/{name:path}")
-def get_sync_config(name: str):
-    file_path = _resolve_sync_config_path(name)
-    if not file_path.is_file():
+@app.get("/api/sync/configs/{config_id}")
+def get_sync_config(config_id: str):
+    try:
+        config = CONFIG_MANAGER.get_config(config_id)
+    except KeyError:
         raise HTTPException(status_code=404, detail="sync config not found")
-    return {"name": file_path.name, "content": file_path.read_text(encoding="utf-8")}
+    return _sync_config_response(config)
 
 
-@app.delete("/api/sync-configs/{name:path}")
-@app.delete("/api/sync/configs/{name:path}")
-def delete_sync_config(name: str):
-    file_path = _resolve_sync_config_path(name)
-    if not file_path.is_file():
+@app.patch("/api/sync/configs/{config_id}")
+def update_sync_config(config_id: str, request: SyncConfigUpdateRequest):
+    try:
+        config = CONFIG_MANAGER.update_config(
+            config_id,
+            _model_to_dict(request, exclude_unset=True),
+        )
+    except KeyError:
         raise HTTPException(status_code=404, detail="sync config not found")
-    file_path.unlink()
-    return {"ok": True, "name": file_path.name}
+    except Exception as exc:
+        raise _job_error_to_http(exc)
+    return {"ok": True, "config": _sync_config_response(config)}
+
+
+@app.delete("/api/sync/configs/{config_id}")
+def delete_sync_config(config_id: str):
+    try:
+        CONFIG_MANAGER.get_config(config_id)
+        deleted_schedules = SCHEDULE_MANAGER.delete_by_target("config", config_id)
+        config = CONFIG_MANAGER.delete_config(config_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="sync config not found")
+    return {
+        "ok": True,
+        "config": config,
+        "deleted_schedules": [item.__dict__ for item in deleted_schedules],
+    }
+
+
+@app.post("/api/sync/configs/{config_id}/run")
+def run_sync_config(config_id: str):
+    try:
+        config = CONFIG_MANAGER.get_config(config_id)
+        job = JOB_MANAGER.create_task_batch_job(
+            name=config["name"],
+            tasks=config["tasks"],
+            continue_on_error=config["continue_on_error"],
+            log_level=config["log_level"],
+            config_id=config["id"],
+        )
+        CONFIG_MANAGER.mark_started(config_id, job.job_id, started_at=job.started_at)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="sync config not found")
+    except Exception as exc:
+        raise _job_error_to_http(exc)
+    return {"ok": True, "job": job.__dict__}
 
 @app.get("/api/sync/meta/tasks")
 @app.get("/api/meta/tasks")
@@ -602,7 +634,7 @@ def get_task_metadata(task_name: str):
 @app.get("/api/sync/meta/configs")
 @app.get("/api/meta/configs")
 def list_configs():
-    return {"configs": JOB_MANAGER.list_configs()}
+    return {"configs": [_sync_config_response(item) for item in CONFIG_MANAGER.list_configs()]}
 
 
 @app.get("/api/sync/meta/providers")
@@ -1004,10 +1036,13 @@ def get_job(job_id: str, tail_lines: int = Query(100, ge=1, le=2000)):
         job = JOB_MANAGER.get_job(job_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="job not found")
-    return {
+    payload = {
         **job.__dict__,
         "logs_tail": JOB_MANAGER.read_job_log(job_id, tail_lines=tail_lines),
     }
+    if job.task_results_path:
+        payload["task_results"] = JOB_MANAGER.read_task_results(job_id)
+    return payload
 
 
 @app.get("/api/sync/jobs/{job_id}/logs")
@@ -1019,38 +1054,20 @@ def get_job_logs(job_id: str, tail_lines: int = Query(200, ge=1, le=5000)):
         raise HTTPException(status_code=404, detail="job not found")
 
 
-@app.post("/api/sync/jobs/run-config")
-@app.post("/api/jobs/run-config")
-def run_config(request: RunConfigRequest):
+@app.post("/api/sync/jobs/run-batch")
+@app.post("/api/jobs/run-batch")
+def run_task_batch(request: RunTaskBatchRequest):
     try:
-        job = JOB_MANAGER.create_config_job(
-            request.config,
+        job = JOB_MANAGER.create_task_batch_job(
+            name=request.name,
+            tasks=request.tasks,
+            continue_on_error=request.continue_on_error,
             log_level=request.log_level,
             runtime_path=request.runtime_path,
         )
     except Exception as exc:
         raise _job_error_to_http(exc)
-    return {
-        **job.__dict__,
-        "config": request.config,
-    }
-
-
-@app.post("/api/sync/jobs/run-configs")
-@app.post("/api/jobs/run-configs")
-def run_configs(request: RunConfigsRequest):
-    try:
-        job = JOB_MANAGER.create_configs_job(
-            request.configs,
-            log_level=request.log_level,
-            runtime_path=request.runtime_path,
-        )
-    except Exception as exc:
-        raise _job_error_to_http(exc)
-    return {
-        **job.__dict__,
-        "configs": request.configs,
-    }
+    return {"ok": True, "job": job.__dict__}
 
 
 @app.post("/api/sync/jobs/run-task")

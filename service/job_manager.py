@@ -15,7 +15,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from sync_data_system.config_paths import resolve_config_candidate, resolve_sync_plan_root
 from sync_data_system.core.providers import load_provider_registry
 from sync_data_system.service.task_registry import TASK_REGISTRY
 
@@ -48,12 +47,14 @@ class JobRecord:
     error: Optional[str] = None
     request_payload: Optional[dict[str, Any]] = None
     updated_at: Optional[str] = None
+    config_id: Optional[str] = None
+    config_name: Optional[str] = None
+    task_results_path: Optional[str] = None
 
 
 class SyncJobManager:
     def __init__(self, project_root: Path, state_dir: Optional[Path] = None) -> None:
         self.project_root = Path(project_root).resolve()
-        self.config_root = resolve_sync_plan_root(self.project_root)
         self.state_dir = (state_dir or (self.project_root / ".service_state")).resolve()
         self.jobs_dir = self.state_dir / "jobs"
         self.logs_dir = self.state_dir / "logs"
@@ -96,61 +97,58 @@ class SyncJobManager:
         jobs = self.list_jobs()
         return [job for job in jobs if job.status in {"running", "cancelling"}]
 
-    def create_config_job(
+    def create_task_batch_job(
         self,
-        config_path: str,
-        log_level: Optional[str] = None,
+        *,
+        name: str,
+        tasks: list[dict[str, Any]],
+        continue_on_error: bool = True,
+        log_level: str = "INFO",
         runtime_path: Optional[str] = None,
+        config_id: Optional[str] = None,
     ) -> JobRecord:
         self._ensure_no_running_jobs()
-        resolved_config = self._resolve_config_path(config_path)
-        relative_config_path = str(resolved_config.relative_to(self.config_root))
-        command = [self._python_executable(), str(self.project_root / "scripts" / "run_provider_sync.py"), "--config", str(resolved_config)]
-        if runtime_path:
-            command.extend(["--runtime-path", runtime_path])
-        if log_level:
-            command.extend(["--log-level", str(log_level)])
-        return self._start_job(
-            kind="config",
-            command=command,
-            config_path=relative_config_path,
-            task=None,
-            request_payload={
-                "config": relative_config_path,
-                "log_level": log_level,
-                "runtime_path": runtime_path,
-            },
-        )
+        clean_name = str(name or "").strip()
+        if not clean_name:
+            raise ValueError("task batch name is required")
+        if not tasks or not any(item.get("enabled", True) for item in tasks):
+            raise ValueError("task batch must contain at least one enabled task")
 
-    def create_configs_job(
-        self,
-        config_paths: list[str],
-        log_level: Optional[str] = None,
-        runtime_path: Optional[str] = None,
-    ) -> JobRecord:
-        self._ensure_no_running_jobs()
-        if not config_paths:
-            raise ValueError("configs must not be empty")
-
-        resolved_configs = [self._resolve_config_path(item) for item in config_paths]
-        relative_config_paths = [str(item.relative_to(self.config_root)) for item in resolved_configs]
-        command = [self._python_executable(), str(self.project_root / "scripts" / "run_provider_sync.py")]
-        for resolved_config in resolved_configs:
-            command.extend(["--config", str(resolved_config)])
-        if runtime_path:
-            command.extend(["--runtime-path", runtime_path])
-        if log_level:
-            command.extend(["--log-level", str(log_level)])
+        job_id = uuid.uuid4().hex[:12]
+        log_path = self.logs_dir / f"{job_id}.log"
+        payload_path = self.jobs_dir / f"{job_id}.batch.json"
+        results_path = self.jobs_dir / f"{job_id}.results.json"
+        snapshot = {
+            "job_id": job_id,
+            "name": clean_name,
+            "config_id": str(config_id or "").strip() or None,
+            "continue_on_error": bool(continue_on_error),
+            "log_level": str(log_level or "INFO").strip() or "INFO",
+            "runtime_path": runtime_path,
+            "tasks": tasks,
+        }
+        payload_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+        command = [
+            self._python_executable(),
+            str(self.project_root / "scripts" / "run_task_batch.py"),
+            "--payload",
+            str(payload_path),
+            "--results",
+            str(results_path),
+            "--log-path",
+            str(log_path),
+        ]
         return self._start_job(
-            kind="config",
+            kind="sync_config" if config_id else "task_batch",
             command=command,
-            config_path=",".join(relative_config_paths),
+            config_path=None,
             task=None,
-            request_payload={
-                "configs": relative_config_paths,
-                "log_level": log_level,
-                "runtime_path": runtime_path,
-            },
+            request_payload=snapshot,
+            job_id=job_id,
+            log_path=log_path,
+            config_id=str(config_id or "").strip() or None,
+            config_name=clean_name,
+            task_results_path=str(results_path),
         )
 
     def cancel_job(self, job_id: str) -> JobRecord:
@@ -177,14 +175,16 @@ class SyncJobManager:
             return text
         return "\n".join(lines[-tail_lines:])
 
-    def list_configs(self) -> list[str]:
-        paths: dict[str, Path] = {}
-        if not self.config_root.exists():
-            return []
-        for path in self.config_root.glob("run_sync*.toml"):
-            if path.is_file():
-                paths.setdefault(path.name, path)
-        return sorted(paths)
+    def read_task_results(self, job_id: str) -> dict[str, Any]:
+        job = self.get_job(job_id)
+        path = Path(job.task_results_path) if job.task_results_path else None
+        if path is None or not path.exists():
+            return {"job_id": job_id, "status": job.status, "tasks": []}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {"job_id": job_id, "status": job.status, "tasks": []}
+        return payload if isinstance(payload, dict) else {"job_id": job_id, "status": job.status, "tasks": []}
 
     def list_tasks(self) -> list[str]:
         return sorted(task.name for task in TASK_REGISTRY.list_tasks())
@@ -205,9 +205,14 @@ class SyncJobManager:
         source: Optional[str] = None,
         target: Optional[str] = None,
         request_payload: Optional[dict[str, Any]] = None,
+        job_id: Optional[str] = None,
+        log_path: Optional[Path] = None,
+        config_id: Optional[str] = None,
+        config_name: Optional[str] = None,
+        task_results_path: Optional[str] = None,
     ) -> JobRecord:
-        job_id = uuid.uuid4().hex[:12]
-        log_path = self.logs_dir / f"{job_id}.log"
+        job_id = job_id or uuid.uuid4().hex[:12]
+        log_path = log_path or (self.logs_dir / f"{job_id}.log")
         log_fp = log_path.open("a", encoding="utf-8")
         process = subprocess.Popen(
             command,
@@ -237,6 +242,9 @@ class SyncJobManager:
             error=None,
             request_payload=request_payload,
             updated_at=now,
+            config_id=config_id,
+            config_name=config_name,
+            task_results_path=task_results_path,
         )
         with self._lock:
             self._jobs[job_id] = job
@@ -398,7 +406,7 @@ class SyncJobManager:
             if job.status == "cancelling":
                 job.status = "cancelled"
             elif job.status != "cancelled":
-                job.status = "success" if return_code == 0 else "failed"
+                job.status = self._status_from_return_code(return_code)
             self._processes.pop(job_id, None)
             self._save_job(job)
 
@@ -417,19 +425,9 @@ class SyncJobManager:
             job.finished_at = utc_now_iso()
             job.updated_at = job.finished_at
             if job.status != "cancelled":
-                job.status = "success" if return_code == 0 else "failed"
+                job.status = self._status_from_return_code(return_code)
             self._processes.pop(job_id, None)
             self._save_job(job)
-
-    def _resolve_config_path(self, config_path: str) -> Path:
-        candidate = resolve_config_candidate(config_path, project_root=self.project_root)
-        if not candidate.is_file():
-            raise FileNotFoundError(f"config not found: {candidate}")
-        try:
-            candidate.relative_to(self.config_root)
-        except ValueError as exc:
-            raise ValueError(f"config must be inside config root: {candidate}") from exc
-        return candidate
 
     def _ensure_no_running_jobs(self) -> None:
         running_jobs = self.get_running_jobs()
@@ -497,6 +495,14 @@ class SyncJobManager:
             or ""
         ).strip()
         return configured or sys.executable
+
+    @staticmethod
+    def _status_from_return_code(return_code: int) -> str:
+        if return_code == 0:
+            return "success"
+        if return_code == 2:
+            return "partial_success"
+        return "failed"
 
 
 __all__ = ["JobRecord", "SyncJobManager"]

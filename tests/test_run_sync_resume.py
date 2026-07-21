@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -312,20 +314,24 @@ class RunSyncResumeTest(unittest.TestCase):
         )
 
     def test_default_config_resume_applies_to_all_tasks(self) -> None:
-        args = SimpleNamespace(
-            task=None,
-            config=None,
-            runtime_path=None,
-            codes="",
-            begin_date=None,
-            end_date=None,
-            limit=0,
-            force=False,
-            resume=True,
-            log_level=None,
-        )
-
-        with patch("sync_data_system.providers.amazingdata.runner.DEFAULT_PLAN_CONFIG", "run_sync.example.toml"):
+        with TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "resume.toml"
+            config_path.write_text(
+                "source='amazingdata'\n[[tasks]]\ntask='code_info'\n[[tasks]]\ntask='daily_kline'\n",
+                encoding="utf-8",
+            )
+            args = SimpleNamespace(
+                task=None,
+                config=str(config_path),
+                runtime_path=None,
+                codes="",
+                begin_date=None,
+                end_date=None,
+                limit=0,
+                force=False,
+                resume=True,
+                log_level=None,
+            )
             plan = build_execution_plan(args)
 
         self.assertTrue(plan.tasks)

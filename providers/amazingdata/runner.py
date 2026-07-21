@@ -83,7 +83,6 @@ DEFAULT_ETF_SYNC_SECURITY_TYPE = SecurityType.EXTRA_ETF
 DEFAULT_KZZ_SYNC_SECURITY_TYPE = SecurityType.EXTRA_KZZ
 DEFAULT_RUNTIME_PATH = str(resolve_runtime_config_path(PROJECT_ROOT))
 DEFAULT_LOG_LEVEL = "INFO"
-DEFAULT_PLAN_CONFIG = "run_sync.full.toml"
 OPTION_SYNC_CODE_BATCH_SIZE = 500
 DEFAULT_OPTION_HIST_BEGIN_DATE = 20130101
 DEFAULT_OPTION_STD_UNDERLYING_CODES = (
@@ -321,13 +320,7 @@ def parse_args() -> argparse.Namespace:
 
 def build_execution_plan(args: argparse.Namespace) -> ExecutionPlan:
     if not args.task and not args.config:
-        default_plan_path = _resolve_project_path(DEFAULT_PLAN_CONFIG)
-        if not default_plan_path.is_file():
-            raise FileNotFoundError(
-                f"未提供 task 或 --config，且默认全量配置文件不存在: {default_plan_path}"
-            )
-        logger.info("未提供 task，默认按全量配置执行 config=%s", default_plan_path)
-        args.config = str(default_plan_path)
+        raise ValueError("未提供 task 或 --config。")
 
     if args.config:
         config_plan = load_execution_plan_from_toml(args.config)

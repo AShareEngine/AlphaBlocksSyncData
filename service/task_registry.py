@@ -75,6 +75,8 @@ class TaskDefinition:
     database: Optional[str]
     input_resolver: Optional[str]
     request_fields: tuple[str, ...]
+    supports_incremental: bool
+    cursor_field: str
     handler: Callable[["SyncTaskProbe"], Any]
 
 
@@ -194,6 +196,8 @@ class SyncTaskRegistry:
         *,
         database: Optional[str] = None,
         request_fields: tuple[str, ...] | None = None,
+        supports_incremental: bool = False,
+        cursor_field: str = "",
     ) -> Callable:
         if name in self._tasks:
             raise ValueError(f"duplicate task definition: {name}")
@@ -204,6 +208,8 @@ class SyncTaskRegistry:
             database=database,
             input_resolver=input_resolver,
             request_fields=tuple(request_fields or RUN_TASK_REQUEST_FIELDS),
+            supports_incremental=bool(supports_incremental),
+            cursor_field=str(cursor_field or "").strip(),
             handler=handler,
         )
         return handler
@@ -231,6 +237,8 @@ class SyncTaskRegistry:
                 "target": task.target,
                 "input_resolver": task.input_resolver,
                 "request_fields": list(task.request_fields),
+                "supports_incremental": task.supports_incremental,
+                "cursor_field": task.cursor_field,
                 "probe_fields": list(PROBE_PUBLIC_FIELDS),
             }
             for task in self.list_tasks()
@@ -245,6 +253,8 @@ class SyncTaskRegistry:
             "target": task.target,
             "input_resolver": task.input_resolver,
             "request_fields": list(task.request_fields),
+            "supports_incremental": task.supports_incremental,
+            "cursor_field": task.cursor_field,
             "probe_fields": list(PROBE_PUBLIC_FIELDS),
         }
 
@@ -271,6 +281,8 @@ def sync_task(
     *,
     database: Optional[str] = None,
     request_fields: tuple[str, ...] | None = None,
+    supports_incremental: bool = False,
+    cursor_field: str = "",
 ):
     def decorator(handler):
         return TASK_REGISTRY.register_task(
@@ -281,6 +293,8 @@ def sync_task(
             handler=handler,
             database=database,
             request_fields=request_fields,
+            supports_incremental=supports_incremental,
+            cursor_field=cursor_field,
         )
 
     return decorator
@@ -414,6 +428,8 @@ def _register_provider_task(manifest: ProviderManifest, task: ProviderTaskManife
         target=task.target,
         input_resolver=input_resolver,
         request_fields=task.request_fields or RUN_TASK_REQUEST_FIELDS,
+        supports_incremental=task.supports_incremental,
+        cursor_field=task.cursor_field,
     )
     def _generated_provider_task(probe: SyncTaskProbe) -> int:
         runner = manifest.load_registered_task_runner()
