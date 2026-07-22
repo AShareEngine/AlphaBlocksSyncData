@@ -595,6 +595,14 @@ def _execute_wide_table_plan(
 
     client.command(f"CREATE DATABASE IF NOT EXISTS {metadata.target.database}")
 
+    if plan.action == "rebuild" and _target_table_exists(
+        client,
+        metadata.target.database,
+        metadata.target.table,
+    ):
+        _rebuild_target_table(client, metadata, preview_sql, base_context=base_context)
+        return
+
     if plan.action in {"create_and_sync", "sync", "rebuild"}:
         _drop_target_table_if_exists(client, metadata)
         _create_target_table_from_select(client, metadata, preview_sql)
@@ -811,9 +819,10 @@ def _apply_month_window_to_preview_sql(
             "LEFT JOIN (SELECT * FROM starlight.ad_history_stock_status "
             f"WHERE trade_date >= toDate('{month_start}') AND trade_date < toDate('{month_end}')) t3"
         ),
-        r"ANY LEFT JOIN\s+starlight\.ad_backward_factor\s+t2": (
-            "ANY LEFT JOIN (SELECT * FROM starlight.ad_backward_factor "
-            f"WHERE trade_date >= toDate('{month_start}') AND trade_date < toDate('{month_end}')) t2"
+        r"ASOF LEFT JOIN\s+baostock\.bs_adjust_factor\s+t2": (
+            "ASOF LEFT JOIN (SELECT * FROM baostock.bs_adjust_factor "
+            f"WHERE toDate(divid_operate_date) < toDate('{month_end}') "
+            "ORDER BY code, divid_operate_date) t2"
         ),
         r"ASOF LEFT JOIN\s+starlight\.ad_equity_structure\s+t4": (
             "ASOF LEFT JOIN (SELECT * FROM starlight.ad_equity_structure "
@@ -828,11 +837,11 @@ def _apply_month_window_to_preview_sql(
     for pattern, replacement in replacements.items():
         rewritten = re.sub(pattern, replacement, rewritten)
     rewritten = re.sub(
-        r"ANY LEFT JOIN\s+starlight\.ad_backward_factor\s+(t\d+)",
+        r"ASOF LEFT JOIN\s+baostock\.bs_adjust_factor\s+(t\d+)",
         lambda match: (
-            "ANY LEFT JOIN (SELECT * FROM starlight.ad_backward_factor "
-            f"WHERE trade_date >= toDate('{month_start[:10]}') "
-            f"AND trade_date < toDate('{month_end[:10]}')) {match.group(1)}"
+            "ASOF LEFT JOIN (SELECT * FROM baostock.bs_adjust_factor "
+            f"WHERE toDate(divid_operate_date) < toDate('{month_end[:10]}') "
+            f"ORDER BY code, divid_operate_date) {match.group(1)}"
         ),
         rewritten,
     )

@@ -77,6 +77,7 @@ class TaskDefinition:
     request_fields: tuple[str, ...]
     supports_incremental: bool
     cursor_field: str
+    freshness_mode: str
     handler: Callable[["SyncTaskProbe"], Any]
 
 
@@ -198,6 +199,7 @@ class SyncTaskRegistry:
         request_fields: tuple[str, ...] | None = None,
         supports_incremental: bool = False,
         cursor_field: str = "",
+        freshness_mode: str = "daily",
     ) -> Callable:
         if name in self._tasks:
             raise ValueError(f"duplicate task definition: {name}")
@@ -210,6 +212,7 @@ class SyncTaskRegistry:
             request_fields=tuple(request_fields or RUN_TASK_REQUEST_FIELDS),
             supports_incremental=bool(supports_incremental),
             cursor_field=str(cursor_field or "").strip(),
+            freshness_mode=str(freshness_mode or "daily").strip() or "daily",
             handler=handler,
         )
         return handler
@@ -239,6 +242,7 @@ class SyncTaskRegistry:
                 "request_fields": list(task.request_fields),
                 "supports_incremental": task.supports_incremental,
                 "cursor_field": task.cursor_field,
+                "freshness_mode": task.freshness_mode,
                 "probe_fields": list(PROBE_PUBLIC_FIELDS),
             }
             for task in self.list_tasks()
@@ -255,6 +259,7 @@ class SyncTaskRegistry:
             "request_fields": list(task.request_fields),
             "supports_incremental": task.supports_incremental,
             "cursor_field": task.cursor_field,
+            "freshness_mode": task.freshness_mode,
             "probe_fields": list(PROBE_PUBLIC_FIELDS),
         }
 
@@ -283,6 +288,7 @@ def sync_task(
     request_fields: tuple[str, ...] | None = None,
     supports_incremental: bool = False,
     cursor_field: str = "",
+    freshness_mode: str = "daily",
 ):
     def decorator(handler):
         return TASK_REGISTRY.register_task(
@@ -295,6 +301,7 @@ def sync_task(
             request_fields=request_fields,
             supports_incremental=supports_incremental,
             cursor_field=cursor_field,
+            freshness_mode=freshness_mode,
         )
 
     return decorator
@@ -430,6 +437,7 @@ def _register_provider_task(manifest: ProviderManifest, task: ProviderTaskManife
         request_fields=task.request_fields or RUN_TASK_REQUEST_FIELDS,
         supports_incremental=task.supports_incremental,
         cursor_field=task.cursor_field,
+        freshness_mode=task.freshness_mode,
     )
     def _generated_provider_task(probe: SyncTaskProbe) -> int:
         runner = manifest.load_registered_task_runner()

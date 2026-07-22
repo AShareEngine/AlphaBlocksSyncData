@@ -21,6 +21,7 @@ from sync_data_system.core.providers import load_provider_registry
 from sync_data_system.service.job_manager import SyncJobManager
 from sync_data_system.service.schedule_manager import SyncScheduleManager
 from sync_data_system.service.sync_config_manager import SyncConfigManager
+from sync_data_system.service.table_check_state import TableCheckStateStore
 from sync_data_system.wide_table_sync import (
     WideTableSyncStateRepository,
     build_wide_table_metadata,
@@ -33,6 +34,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 JOB_MANAGER = SyncJobManager(PROJECT_ROOT)
 CONFIG_MANAGER = SyncConfigManager(PROJECT_ROOT)
 SCHEDULE_MANAGER = SyncScheduleManager(PROJECT_ROOT, JOB_MANAGER, CONFIG_MANAGER)
+TABLE_CHECK_STATE_STORE = TableCheckStateStore(PROJECT_ROOT)
 app = FastAPI(title="AmazingData Sync Service", version="0.1.0")
 
 
@@ -74,8 +76,16 @@ DATE_FIELD_CANDIDATES = (
     "list_date",
     "in_date",
     "out_date",
+    "divid_operate_date",
     "date",
 )
+
+
+def _normalize_field_name(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", text).lower()
 
 PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 PROVIDER_PACKAGE_KIND = "alphablocks.sync.provider-package"
@@ -742,6 +752,14 @@ def set_config_schedule_enabled(config_id: str, request: ScheduleEnabledRequest)
 def sync_table_status(runtime_path: Optional[str] = Query(None)):
     try:
         task_items = JOB_MANAGER.list_registered_tasks()
+        check_states_by_task: dict[str, dict[str, Any]] = {}
+        for state in TABLE_CHECK_STATE_STORE.list_states():
+            task_name = str(state.get("task") or "").strip()
+            if not task_name:
+                continue
+            previous = check_states_by_task.get(task_name)
+            if previous is None or str(state.get("updated_at") or "") > str(previous.get("updated_at") or ""):
+                check_states_by_task[task_name] = state
         targets = sorted(
             {
                 str(item.get("target") or "").strip()
@@ -817,7 +835,22 @@ def sync_table_status(runtime_path: Optional[str] = Query(None)):
                 }
 
             for target in targets:
-                task_names = [str(item.get("name") or "") for item in task_items if str(item.get("target") or "").strip() == target]
+                related_tasks = [item for item in task_items if str(item.get("target") or "").strip() == target]
+                task_names = [str(item.get("name") or "") for item in related_tasks]
+                freshness_mode = next(
+                    (
+                        str(item.get("freshness_mode") or "daily").strip()
+                        for item in related_tasks
+                        if str(item.get("freshness_mode") or "daily").strip() == "event_driven"
+                    ),
+                    "daily",
+                )
+                task_check_states = [check_states_by_task[name] for name in task_names if name in check_states_by_task]
+                check_state = max(
+                    task_check_states,
+                    key=lambda item: str(item.get("updated_at") or ""),
+                    default=None,
+                )
                 if target not in target_lookup:
                     items.append(
                         {
@@ -828,13 +861,24 @@ def sync_table_status(runtime_path: Optional[str] = Query(None)):
                             "last_update_time": "",
                             "status": "missing",
                             "tasks": task_names,
+                            "freshness_mode": freshness_mode,
+                            "latest_field": "",
+                            "check_state": check_state,
                         }
                     )
                     continue
 
                 database, table = target_lookup[target]
                 columns = columns_by_table.get((database, table), [])
-                latest_field = next((field for field in DATE_FIELD_CANDIDATES if field in columns), None)
+                cursor_fields = [
+                    _normalize_field_name(item.get("cursor_field"))
+                    for item in related_tasks
+                    if _normalize_field_name(item.get("cursor_field"))
+                ]
+                latest_field = next(
+                    (field for field in [*cursor_fields, *DATE_FIELD_CANDIDATES] if field in columns),
+                    None,
+                )
                 latest_date = ""
                 if latest_field:
                     latest_value = connection.query_value(f"SELECT toString(max({latest_field})) FROM {database}.{table}")
@@ -853,6 +897,9 @@ def sync_table_status(runtime_path: Optional[str] = Query(None)):
                         "last_update_time": last_update_time,
                         "status": "ready" if latest_date else "warning",
                         "tasks": task_names,
+                        "freshness_mode": freshness_mode,
+                        "latest_field": latest_field or "",
+                        "check_state": check_state,
                     }
                 )
         finally:

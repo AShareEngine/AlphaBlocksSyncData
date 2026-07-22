@@ -33,6 +33,7 @@ class ProviderTaskManifest:
     target: str
     supports_incremental: bool = False
     cursor_field: str = ""
+    freshness_mode: str = "daily"
     request_fields: tuple[str, ...] = ()
 
 
@@ -214,6 +215,7 @@ def provider_manifest_to_dict(manifest: ProviderManifest) -> dict[str, Any]:
                 "target": task.target,
                 "supports_incremental": task.supports_incremental,
                 "cursor_field": task.cursor_field,
+                "freshness_mode": task.freshness_mode,
                 "request_fields": list(task.request_fields),
             }
             for task in manifest.tasks
@@ -248,7 +250,7 @@ def _parse_tasks(value: Any, *, manifest_path: Path) -> tuple[ProviderTaskManife
         raise ValueError(f"{manifest_path}: [[tasks]] must be an array of tables")
     tasks: list[ProviderTaskManifest] = []
     seen: set[str] = set()
-    allowed = {"name", "target", "supports_incremental", "cursor_field", "request_fields"}
+    allowed = {"name", "target", "supports_incremental", "cursor_field", "freshness_mode", "request_fields"}
     for index, item in enumerate(value, start=1):
         if not isinstance(item, dict):
             raise ValueError(f"{manifest_path}: tasks[{index}] must be a table")
@@ -265,6 +267,7 @@ def _parse_tasks(value: Any, *, manifest_path: Path) -> tuple[ProviderTaskManife
                 target=_required_string(item, "target", manifest_path, prefix=f"tasks[{index}]."),
                 supports_incremental=_optional_bool(item, "supports_incremental", False, manifest_path),
                 cursor_field=_optional_string(item, "cursor_field", ""),
+                freshness_mode=_optional_string(item, "freshness_mode", "daily"),
                 request_fields=_string_tuple(
                     item.get("request_fields"),
                     field_name=f"tasks[{index}].request_fields",

@@ -199,8 +199,8 @@ class WideTableStateRepositoryTest(unittest.TestCase):
         select_sql = (
             "SELECT b0.code AS code, toDate(b0.date) AS trade_time "
             "FROM baostock.bs_daily_kline b0 "
-            "ANY LEFT JOIN starlight.ad_backward_factor t1 "
-            "ON b0.code = t1.code AND toDate(b0.date) = t1.trade_date"
+            "ASOF LEFT JOIN baostock.bs_adjust_factor t1 "
+            "ON b0.code = t1.code AND toDate(b0.date) >= toDate(t1.divid_operate_date)"
         )
 
         wide_table_sync._insert_select_by_month(
@@ -218,11 +218,13 @@ class WideTableStateRepositoryTest(unittest.TestCase):
         self.assertEqual(len(client.commands), 1)
         self.assertIn("INSERT INTO starlight.stock_daily_real", client.commands[0])
         self.assertIn("FROM (SELECT * FROM baostock.bs_daily_kline WHERE toDate(date) >=", client.commands[0])
-        self.assertIn("ANY LEFT JOIN (SELECT * FROM starlight.ad_backward_factor", client.commands[0])
+        self.assertIn("ASOF LEFT JOIN (SELECT * FROM baostock.bs_adjust_factor", client.commands[0])
+        self.assertIn("toDate(divid_operate_date) < toDate('2024-02-01')", client.commands[0])
+        self.assertIn("ORDER BY code, divid_operate_date", client.commands[0])
         self.assertIn("2024-01-01", client.commands[0])
         self.assertIn("2024-02-01", client.commands[0])
 
-    def test_run_wide_table_sync_drops_existing_target_before_recreate(self) -> None:
+    def test_run_wide_table_sync_rebuilds_with_atomic_table_swap(self) -> None:
         client = _FakeClickHouseClient()
         repo = WideTableSyncStateRepository(client, database="default")
         repo.ensure_table()
@@ -284,9 +286,16 @@ class WideTableStateRepositoryTest(unittest.TestCase):
 
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].status, "success")
-        self.assertTrue(any("DROP TABLE IF EXISTS research.demo_wide" in sql for sql in client.commands))
-        self.assertTrue(any("CREATE TABLE IF NOT EXISTS research.demo_wide" in sql for sql in client.commands))
-        self.assertTrue(any("INSERT INTO research.demo_wide" in sql for sql in client.commands))
+        self.assertFalse(any(sql == "DROP TABLE IF EXISTS research.demo_wide" for sql in client.commands))
+        self.assertTrue(any("CREATE TABLE IF NOT EXISTS research.demo_wide__rebuild_tmp" in sql for sql in client.commands))
+        self.assertTrue(any("INSERT INTO research.demo_wide__rebuild_tmp" in sql for sql in client.commands))
+        self.assertTrue(
+            any(
+                "RENAME TABLE research.demo_wide TO research.demo_wide__rebuild_old, "
+                "research.demo_wide__rebuild_tmp TO research.demo_wide" in sql
+                for sql in client.commands
+            )
+        )
 
 
 if __name__ == "__main__":

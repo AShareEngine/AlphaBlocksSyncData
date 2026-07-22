@@ -43,6 +43,7 @@ name = "adjust_factor"
 target = "bs_adjust_factor"
 supports_incremental = true
 cursor_field = "dividOperateDate"
+freshness_mode = "event_driven"
 request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
 
 [[tasks]]

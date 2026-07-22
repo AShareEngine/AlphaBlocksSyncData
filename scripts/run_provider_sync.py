@@ -22,9 +22,11 @@ install_sync_data_system_alias(PROJECT_ROOT)
 from sync_data_system.core.config import detect_plan_source
 from sync_data_system.core.engine import run_provider_config
 from sync_data_system.providers.amazingdata import runner as amazingdata_runner
+from sync_data_system.service.table_check_state import TableCheckStateStore, utc_now_iso
 from sync_data_system.service.task_registry import TASK_REGISTRY, build_provider_context, create_probe
 
 logger = logging.getLogger(__name__)
+TABLE_CHECK_STATE_STORE = TableCheckStateStore(PROJECT_ROOT)
 
 
 def parse_args() -> argparse.Namespace:
@@ -158,6 +160,7 @@ def run_single_config(config_path: str, args: argparse.Namespace) -> int:
 
 
 def run_registered_task(args: argparse.Namespace) -> int:
+    attempted_at = utc_now_iso()
     log_path = Path(args.log_path) if args.log_path else PROJECT_ROOT / ".service_state" / "logs" / "cli.log"
     probe = create_probe(
         task_name=args.task,
@@ -193,13 +196,14 @@ def run_registered_task(args: argparse.Namespace) -> int:
     )
     definition = TASK_REGISTRY.get_task(probe.name)
     probe.log(f"task={probe.name} source={definition.source} target={definition.target} status=preparing")
-    context = build_provider_context(
-        definition.source,
-        runtime_path=probe.runtime_path,
-        database=definition.database,
-    )
-    probe.context = context
+    context = None
     try:
+        context = build_provider_context(
+            definition.source,
+            runtime_path=probe.runtime_path,
+            database=definition.database,
+        )
+        probe.context = context
         TASK_REGISTRY.resolve_inputs(probe)
         probe.log(
             f"task={probe.name} status=resolved code_count={len(probe.codes)} "
@@ -209,9 +213,57 @@ def run_registered_task(args: argparse.Namespace) -> int:
         row_count = probe.row_count or int(result or 0)
         probe.set_row_count(row_count)
         probe.log(f"task={probe.name} status=success row_count={probe.row_count}")
+        try:
+            context.close()
+        finally:
+            context = None
+        _record_table_check(
+            probe,
+            definition=definition,
+            status="success",
+            attempted_at=attempted_at,
+            rows_written=probe.row_count,
+        )
         return 0
+    except Exception as exc:
+        _record_table_check(
+            probe,
+            definition=definition,
+            status="failed",
+            attempted_at=attempted_at,
+            rows_written=probe.row_count,
+            error=str(exc),
+        )
+        raise
     finally:
-        context.close()
+        if context is not None:
+            context.close()
+
+
+def _record_table_check(
+    probe,
+    *,
+    definition,
+    status: str,
+    attempted_at: str,
+    rows_written: int = 0,
+    error: str = "",
+) -> None:
+    try:
+        TABLE_CHECK_STATE_STORE.record(
+            provider=definition.source,
+            task=definition.name,
+            database=definition.database or "",
+            table=definition.target,
+            status=status,
+            job_id=probe.job_id,
+            attempted_at=attempted_at,
+            finished_at=utc_now_iso(),
+            rows_written=rows_written,
+            error=error,
+        )
+    except Exception as exc:
+        probe.log(f"task={probe.name} table_check_state=write_failed error={exc}")
 
 
 def _apply_amazingdata_overrides(

@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from sync_data_system.clickhouse_client import ClickHouseConfig, create_clickhouse_client
 from sync_data_system.scripts.run_provider_sync import run_registered_task
+from sync_data_system.service.table_check_state import TableCheckStateStore
 from sync_data_system.service.task_registry import TASK_REGISTRY
 
 
@@ -28,9 +29,11 @@ DATE_FIELD_CANDIDATES = (
     "list_date",
     "in_date",
     "out_date",
+    "divid_operate_date",
     "date",
 )
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+TABLE_CHECK_STATE_STORE = TableCheckStateStore(Path(__file__).resolve().parents[1])
 
 
 def utc_now_iso() -> str:
@@ -70,6 +73,9 @@ def run_task_batch(payload: dict[str, Any], *, results_path: Path, log_path: Pat
     _append_log(log_path, f"batch={job_id} status=started task_count={len(tasks)}")
     try:
         for index, task in enumerate(tasks, start=1):
+            task_job_id = f"{job_id}:{index}"
+            metadata: dict[str, Any] = {}
+            registered_task_started = False
             result = {
                 "task_id": str(task.get("id") or f"task_{index}"),
                 "name": str(task.get("name") or ""),
@@ -103,6 +109,12 @@ def run_task_batch(payload: dict[str, Any], *, results_path: Path, log_path: Pat
                     if incremental is None:
                         result["status"] = "skipped"
                         result["finished_at"] = utc_now_iso()
+                        _record_batch_table_check(
+                            result,
+                            metadata=metadata,
+                            status="skipped",
+                            job_id=task_job_id,
+                        )
                         completed += 1
                         results.append(result)
                         _append_log(log_path, f"batch={job_id} task={result['name']} status=skipped reason=up_to_date")
@@ -112,12 +124,13 @@ def run_task_batch(payload: dict[str, Any], *, results_path: Path, log_path: Pat
                 result["effective_parameters"] = deepcopy(parameters)
                 args = _task_namespace(
                     task_name=result["name"],
-                    job_id=f"{job_id}:{index}",
+                    job_id=task_job_id,
                     log_path=log_path,
                     runtime_path=runtime_path,
                     log_level=log_level,
                     parameters=parameters,
                 )
+                registered_task_started = True
                 return_code = run_registered_task(args)
                 if return_code:
                     raise RuntimeError(f"task returned non-zero status: {return_code}")
@@ -128,6 +141,13 @@ def run_task_batch(payload: dict[str, Any], *, results_path: Path, log_path: Pat
                 failed += 1
                 result["status"] = "failed"
                 result["error"] = str(exc)
+                if not registered_task_started:
+                    _record_batch_table_check(
+                        result,
+                        metadata=metadata,
+                        status="failed",
+                        job_id=task_job_id,
+                    )
                 _append_log(log_path, f"batch={job_id} task={result['name']} status=failed error={exc}")
             finally:
                 result["finished_at"] = result["finished_at"] or utc_now_iso()
@@ -150,6 +170,30 @@ def run_task_batch(payload: dict[str, Any], *, results_path: Path, log_path: Pat
     return return_code
 
 
+def _record_batch_table_check(
+    result: dict[str, Any],
+    *,
+    metadata: dict[str, Any],
+    status: str,
+    job_id: str,
+) -> None:
+    try:
+        TABLE_CHECK_STATE_STORE.record(
+            provider=str(result.get("provider") or metadata.get("source") or ""),
+            task=str(result.get("name") or metadata.get("name") or ""),
+            database=str(result.get("database") or metadata.get("database") or ""),
+            table=str(result.get("target") or metadata.get("target") or ""),
+            status=status,
+            job_id=job_id,
+            attempted_at=result.get("started_at"),
+            finished_at=result.get("finished_at") or utc_now_iso(),
+            rows_written=0,
+            error=str(result.get("error") or ""),
+        )
+    except Exception:
+        return
+
+
 def _resolve_incremental_parameters(
     metadata: dict[str, Any],
     parameters: dict[str, Any],
@@ -163,7 +207,7 @@ def _resolve_incremental_parameters(
 
     database = _safe_identifier(metadata.get("database"), "database")
     target = _safe_identifier(metadata.get("target"), "target")
-    cursor_field = str(metadata.get("cursor_field") or "").strip()
+    cursor_field = _normalize_field_name(metadata.get("cursor_field"))
     columns = connection.query_rows(
         """
         SELECT name
@@ -188,6 +232,13 @@ def _resolve_incremental_parameters(
     parameters["begin_date"] = int(next_business_day(latest_date).strftime("%Y%m%d"))
     parameters["end_date"] = int(expected_date.strftime("%Y%m%d"))
     return parameters
+
+
+def _normalize_field_name(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", text).lower()
 
 
 def _task_namespace(

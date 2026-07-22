@@ -25,6 +25,8 @@ class ProviderRegistryTest(unittest.TestCase):
         self.assertIn("daily_kline", registry.get("amazingdata").task_names)
         self.assertIn("daily_kline", registry.get("baostock").task_names)
         self.assertIn("kline_history", registry.get("qmt").task_names)
+        adjust_factor = next(task for task in registry.get("baostock").tasks if task.name == "adjust_factor")
+        self.assertEqual(adjust_factor.freshness_mode, "event_driven")
 
     def test_provider_root_points_to_structured_provider_dir(self) -> None:
         root = resolve_provider_root()

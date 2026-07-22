@@ -184,6 +184,61 @@ sync:
         self.assertEqual(payload["items"][0]["latest_date"], "2026-04-22 00:00:00")
         self.assertEqual(payload["items"][0]["row_count"], 123)
 
+    def test_sync_table_status_returns_event_driven_check_state(self) -> None:
+        client = TestClient(app)
+
+        class _FakeClient:
+            def query_rows(self, sql, parameters=None):
+                if "FROM system.tables" in sql:
+                    return [("baostock", "bs_adjust_factor")]
+                if "FROM system.columns" in sql:
+                    return [
+                        ("baostock", "bs_adjust_factor", "code"),
+                        ("baostock", "bs_adjust_factor", "divid_operate_date"),
+                    ]
+                if "FROM system.parts" in sql:
+                    return [("baostock", "bs_adjust_factor", 49512, "2026-07-21 10:00:00")]
+                return []
+
+            def query_value(self, sql, parameters=None):
+                return "2026-06-18"
+
+            def close(self):
+                return None
+
+        task = {
+            "name": "baostock.adjust_factor",
+            "source": "baostock",
+            "database": "baostock",
+            "target": "bs_adjust_factor",
+            "cursor_field": "dividOperateDate",
+            "freshness_mode": "event_driven",
+        }
+        check_state = {
+            "task": "baostock.adjust_factor",
+            "last_status": "success",
+            "last_success_at": "2026-07-22T10:35:00+00:00",
+            "updated_at": "2026-07-22T10:35:00+00:00",
+        }
+        with patch("sync_data_system.service.api.JOB_MANAGER.list_registered_tasks", return_value=[task]), patch(
+            "sync_data_system.service.api.TABLE_CHECK_STATE_STORE.list_states",
+            return_value=[check_state],
+        ), patch(
+            "sync_data_system.service.api.ClickHouseConfig.from_env",
+            return_value=object(),
+        ), patch(
+            "sync_data_system.service.api.create_clickhouse_client",
+            return_value=_FakeClient(),
+        ):
+            response = client.get("/api/sync-table-status")
+
+        self.assertEqual(response.status_code, 200)
+        item = response.json()["items"][0]
+        self.assertEqual(item["freshness_mode"], "event_driven")
+        self.assertEqual(item["latest_field"], "divid_operate_date")
+        self.assertEqual(item["latest_date"], "2026-06-18")
+        self.assertEqual(item["check_state"], check_state)
+
     def test_run_batch_endpoint_creates_transient_task_snapshot(self) -> None:
         client = TestClient(app)
         fake_job = JobRecord(
