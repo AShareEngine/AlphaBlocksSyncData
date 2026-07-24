@@ -1,0 +1,69 @@
+name = "yfinance"
+display_name = "US Market Free (yfinance + FinanceDatabase)"
+version = "0.1.0"
+module = "sync_data_system.providers.yfinance"
+runtime_config_key = "yfinance"
+default_database = "yfinance"
+plans_path = "plans"
+dependencies = ["yfinance", "financedatabase", "pandas", "clickhouse-connect"]
+import_modules = ["yfinance", "financedatabase"]
+plan_fields = ["codes", "begin_date", "end_date", "limit", "force", "continue_on_error"]
+
+[entrypoints]
+provider = "provider:YFinanceProvider"
+repository = "repository:YFinanceRepository"
+runner = "runner:run_sync_args"
+config_runner = "runner:run_config_file"
+context_builder = "runner:build_context"
+registered_task_runner = "runner:run_registered_task"
+specs = "specs:YFINANCE_TASK_SPECS"
+
+[[tasks]]
+name = "symbol_master"
+target = "yf_symbol_master"
+supports_incremental = false
+freshness_mode = "event_driven"
+request_fields = ["name", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "daily_kline"
+target = "yf_daily_kline"
+supports_incremental = true
+cursor_field = "trade_date"
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "corporate_actions"
+target = "yf_corporate_actions"
+supports_incremental = true
+cursor_field = "event_date"
+freshness_mode = "event_driven"
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "industry_membership"
+target = "yf_industry_membership"
+supports_incremental = false
+freshness_mode = "event_driven"
+request_fields = ["name", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "sector_daily"
+target = "yf_sector_daily"
+supports_incremental = true
+cursor_field = "trade_date"
+request_fields = ["name", "begin_date", "end_date", "force", "log_level"]
+
+[[tasks]]
+name = "concept_daily"
+target = "yf_concept_daily"
+supports_incremental = true
+cursor_field = "trade_date"
+request_fields = ["name", "begin_date", "end_date", "force", "log_level"]
+
+[[tasks]]
+name = "concept_membership"
+target = "yf_concept_membership"
+supports_incremental = false
+freshness_mode = "event_driven"
+request_fields = ["name", "force", "log_level"]

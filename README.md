@@ -2,7 +2,7 @@
 
 > AlphaBlocks 的同步数据项目，用于把多家金融数据提供商的数据按统一计划同步到 ClickHouse，并为 AlphaBlocks 后续的数据分析、策略研究和服务接口提供稳定的数据底座。
 
-AlphaBlocksSyncData 把数据同步拆成三层：统一同步框架、独立 provider 实现、可配置的同步计划。项目当前已经接入 `AmazingData`、`BaoStock`、`QMT`，可以通过 CLI 直接执行同步，也可以通过 API 服务触发后台任务。
+AlphaBlocksSyncData 把数据同步拆成三层：统一同步框架、独立 provider 实现、可配置的同步计划。项目当前已经接入 `AmazingData`、`BaoStock`、`QMT` 和免费美股数据源 `yfinance + FinanceDatabase`，可以通过 CLI 直接执行同步，也可以通过 API 服务触发后台任务。
 
 ---
 
@@ -10,7 +10,7 @@ AlphaBlocksSyncData 把数据同步拆成三层：统一同步框架、独立 pr
 
 | 模块 | 说明 |
 | --- | --- |
-| 数据来源 | AmazingData、BaoStock、QMT |
+| 数据来源 | AmazingData、BaoStock、QMT、yfinance、FinanceDatabase |
 | 数据落地 | ClickHouse |
 | 执行方式 | CLI 命令、FastAPI 后台任务 |
 | 配置方式 | Runtime YAML + Sync Plan TOML |
@@ -33,6 +33,7 @@ AlphaBlocksSyncData 把数据同步拆成三层：统一同步框架、独立 pr
 | AmazingData | `providers/amazingdata/` | 主行情、基础信息、指数、ETF、可转债、期权、龙虎榜、融资融券、分红配股等 | 真实同步建议在 Linux / Windows 执行 |
 | BaoStock | `providers/baostock/` | 交易日、股票基础信息、日线行情等公开数据 | 适合补充基础公开数据 |
 | QMT | `providers/qmt/` | 通过 HTTP API 获取 QMT K 线数据 | 需要配置 QMT 服务地址和 API Key |
+| US Market Free | `providers/yfinance/` | 美股证券主表、日线、公司行动、行业、板块和概念 ETF | 无 API Key；行情来自 yfinance，主数据来自 FinanceDatabase |
 
 ## 同步链路
 
@@ -59,6 +60,7 @@ flowchart LR
 
 - AmazingData 官方 SDK 在 macOS 环境下不可用或不稳定，AmazingData 真实同步建议在 Linux / Windows 上执行。
 - BaoStock 和 QMT 的部分开发、配置校验、单元测试可以在 macOS 上执行。
+- yfinance Provider 可在 macOS / Linux / Windows 运行，不依赖 AKShare。
 - `config/runtime.local.yaml` 用于本地真实运行配置，示例文件是 `config/runtime.example.yaml`。
 
 ## 快速开始
@@ -86,6 +88,8 @@ cp config/runtime.example.yaml config/runtime.local.yaml
 | `config/sync/plans/run_sync.baostock.daily.toml` | BaoStock 日常同步计划 |
 | `config/sync/plans/run_sync.baostock.full.toml` | BaoStock 全量同步计划 |
 | `config/sync/plans/run_sync.qmt.sample.toml` | QMT 同步计划示例 |
+| `providers/yfinance/plans/full.toml` | 免费美股首次全量同步计划 |
+| `providers/yfinance/plans/daily.toml` | 免费美股日常增量同步计划 |
 | `providers/<name>/provider.toml` | provider 声明、依赖、任务和入口 |
 | `providers/<name>/plans/*.toml` | provider 自带计划模板 |
 
@@ -109,6 +113,10 @@ sync:
   qmt:
     base_url: http://YOUR_QMT_HOST:8000
     api_key: YOUR_QMT_API_KEY
+  yfinance:
+    batch_size: 100
+    default_start_date: "2010-01-01"
+    include_otc: false
 ```
 
 ## 配置检查
@@ -130,6 +138,7 @@ python3 scripts/install_provider_deps.py --all --check
 python3 scripts/run_provider_sync.py --config config/sync/plans/run_sync.qmt.sample.toml
 python3 scripts/run_provider_sync.py --config config/sync/plans/run_sync.baostock.daily.toml
 python3 scripts/run_provider_sync.py --config config/sync/plans/run_sync.amazingdata.full.toml
+python3 scripts/run_provider_sync.py --config providers/yfinance/plans/full.toml
 ```
 
 执行单个任务：
@@ -138,6 +147,7 @@ python3 scripts/run_provider_sync.py --config config/sync/plans/run_sync.amazing
 python3 scripts/run_provider_sync.py qmt.kline_history --codes 600000.SH --begin-date 20240101 --end-date 20240131 --period 1d
 python3 scripts/run_provider_sync.py baostock.trade_dates --begin-date 20240102 --end-date 20240103
 python3 scripts/run_provider_sync.py amazingdata.stock_basic --codes 600000.SH --limit 1
+python3 scripts/run_provider_sync.py yfinance.daily_kline --codes AAPL,MSFT --begin-date 20240101
 ```
 
 QMT 配置 dry-run：
@@ -168,7 +178,7 @@ curl http://127.0.0.1:18080/api/sync/meta/configs
 ```text
 AlphaBlocksSyncData/
 ├── core/                  # provider 注册、配置校验、执行分发
-├── providers/             # AmazingData / BaoStock / QMT provider 实现
+├── providers/             # AmazingData / BaoStock / QMT / yfinance provider 实现
 ├── config/
 │   ├── runtime.example.yaml
 │   └── sync/plans/        # 同步计划
@@ -203,6 +213,7 @@ providers/<name>/
 | [API 服务文档](API_SERVICE.md) | API 启动和接口说明 |
 | [BaoStock 说明](BAOSTOCK_RUNBOOK.md) | BaoStock 同步任务说明 |
 | [QMT 接入说明](docs/qmt-data.md) | QMT HTTP API 和 TOML 测试说明 |
+| [免费美股数据说明](docs/yfinance-data.md) | yfinance / FinanceDatabase 任务、表和使用边界 |
 | [Provider 开发文档](docs/provider-development.md) | provider 目录、声明文件和任务配置说明 |
 
 ## License

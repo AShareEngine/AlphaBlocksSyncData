@@ -42,3 +42,11 @@ sync:
     base_url: http://YOUR_QMT_HOST:8000
     api_key: YOUR_QMT_API_KEY
     timeout: 60
+  yfinance:
+    batch_size: 100
+    threads: true
+    auto_adjust: false
+    repair: false
+    timeout: 30
+    default_start_date: '2010-01-01'
+    include_otc: false

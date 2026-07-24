@@ -126,6 +126,33 @@ class RuntimeConfigIntegrationTest(unittest.TestCase):
         self.assertIn("sync.qmt.base_url", message)
         self.assertIn("sync.qmt.api_key", message)
 
+    def test_runtime_config_loads_yfinance_defaults(self) -> None:
+        runtime_yaml = textwrap.dedent(
+            """
+            datasource:
+              host: 127.0.0.1
+              port: 8123
+              database: starlight
+              username: default
+              password: ''
+            sync:
+              yfinance:
+                batch_size: 50
+                default_start_date: '2015-01-01'
+                include_otc: true
+            """
+        ).strip()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_path = Path(tmpdir) / "runtime.local.yaml"
+            runtime_path.write_text(runtime_yaml, encoding="utf-8")
+            runtime = load_runtime_config(runtime_path)
+
+        self.assertEqual(runtime.sync.yfinance.batch_size, 50)
+        self.assertEqual(runtime.sync.yfinance.default_start_date, "2015-01-01")
+        self.assertTrue(runtime.sync.yfinance.include_otc)
+        self.assertFalse(runtime.sync.yfinance.auto_adjust)
+
     def test_validate_runtime_config_rejects_placeholders(self) -> None:
         runtime = load_runtime_config(Path(__file__).resolve().parents[1] / "config" / "runtime.example.yaml")
 

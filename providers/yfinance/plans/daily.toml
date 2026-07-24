@@ -1,0 +1,30 @@
+# 免费美股日常增量同步
+#
+# 用法：
+#   python3 scripts/run_provider_sync.py --config providers/yfinance/plans/daily.toml
+
+source = "yfinance"
+log_level = "INFO"
+continue_on_error = true
+database = "yfinance"
+
+[defaults]
+limit = 0
+force = false
+continue_on_error = true
+
+[[tasks]]
+task = "daily_kline"
+enabled = true
+
+[[tasks]]
+task = "corporate_actions"
+enabled = true
+
+[[tasks]]
+task = "sector_daily"
+enabled = true
+
+[[tasks]]
+task = "concept_daily"
+enabled = true

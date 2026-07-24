@@ -18,13 +18,15 @@ class ProviderRegistryTest(unittest.TestCase):
     def test_builtin_provider_manifests_are_loaded(self) -> None:
         registry = load_provider_registry()
 
-        self.assertEqual(registry.names(), ["amazingdata", "baostock", "qmt"])
+        self.assertEqual(registry.names(), ["amazingdata", "baostock", "qmt", "yfinance"])
         self.assertGreater(len(registry.get("amazingdata").tasks), 10)
         self.assertIn("AmazingData", registry.get("amazingdata").import_modules)
         self.assertIn("codes", registry.get("qmt").plan_fields)
         self.assertIn("daily_kline", registry.get("amazingdata").task_names)
         self.assertIn("daily_kline", registry.get("baostock").task_names)
         self.assertIn("kline_history", registry.get("qmt").task_names)
+        self.assertIn("concept_membership", registry.get("yfinance").task_names)
+        self.assertIn("financedatabase", registry.get("yfinance").import_modules)
         adjust_factor = next(task for task in registry.get("baostock").tasks if task.name == "adjust_factor")
         self.assertEqual(adjust_factor.freshness_mode, "event_driven")
 
@@ -32,6 +34,7 @@ class ProviderRegistryTest(unittest.TestCase):
         root = resolve_provider_root()
         self.assertTrue((root / "qmt" / "provider.toml").is_file())
         self.assertTrue((root / "qmt" / "plans" / "sample.toml").is_file())
+        self.assertTrue((root / "yfinance" / "plans" / "full.toml").is_file())
 
     def test_provider_paths_export_provider_objects(self) -> None:
         from sync_data_system.providers.qmt.provider import normalize_qmt_code

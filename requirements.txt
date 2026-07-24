@@ -6,3 +6,5 @@ pandas
 pydantic
 PyYAML
 uvicorn
+yfinance
+financedatabase

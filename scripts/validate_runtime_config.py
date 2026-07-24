@@ -21,7 +21,7 @@ from sync_data_system.config_paths import DEFAULT_RUNTIME_CONFIG_PATH, resolve_r
 from sync_data_system.runtime_config import RuntimeConfig, load_runtime_config
 
 
-PROVIDERS = {"amazingdata", "baostock", "qmt"}
+PROVIDERS = {"amazingdata", "baostock", "qmt", "yfinance"}
 
 
 def parse_args() -> argparse.Namespace:

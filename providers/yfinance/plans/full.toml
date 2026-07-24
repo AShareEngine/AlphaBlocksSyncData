@@ -1,0 +1,46 @@
+# 免费美股首次全量同步
+#
+# FinanceDatabase 提供 symbol/行业主数据；yfinance 提供行情、公司行动和 ETF 持仓。
+# 首次验证可把 limit 改为 20。
+#
+# 用法：
+#   python3 scripts/run_provider_sync.py --config providers/yfinance/plans/full.toml
+
+source = "yfinance"
+log_level = "INFO"
+continue_on_error = true
+database = "yfinance"
+
+[defaults]
+begin_date = 20100101
+limit = 0
+force = false
+continue_on_error = true
+
+[[tasks]]
+task = "symbol_master"
+enabled = true
+
+[[tasks]]
+task = "industry_membership"
+enabled = true
+
+[[tasks]]
+task = "daily_kline"
+enabled = true
+
+[[tasks]]
+task = "corporate_actions"
+enabled = true
+
+[[tasks]]
+task = "sector_daily"
+enabled = true
+
+[[tasks]]
+task = "concept_daily"
+enabled = true
+
+[[tasks]]
+task = "concept_membership"
+enabled = true

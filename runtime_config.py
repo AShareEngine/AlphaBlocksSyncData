@@ -72,10 +72,22 @@ class SyncQmtConfig:
 
 
 @dataclass(slots=True)
+class SyncYFinanceConfig:
+    batch_size: int = 100
+    threads: bool = True
+    auto_adjust: bool = False
+    repair: bool = False
+    timeout: int = 30
+    default_start_date: str = "2010-01-01"
+    include_otc: bool = False
+
+
+@dataclass(slots=True)
 class SyncConfig:
     amazingdata: SyncAmazingDataConfig = field(default_factory=SyncAmazingDataConfig)
     baostock: SyncBaoStockConfig = field(default_factory=SyncBaoStockConfig)
     qmt: SyncQmtConfig = field(default_factory=SyncQmtConfig)
+    yfinance: SyncYFinanceConfig = field(default_factory=SyncYFinanceConfig)
 
 
 @dataclass(slots=True)
@@ -120,6 +132,7 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
             amazingdata=SyncAmazingDataConfig(**(sync_payload.get("amazingdata", {}) or {})),
             baostock=SyncBaoStockConfig(**(sync_payload.get("baostock", {}) or {})),
             qmt=SyncQmtConfig(**(sync_payload.get("qmt", {}) or {})),
+            yfinance=SyncYFinanceConfig(**(sync_payload.get("yfinance", {}) or {})),
         ),
     )
 
@@ -134,5 +147,6 @@ __all__ = [
     "SyncBaoStockConfig",
     "SyncConfig",
     "SyncQmtConfig",
+    "SyncYFinanceConfig",
     "load_runtime_config",
 ]
