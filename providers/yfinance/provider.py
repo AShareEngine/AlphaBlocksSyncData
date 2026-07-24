@@ -382,7 +382,7 @@ class YFinanceProvider:
             except ImportError as exc:
                 raise RuntimeError(
                     "缺少 yfinance 依赖，请运行 "
-                    "`python3 scripts/install_provider_deps.py yfinance`。"
+                    "`python3 scripts/install_provider_deps.py yfinance --install`。"
                 ) from exc
             self._yfinance_module = yfinance
         return self._yfinance_module
@@ -395,7 +395,7 @@ class YFinanceProvider:
             except ImportError as exc:
                 raise RuntimeError(
                     "缺少 financedatabase 依赖，请运行 "
-                    "`python3 scripts/install_provider_deps.py yfinance`。"
+                    "`python3 scripts/install_provider_deps.py yfinance --install`。"
                 ) from exc
             self._finance_database_module = financedatabase
         return self._finance_database_module

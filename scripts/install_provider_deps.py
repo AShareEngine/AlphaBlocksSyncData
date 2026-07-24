@@ -70,6 +70,8 @@ def main() -> int:
     if args.dry_run or not args.install:
         if command:
             print("[DRY] " + " ".join(command))
+            if not args.dry_run:
+                print("[HINT] 未执行安装；如需安装，请在命令末尾添加 --install")
         else:
             print("[DRY] no missing dependencies")
         print(
