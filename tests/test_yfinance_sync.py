@@ -73,9 +73,17 @@ class _FakeTicker:
 class _FakeYFinance:
     def __init__(self) -> None:
         self.download_calls: list[dict] = []
+        self.download_failures = 0
+        self.config = SimpleNamespace(
+            network=SimpleNamespace(proxy=None, retries=0),
+            debug=SimpleNamespace(hide_exceptions=True),
+        )
 
     def download(self, **kwargs):
         self.download_calls.append(kwargs)
+        if self.download_failures > 0:
+            self.download_failures -= 1
+            raise RuntimeError("HTTP Error 429: Too Many Requests")
         symbols = kwargs["tickers"]
         index = pd.to_datetime(["2024-01-02", "2024-01-03"])
         columns = []
@@ -124,7 +132,7 @@ class YFinanceProviderTest(unittest.TestCase):
     def setUp(self) -> None:
         self.yf = _FakeYFinance()
         self.provider = YFinanceProvider(
-            YFinanceConfig(batch_size=2),
+            YFinanceConfig(batch_size=2, request_interval_seconds=0),
             yfinance_module=self.yf,
             finance_database_module=_FakeFinanceDatabase,
         )
@@ -170,6 +178,33 @@ class YFinanceProviderTest(unittest.TestCase):
         self.assertEqual(set(frame["symbol"]), {"NVDA", "MSFT"})
         self.assertEqual(set(frame["membership_scope"]), {"top_holdings"})
         self.assertEqual(set(frame["etf_symbol"]), {"AIQ", "BOTZ", "ROBO"})
+
+    def test_proxy_config_and_rate_limit_retry_are_applied(self) -> None:
+        self.yf.download_failures = 1
+        provider = YFinanceProvider(
+            YFinanceConfig(
+                proxy="http://127.0.0.1:7890",
+                network_retries=3,
+                request_interval_seconds=0,
+                rate_limit_retries=1,
+                rate_limit_backoff_seconds=0,
+                rate_limit_max_backoff_seconds=0,
+                rate_limit_jitter_seconds=0,
+            ),
+            yfinance_module=self.yf,
+        )
+
+        frame = provider.fetch_daily(
+            ["AAPL"],
+            start_date="20240102",
+            end_date="20240103",
+        )
+
+        self.assertEqual(len(frame), 2)
+        self.assertEqual(len(self.yf.download_calls), 2)
+        self.assertEqual(self.yf.config.network.proxy, "http://127.0.0.1:7890")
+        self.assertEqual(self.yf.config.network.retries, 3)
+        self.assertFalse(self.yf.config.debug.hide_exceptions)
 
 
 class YFinanceRepositoryTest(unittest.TestCase):

@@ -137,7 +137,15 @@ class RuntimeConfigIntegrationTest(unittest.TestCase):
               password: ''
             sync:
               yfinance:
+                proxy: 'http://127.0.0.1:7890'
                 batch_size: 50
+                threads: false
+                network_retries: 3
+                request_interval_seconds: 2.5
+                rate_limit_retries: 6
+                rate_limit_backoff_seconds: 45
+                rate_limit_max_backoff_seconds: 360
+                rate_limit_jitter_seconds: 5
                 default_start_date: '2015-01-01'
                 include_otc: true
             """
@@ -148,7 +156,15 @@ class RuntimeConfigIntegrationTest(unittest.TestCase):
             runtime_path.write_text(runtime_yaml, encoding="utf-8")
             runtime = load_runtime_config(runtime_path)
 
+        self.assertEqual(runtime.sync.yfinance.proxy, "http://127.0.0.1:7890")
         self.assertEqual(runtime.sync.yfinance.batch_size, 50)
+        self.assertFalse(runtime.sync.yfinance.threads)
+        self.assertEqual(runtime.sync.yfinance.network_retries, 3)
+        self.assertEqual(runtime.sync.yfinance.request_interval_seconds, 2.5)
+        self.assertEqual(runtime.sync.yfinance.rate_limit_retries, 6)
+        self.assertEqual(runtime.sync.yfinance.rate_limit_backoff_seconds, 45)
+        self.assertEqual(runtime.sync.yfinance.rate_limit_max_backoff_seconds, 360)
+        self.assertEqual(runtime.sync.yfinance.rate_limit_jitter_seconds, 5)
         self.assertEqual(runtime.sync.yfinance.default_start_date, "2015-01-01")
         self.assertTrue(runtime.sync.yfinance.include_otc)
         self.assertFalse(runtime.sync.yfinance.auto_adjust)

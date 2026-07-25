@@ -32,14 +32,25 @@
 ```yaml
 sync:
   yfinance:
-    batch_size: 100
-    threads: true
+    proxy: "http://127.0.0.1:7890"
+    batch_size: 5
+    threads: false
     auto_adjust: false
     repair: false
     timeout: 30
+    network_retries: 2
+    request_interval_seconds: 2.0
+    rate_limit_retries: 4
+    rate_limit_backoff_seconds: 30.0
+    rate_limit_max_backoff_seconds: 300.0
+    rate_limit_jitter_seconds: 3.0
     default_start_date: "2010-01-01"
     include_otc: false
 ```
+
+`proxy` 会写入 yfinance 的全局网络配置，支持普通 HTTP/HTTPS 代理地址；留空表示直连。代理必须能从实际运行 PM2 任务的服务器访问，本机的 `127.0.0.1` 代理不会自动转发到远程服务器。
+
+Provider 会串行化 Yahoo 请求，每次调用至少间隔 `request_interval_seconds`。遇到 HTTP 429 或 `YFRateLimitError` 时，最多额外重试 `rate_limit_retries` 次，按 `rate_limit_backoff_seconds` 指数退避，并受最大退避时间和随机抖动限制。`network_retries` 是 yfinance 自身针对瞬时网络错误的重试次数。共享代理出口仍可能被 Yahoo 限制，建议保持 `threads: false`。
 
 默认只保留 NASDAQ、NYSE 和 NYSE American 等主要美国交易所；`include_otc: true` 会同时接受可识别的 OTC 市场证券。
 

@@ -5,11 +5,14 @@
 from __future__ import annotations
 
 import logging
+import random
 import re
+import threading
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Callable, Iterable, Optional, Sequence
 
 import pandas as pd
 
@@ -80,11 +83,18 @@ PRICE_COLUMNS = (
 
 @dataclass(frozen=True)
 class YFinanceConfig:
-    batch_size: int = 100
-    threads: bool = True
+    proxy: str = ""
+    batch_size: int = 5
+    threads: bool = False
     auto_adjust: bool = False
     repair: bool = False
     timeout: int = 30
+    network_retries: int = 2
+    request_interval_seconds: float = 2.0
+    rate_limit_retries: int = 4
+    rate_limit_backoff_seconds: float = 30.0
+    rate_limit_max_backoff_seconds: float = 300.0
+    rate_limit_jitter_seconds: float = 3.0
     default_start_date: str = "2010-01-01"
     include_otc: bool = False
 
@@ -93,11 +103,21 @@ class YFinanceConfig:
         runtime = load_runtime_config(resolve_runtime_config_path(runtime_path))
         config = runtime.sync.yfinance
         return cls(
-            batch_size=max(1, int(config.batch_size or 100)),
+            proxy=str(config.proxy or "").strip(),
+            batch_size=max(1, int(config.batch_size or 5)),
             threads=bool(config.threads),
             auto_adjust=bool(config.auto_adjust),
             repair=bool(config.repair),
             timeout=max(1, int(config.timeout or 30)),
+            network_retries=max(0, int(config.network_retries)),
+            request_interval_seconds=max(0.0, float(config.request_interval_seconds)),
+            rate_limit_retries=max(0, int(config.rate_limit_retries)),
+            rate_limit_backoff_seconds=max(0.0, float(config.rate_limit_backoff_seconds)),
+            rate_limit_max_backoff_seconds=max(
+                0.0,
+                float(config.rate_limit_max_backoff_seconds),
+            ),
+            rate_limit_jitter_seconds=max(0.0, float(config.rate_limit_jitter_seconds)),
             default_start_date=str(config.default_start_date or "2010-01-01").strip() or "2010-01-01",
             include_otc=bool(config.include_otc),
         )
@@ -114,6 +134,9 @@ class YFinanceProvider:
         self.config = config
         self._yfinance_module = yfinance_module
         self._finance_database_module = finance_database_module
+        self._yfinance_configured = False
+        self._request_lock = threading.Lock()
+        self._last_request_at = 0.0
 
     def close(self) -> None:
         return None
@@ -190,18 +213,21 @@ class YFinanceProvider:
         if start > end:
             return _empty_frame(PRICE_COLUMNS)
 
-        raw = self._yfinance.download(
-            tickers=codes,
-            start=start.isoformat(),
-            end=(end + timedelta(days=1)).isoformat(),
-            interval="1d",
-            group_by="ticker",
-            auto_adjust=self.config.auto_adjust,
-            actions=True,
-            threads=self.config.threads,
-            repair=self.config.repair,
-            progress=False,
-            timeout=self.config.timeout,
+        raw = self._run_yahoo_call(
+            "daily download",
+            lambda: self._yfinance.download(
+                tickers=codes,
+                start=start.isoformat(),
+                end=(end + timedelta(days=1)).isoformat(),
+                interval="1d",
+                group_by="ticker",
+                auto_adjust=self.config.auto_adjust,
+                actions=True,
+                threads=self.config.threads,
+                repair=self.config.repair,
+                progress=False,
+                timeout=self.config.timeout,
+            ),
         )
         raw_frame = _as_dataframe(raw, reset_index=False)
         frames = [
@@ -330,7 +356,12 @@ class YFinanceProvider:
             for etf_symbol in definition.holding_etfs:
                 normalized_etf = normalize_us_symbol(etf_symbol)
                 try:
-                    holdings = self._yfinance.Ticker(normalized_etf).funds_data.top_holdings
+                    holdings = self._run_yahoo_call(
+                        f"ETF holdings {normalized_etf}",
+                        lambda symbol=normalized_etf: self._yfinance.Ticker(
+                            symbol
+                        ).funds_data.top_holdings,
+                    )
                     frame = _normalize_holdings(holdings)
                 except Exception as exc:
                     logger.warning("Unable to fetch ETF top holdings etf=%s: %s", normalized_etf, exc)
@@ -385,7 +416,70 @@ class YFinanceProvider:
                     "`python3 scripts/install_provider_deps.py yfinance --install`。"
                 ) from exc
             self._yfinance_module = yfinance
+        if not self._yfinance_configured:
+            self._configure_yfinance()
         return self._yfinance_module
+
+    def _configure_yfinance(self) -> None:
+        yfinance_config = getattr(self._yfinance_module, "config", None)
+        network_config = getattr(yfinance_config, "network", None)
+        if network_config is None:
+            if self.config.proxy:
+                raise RuntimeError(
+                    "当前 yfinance 版本不支持 config.network.proxy；"
+                    "请在任务使用的 Python 环境中升级 yfinance。"
+                )
+        else:
+            if self.config.proxy:
+                network_config.proxy = self.config.proxy
+            network_config.retries = self.config.network_retries
+
+        debug_config = getattr(yfinance_config, "debug", None)
+        if debug_config is not None:
+            debug_config.hide_exceptions = False
+        self._yfinance_configured = True
+
+    def _run_yahoo_call(
+        self,
+        label: str,
+        operation: Callable[[], Any],
+    ) -> Any:
+        with self._request_lock:
+            for attempt in range(self.config.rate_limit_retries + 1):
+                self._wait_for_request_slot()
+                try:
+                    return operation()
+                except Exception as exc:
+                    if not _is_rate_limit_error(exc) or attempt >= self.config.rate_limit_retries:
+                        raise
+                    delay = self._rate_limit_delay(attempt)
+                    logger.warning(
+                        "Yahoo Finance rate limited request=%s attempt=%s/%s; "
+                        "retrying in %.1fs",
+                        label,
+                        attempt + 1,
+                        self.config.rate_limit_retries,
+                        delay,
+                    )
+                    if delay > 0:
+                        time.sleep(delay)
+                finally:
+                    self._last_request_at = time.monotonic()
+        raise RuntimeError(f"Yahoo Finance request exhausted retries: {label}")
+
+    def _wait_for_request_slot(self) -> None:
+        if self._last_request_at <= 0:
+            return
+        elapsed = time.monotonic() - self._last_request_at
+        remaining = self.config.request_interval_seconds - elapsed
+        if remaining > 0:
+            time.sleep(remaining)
+
+    def _rate_limit_delay(self, attempt: int) -> float:
+        exponential = self.config.rate_limit_backoff_seconds * (2**attempt)
+        capped = min(exponential, self.config.rate_limit_max_backoff_seconds)
+        jitter = random.uniform(0.0, self.config.rate_limit_jitter_seconds)
+        return max(0.0, capped + jitter)
 
     @property
     def _finance_database(self) -> Any:
@@ -403,6 +497,20 @@ class YFinanceProvider:
 
 def normalize_us_symbol(value: Any) -> str:
     return str(value or "").strip().upper()
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(
+        marker in text
+        for marker in (
+            "yfratelimiterror",
+            "rate limit",
+            "too many requests",
+            "http error 429",
+            "status code 429",
+        )
+    )
 
 
 def normalize_us_symbol_list(values: Iterable[Any]) -> list[str]:

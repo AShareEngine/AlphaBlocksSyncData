@@ -73,11 +73,18 @@ class SyncQmtConfig:
 
 @dataclass(slots=True)
 class SyncYFinanceConfig:
-    batch_size: int = 100
-    threads: bool = True
+    proxy: str = ""
+    batch_size: int = 5
+    threads: bool = False
     auto_adjust: bool = False
     repair: bool = False
     timeout: int = 30
+    network_retries: int = 2
+    request_interval_seconds: float = 2.0
+    rate_limit_retries: int = 4
+    rate_limit_backoff_seconds: float = 30.0
+    rate_limit_max_backoff_seconds: float = 300.0
+    rate_limit_jitter_seconds: float = 3.0
     default_start_date: str = "2010-01-01"
     include_otc: bool = False
 

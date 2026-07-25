@@ -43,10 +43,17 @@ sync:
     api_key: YOUR_QMT_API_KEY
     timeout: 60
   yfinance:
-    batch_size: 100
-    threads: true
+    proxy: ''
+    batch_size: 5
+    threads: false
     auto_adjust: false
     repair: false
     timeout: 30
+    network_retries: 2
+    request_interval_seconds: 2.0
+    rate_limit_retries: 4
+    rate_limit_backoff_seconds: 30.0
+    rate_limit_max_backoff_seconds: 300.0
+    rate_limit_jitter_seconds: 3.0
     default_start_date: '2010-01-01'
     include_otc: false
