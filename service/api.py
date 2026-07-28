@@ -79,6 +79,7 @@ DATE_FIELD_CANDIDATES = (
     "divid_operate_date",
     "date",
 )
+LATEST_DATE_QUERY_BATCH_SIZE = 32
 
 
 def _normalize_field_name(value: Any) -> str:
@@ -86,6 +87,42 @@ def _normalize_field_name(value: Any) -> str:
     if not text:
         return ""
     return re.sub(r"(?<!^)(?=[A-Z])", "_", text).lower()
+
+
+def _quote_clickhouse_identifier(value: Any) -> str:
+    escaped = str(value).replace("\\", "\\\\").replace("`", "\\`")
+    return f"`{escaped}`"
+
+
+def _query_latest_dates(
+    connection: Any,
+    latest_fields_by_table: dict[tuple[str, str], str],
+) -> dict[tuple[str, str], str]:
+    selections = sorted(
+        (database, table, field)
+        for (database, table), field in latest_fields_by_table.items()
+    )
+    latest_dates: dict[tuple[str, str], str] = {}
+    for offset in range(0, len(selections), LATEST_DATE_QUERY_BATCH_SIZE):
+        batch = selections[offset : offset + LATEST_DATE_QUERY_BATCH_SIZE]
+        queries = []
+        for result_index, (database, table, field) in enumerate(batch):
+            queries.append(
+                "SELECT "
+                f"{result_index} AS result_index, "
+                f"toString(max({_quote_clickhouse_identifier(field)})) AS latest_date "
+                f"FROM {_quote_clickhouse_identifier(database)}.{_quote_clickhouse_identifier(table)}"
+            )
+        for row in connection.query_rows("\nUNION ALL\n".join(queries)):
+            if len(row) < 2:
+                continue
+            result_index = int(row[0])
+            if result_index < 0 or result_index >= len(batch):
+                continue
+            database, table, _ = batch[result_index]
+            latest_dates[(database, table)] = str(row[1] or "")
+    return latest_dates
+
 
 PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 PROVIDER_PACKAGE_KIND = "alphablocks.sync.provider-package"
@@ -752,6 +789,11 @@ def set_config_schedule_enabled(config_id: str, request: ScheduleEnabledRequest)
 def sync_table_status(runtime_path: Optional[str] = Query(None)):
     try:
         task_items = JOB_MANAGER.list_registered_tasks()
+        tasks_by_target: dict[str, list[dict[str, Any]]] = {}
+        for task_item in task_items:
+            target = str(task_item.get("target") or "").strip()
+            if target:
+                tasks_by_target.setdefault(target, []).append(task_item)
         check_states_by_task: dict[str, dict[str, Any]] = {}
         for state in TABLE_CHECK_STATE_STORE.list_states():
             task_name = str(state.get("task") or "").strip()
@@ -794,6 +836,8 @@ def sync_table_status(runtime_path: Optional[str] = Query(None)):
             resolved_targets = [(database, table) for _, (database, table) in target_lookup.items()]
             columns_by_table: dict[tuple[str, str], list[str]] = {}
             parts_by_table: dict[tuple[str, str], tuple[Any, ...]] = {}
+            latest_fields_by_table: dict[tuple[str, str], str] = {}
+            latest_dates_by_table: dict[tuple[str, str], str] = {}
             if resolved_targets:
                 dbs = sorted({database for database, _ in resolved_targets})
                 table_names = sorted({table for _, table in resolved_targets})
@@ -813,12 +857,27 @@ def sync_table_status(runtime_path: Optional[str] = Query(None)):
                     key = (str(row[0]), str(row[1]))
                     columns_by_table.setdefault(key, []).append(str(row[2]))
 
+                for database, table in resolved_targets:
+                    columns = columns_by_table.get((database, table), [])
+                    cursor_fields = [
+                        _normalize_field_name(item.get("cursor_field"))
+                        for item in tasks_by_target.get(table, [])
+                        if _normalize_field_name(item.get("cursor_field"))
+                    ]
+                    latest_field = next(
+                        (field for field in [*cursor_fields, *DATE_FIELD_CANDIDATES] if field in columns),
+                        None,
+                    )
+                    if latest_field:
+                        latest_fields_by_table[(database, table)] = latest_field
+                latest_dates_by_table = _query_latest_dates(connection, latest_fields_by_table)
+
                 part_rows = connection.query_rows(
                     """
                     SELECT
                       database,
                       table,
-                      sum(rows) AS row_count,
+                      max(rows) > 0 AS has_data,
                       max(modification_time) AS last_update_time
                     FROM system.parts
                     WHERE active = 1
@@ -835,7 +894,7 @@ def sync_table_status(runtime_path: Optional[str] = Query(None)):
                 }
 
             for target in targets:
-                related_tasks = [item for item in task_items if str(item.get("target") or "").strip() == target]
+                related_tasks = tasks_by_target.get(target, [])
                 task_names = [str(item.get("name") or "") for item in related_tasks]
                 freshness_mode = next(
                     (
@@ -857,7 +916,7 @@ def sync_table_status(runtime_path: Optional[str] = Query(None)):
                             "target": target,
                             "database": "",
                             "latest_date": "",
-                            "row_count": 0,
+                            "has_data": False,
                             "last_update_time": "",
                             "status": "missing",
                             "tasks": task_names,
@@ -869,23 +928,11 @@ def sync_table_status(runtime_path: Optional[str] = Query(None)):
                     continue
 
                 database, table = target_lookup[target]
-                columns = columns_by_table.get((database, table), [])
-                cursor_fields = [
-                    _normalize_field_name(item.get("cursor_field"))
-                    for item in related_tasks
-                    if _normalize_field_name(item.get("cursor_field"))
-                ]
-                latest_field = next(
-                    (field for field in [*cursor_fields, *DATE_FIELD_CANDIDATES] if field in columns),
-                    None,
-                )
-                latest_date = ""
-                if latest_field:
-                    latest_value = connection.query_value(f"SELECT toString(max({latest_field})) FROM {database}.{table}")
-                    latest_date = str(latest_value or "")
+                latest_field = latest_fields_by_table.get((database, table))
+                latest_date = latest_dates_by_table.get((database, table), "")
 
                 part_row = parts_by_table.get((database, table))
-                row_count = int(part_row[2]) if part_row else 0
+                has_data = bool(part_row[2]) if part_row else False
                 last_update_time = str(part_row[3]) if part_row and part_row[3] is not None else ""
 
                 items.append(
@@ -893,7 +940,7 @@ def sync_table_status(runtime_path: Optional[str] = Query(None)):
                         "target": target,
                         "database": database,
                         "latest_date": latest_date,
-                        "row_count": row_count,
+                        "has_data": has_data,
                         "last_update_time": last_update_time,
                         "status": "ready" if latest_date else "warning",
                         "tasks": task_names,

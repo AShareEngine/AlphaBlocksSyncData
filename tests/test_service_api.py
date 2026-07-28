@@ -150,6 +150,8 @@ sync:
         client = TestClient(app)
 
         class _FakeClient:
+            latest_date_queries = []
+
             def query_rows(self, sql, parameters=None):
                 if "FROM system.tables" in sql:
                     return [("starlight", "ad_market_kline_daily")]
@@ -158,22 +160,23 @@ sync:
                         ("starlight", "ad_market_kline_daily", "code"),
                         ("starlight", "ad_market_kline_daily", "trade_time"),
                     ]
+                if "AS latest_date" in sql:
+                    self.latest_date_queries.append(sql)
+                    return [(0, "2026-04-22 00:00:00")]
                 if "FROM system.parts" in sql:
-                    return [("starlight", "ad_market_kline_daily", 123, "2026-04-22 10:00:00")]
+                    return [("starlight", "ad_market_kline_daily", True, "2026-04-22 10:00:00")]
                 return []
-
-            def query_value(self, sql, parameters=None):
-                return "2026-04-22 00:00:00"
 
             def close(self):
                 return None
 
+        fake_client = _FakeClient()
         with patch("sync_data_system.service.api.JOB_MANAGER.list_registered_tasks", return_value=[{"name": "amazingdata.daily_kline", "target": "ad_market_kline_daily"}]), patch(
             "sync_data_system.service.api.ClickHouseConfig.from_env",
             return_value=object(),
         ), patch(
             "sync_data_system.service.api.create_clickhouse_client",
-            return_value=_FakeClient(),
+            return_value=fake_client,
         ):
             response = client.get("/api/sync-table-status")
 
@@ -182,7 +185,66 @@ sync:
         self.assertEqual(len(payload["items"]), 1)
         self.assertEqual(payload["items"][0]["target"], "ad_market_kline_daily")
         self.assertEqual(payload["items"][0]["latest_date"], "2026-04-22 00:00:00")
-        self.assertEqual(payload["items"][0]["row_count"], 123)
+        self.assertTrue(payload["items"][0]["has_data"])
+        self.assertNotIn("row_count", payload["items"][0])
+        self.assertEqual(len(fake_client.latest_date_queries), 1)
+
+    def test_sync_table_status_batches_latest_date_queries(self) -> None:
+        client = TestClient(app)
+
+        class _FakeClient:
+            latest_date_queries = []
+
+            def query_rows(self, sql, parameters=None):
+                if "FROM system.tables" in sql:
+                    return [
+                        ("market", "first_daily"),
+                        ("market", "second_daily"),
+                    ]
+                if "FROM system.columns" in sql:
+                    return [
+                        ("market", "first_daily", "trade_date"),
+                        ("market", "second_daily", "trade_date"),
+                    ]
+                if "AS latest_date" in sql:
+                    self.latest_date_queries.append(sql)
+                    return [
+                        (1, "2026-07-28"),
+                        (0, "2026-07-27"),
+                    ]
+                if "FROM system.parts" in sql:
+                    return [
+                        ("market", "first_daily", True, "2026-07-28 10:00:00"),
+                        ("market", "second_daily", True, "2026-07-28 10:01:00"),
+                    ]
+                return []
+
+            def close(self):
+                return None
+
+        fake_client = _FakeClient()
+        tasks = [
+            {"name": "test.first", "target": "first_daily"},
+            {"name": "test.second", "target": "second_daily"},
+        ]
+        with patch(
+            "sync_data_system.service.api.JOB_MANAGER.list_registered_tasks",
+            return_value=tasks,
+        ), patch(
+            "sync_data_system.service.api.ClickHouseConfig.from_env",
+            return_value=object(),
+        ), patch(
+            "sync_data_system.service.api.create_clickhouse_client",
+            return_value=fake_client,
+        ):
+            response = client.get("/api/sync-table-status")
+
+        self.assertEqual(response.status_code, 200)
+        items = {item["target"]: item for item in response.json()["items"]}
+        self.assertEqual(items["first_daily"]["latest_date"], "2026-07-27")
+        self.assertEqual(items["second_daily"]["latest_date"], "2026-07-28")
+        self.assertEqual(len(fake_client.latest_date_queries), 1)
+        self.assertIn("UNION ALL", fake_client.latest_date_queries[0])
 
     def test_sync_table_status_returns_event_driven_check_state(self) -> None:
         client = TestClient(app)
@@ -196,12 +258,11 @@ sync:
                         ("baostock", "bs_adjust_factor", "code"),
                         ("baostock", "bs_adjust_factor", "divid_operate_date"),
                     ]
+                if "AS latest_date" in sql:
+                    return [(0, "2026-06-18")]
                 if "FROM system.parts" in sql:
-                    return [("baostock", "bs_adjust_factor", 49512, "2026-07-21 10:00:00")]
+                    return [("baostock", "bs_adjust_factor", True, "2026-07-21 10:00:00")]
                 return []
-
-            def query_value(self, sql, parameters=None):
-                return "2026-06-18"
 
             def close(self):
                 return None
