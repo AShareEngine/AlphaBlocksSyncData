@@ -194,10 +194,8 @@ class YFinanceProvider:
 
         frame["symbol"] = frame["symbol"].map(normalize_us_symbol)
         frame = frame[frame["symbol"] != ""].copy()
-        frame = self._filter_us_listings(frame)
         frame = _ensure_columns(frame, SYMBOL_MASTER_COLUMNS)
         frame = frame.loc[:, list(SYMBOL_MASTER_COLUMNS)]
-        frame = frame.drop_duplicates(subset=["symbol"], keep="first").sort_values("symbol")
         source = "financedatabase"
         if self.config.active_symbols_only:
             frame = _merge_active_symbol_directory(
@@ -205,6 +203,9 @@ class YFinanceProvider:
                 frame,
             )
             source = "nasdaq_trader+financedatabase"
+        else:
+            frame = self._filter_us_listings(frame)
+            frame = frame.drop_duplicates(subset=["symbol"], keep="first").sort_values("symbol")
         if limit > 0:
             frame = frame.head(limit)
         frame["snapshot_date"] = snapshot_date or date.today()
@@ -471,11 +472,22 @@ class YFinanceProvider:
         )
         for attempt in range(self.config.network_retries + 1):
             try:
+                deadline = time.monotonic() + self.config.symbol_directory_timeout
+                chunks: list[bytes] = []
                 with opener.open(
                     request,
-                    timeout=self.config.symbol_directory_timeout,
+                    timeout=min(10, self.config.symbol_directory_timeout),
                 ) as response:
-                    return response.read().decode("utf-8-sig")
+                    while True:
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError(
+                                f"证券目录下载超过 {self.config.symbol_directory_timeout} 秒"
+                            )
+                        chunk = response.read(64 * 1024)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                return b"".join(chunks).decode("utf-8-sig")
             except Exception as exc:
                 if attempt >= self.config.network_retries:
                     raise RuntimeError(f"无法下载当前美股证券目录: {url}") from exc
@@ -701,7 +713,18 @@ def _merge_active_symbol_directory(
     directory: pd.DataFrame,
     metadata: pd.DataFrame,
 ) -> pd.DataFrame:
-    finance = metadata.drop_duplicates(subset=["symbol"], keep="first").copy()
+    finance = metadata.copy()
+    finance_market = finance["market"].fillna("").astype(str).str.strip().str.upper()
+    finance_currency = finance["currency"].fillna("").astype(str).str.strip().str.upper()
+    finance["_listing_rank"] = (
+        finance_market.isin(MAIN_US_MARKETS).astype(int) * 2
+        + finance_currency.eq("USD").astype(int)
+    )
+    finance = (
+        finance.sort_values(["symbol", "_listing_rank"], ascending=[True, False])
+        .drop_duplicates(subset=["symbol"], keep="first")
+        .drop(columns=["_listing_rank"])
+    )
     result = directory.merge(finance, on="symbol", how="left")
     result = _ensure_columns(result, SYMBOL_MASTER_COLUMNS)
     for column, fallback_column in (

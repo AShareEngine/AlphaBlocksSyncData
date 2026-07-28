@@ -58,6 +58,15 @@ class _FakeFinanceDatabase:
                         "exchange": "NGM",
                         "market": "Nordic Growth Market",
                     },
+                    {
+                        "symbol": "AAME",
+                        "name": "Atlantic American Corporation",
+                        "currency": "USD",
+                        "sector": "Financials",
+                        "industry": "Insurance",
+                        "exchange": "NGM",
+                        "market": "Nordic Growth Market",
+                    },
                 ]
             ).set_index("symbol")
 
@@ -160,6 +169,7 @@ class YFinanceProviderTest(unittest.TestCase):
         nasdaq_text = "\n".join(
             (
                 "Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares",
+                "AAME|Atlantic American Corporation - Common Stock|G|N|N|100|N|N",
                 "AAPL|Apple Inc. - Common Stock|Q|N|N|100|N|N",
                 "ACACW|Acri Capital Acquisition Corporation - Warrants|S|N|N|100|N|N",
                 "AACBU|Artius II Acquisition Inc. - Units|G|N|N|100|N|N",
@@ -192,7 +202,8 @@ class YFinanceProviderTest(unittest.TestCase):
 
         frame = provider.fetch_symbol_master(snapshot_date=date(2026, 7, 28))
 
-        self.assertEqual(frame["symbol"].tolist(), ["AAPL", "BRK-B", "IBM"])
+        self.assertEqual(frame["symbol"].tolist(), ["AAME", "AAPL", "BRK-B", "IBM"])
+        self.assertEqual(frame.loc[frame["symbol"] == "AAME", "industry"].iloc[0], "Insurance")
         self.assertEqual(frame.loc[frame["symbol"] == "BRK-B", "currency"].iloc[0], "USD")
         self.assertTrue((frame["source"] == "nasdaq_trader+financedatabase").all())
 
