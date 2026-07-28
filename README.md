@@ -110,6 +110,7 @@ datasource:
 
 sync:
   akshare:
+    proxy: ""
     request_interval_seconds: 1.0
     retries: 2
     retry_backoff_seconds: 2.0

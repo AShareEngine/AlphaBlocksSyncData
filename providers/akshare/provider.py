@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -21,6 +23,8 @@ from sync_data_system.runtime_config import load_runtime_config
 
 
 logger = logging.getLogger(__name__)
+_PROXY_ENV_LOCK = threading.RLock()
+_PROXY_ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
 
 SPOT_COLUMNS = (
     "snapshot_date",
@@ -159,6 +163,7 @@ INDEX_COLUMNS = (
 
 @dataclass(frozen=True)
 class AkshareUSConfig:
+    proxy: str = ""
     request_interval_seconds: float = 1.0
     retries: int = 2
     retry_backoff_seconds: float = 2.0
@@ -175,6 +180,7 @@ class AkshareUSConfig:
         if adjust not in {"", "qfq", "hfq"}:
             raise ValueError("sync.akshare.adjust 只能是空字符串、qfq 或 hfq。")
         return cls(
+            proxy=str(source.proxy or "").strip(),
             request_interval_seconds=max(0.0, float(source.request_interval_seconds)),
             retries=max(0, int(source.retries)),
             retry_backoff_seconds=max(0.0, float(source.retry_backoff_seconds)),
@@ -264,6 +270,17 @@ class AkshareUSProvider:
         require_em_code: bool = False,
     ) -> list[dict[str, str]]:
         requested = [str(value or "").strip().upper() for value in values if str(value or "").strip()]
+        if requested and require_em_code and all(re.match(r"^\d+\..+$", value) for value in requested):
+            return _dedupe_symbols(
+                (
+                    {
+                        "symbol": _symbol_from_em_code(value),
+                        "em_code": value,
+                    }
+                    for value in requested
+                ),
+                limit=limit,
+            )
         if requested and not require_em_code:
             resolved = [
                 {
@@ -613,18 +630,23 @@ class AkshareUSProvider:
             for attempt in range(self.config.retries + 1):
                 self._wait_for_request_slot()
                 try:
-                    return operation()
-                except Exception:
+                    with _configured_proxy(self.config.proxy):
+                        return operation()
+                except Exception as exc:
                     if attempt >= self.config.retries:
-                        raise
+                        raise RuntimeError(
+                            f"AKShare 请求失败 request={label}；请检查上游接口连通性，"
+                            "必要时在 runtime.local.yaml 配置 sync.akshare.proxy。"
+                        ) from exc
                     delay = self.config.retry_backoff_seconds * (2**attempt)
                     logger.warning(
-                        "AKShare request failed request=%s attempt=%s/%s; retrying in %.1fs",
+                        "AKShare request failed request=%s attempt=%s/%s "
+                        "error_type=%s; retrying in %.1fs",
                         label,
                         attempt + 1,
                         self.config.retries,
+                        type(exc).__name__,
                         delay,
-                        exc_info=True,
                     )
                     if delay > 0:
                         time.sleep(delay)
@@ -654,6 +676,26 @@ def normalize_us_symbol_list(values: Iterable[Any]) -> list[str]:
         seen.add(symbol)
         result.append(symbol)
     return result
+
+
+@contextmanager
+def _configured_proxy(proxy: str):
+    normalized = str(proxy or "").strip()
+    if not normalized:
+        yield
+        return
+    with _PROXY_ENV_LOCK:
+        previous = {key: os.environ.get(key) for key in _PROXY_ENV_KEYS}
+        try:
+            for key in _PROXY_ENV_KEYS:
+                os.environ[key] = normalized
+            yield
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 def _instrument_type(symbol: str, name: str, market_id: str) -> str:

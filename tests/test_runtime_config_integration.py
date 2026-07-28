@@ -184,6 +184,7 @@ class RuntimeConfigIntegrationTest(unittest.TestCase):
               password: ''
             sync:
               akshare:
+                proxy: 'http://127.0.0.1:7891'
                 request_interval_seconds: 1.5
                 retries: 4
                 retry_backoff_seconds: 3
@@ -199,6 +200,7 @@ class RuntimeConfigIntegrationTest(unittest.TestCase):
             runtime_path.write_text(runtime_yaml, encoding="utf-8")
             runtime = load_runtime_config(runtime_path)
 
+        self.assertEqual(runtime.sync.akshare.proxy, "http://127.0.0.1:7891")
         self.assertEqual(runtime.sync.akshare.request_interval_seconds, 1.5)
         self.assertEqual(runtime.sync.akshare.retries, 4)
         self.assertEqual(runtime.sync.akshare.retry_backoff_seconds, 3)

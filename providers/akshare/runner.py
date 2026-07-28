@@ -34,6 +34,15 @@ from sync_data_system.toml_compat import tomllib
 
 
 logger = logging.getLogger(__name__)
+EXPLICIT_CODE_TASKS = frozenset(
+    {
+        "us_company_profile",
+        "us_financial_statement",
+        "us_financial_indicator",
+        "us_minute_kline",
+        "us_valuation",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -235,6 +244,11 @@ def _execute_task(
         return repository.save_frame("us_spot", provider.fetch_us_spot(limit=args.limit))
     if args.task == "us_index_daily":
         return _run_index_task(args, provider, repository, request_meta)
+    if args.task in EXPLICIT_CODE_TASKS and not normalize_us_symbol_list(args.codes_raw.split(",")):
+        raise ValueError(
+            f"AKShare 任务 {args.task} 必须显式传入美股代码；"
+            "这些逐股接口不允许在未指定 codes 时自动请求全市场。"
+        )
 
     require_em_code = args.task in {"us_daily_kline", "us_minute_kline"}
     symbols = _resolve_symbols(args, provider, repository, require_em_code=require_em_code)

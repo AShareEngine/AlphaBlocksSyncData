@@ -43,6 +43,7 @@ checkpoint 和逐证券日线游标。
 ```yaml
 sync:
   akshare:
+    proxy: ""
     request_interval_seconds: 1.0
     retries: 2
     retry_backoff_seconds: 2.0
@@ -52,6 +53,7 @@ sync:
     include_pink: false
 ```
 
+- `proxy`：可选 HTTP/HTTPS 代理，例如 `http://127.0.0.1:7890`；地址必须能从实际运行任务的服务器访问。
 - `request_interval_seconds`：AKShare 请求的最小间隔。
 - `retries` / `retry_backoff_seconds`：网络失败时使用指数退避重试。
 - `adjust`：日线复权方式，可设为空字符串、`qfq` 或 `hfq`。
@@ -69,6 +71,10 @@ python3 scripts/run_provider_sync.py akshare.us_daily_kline \
 python3 scripts/run_provider_sync.py akshare.us_index_daily \
   --index-code .INX,.IXIC --begin-date 20240101 --force
 ```
+
+公司资料、分钟行情、财务报表、财务指标和估值都是逐股接口，必须显式传 `--codes`。日线和分钟
+接口依赖东方财富市场代码；若全量实时目录暂时不可用，可以直接传 `105.AAPL` 这种
+`市场编号.股票代码`，跳过全量代码映射。
 
 按计划运行：
 
@@ -89,3 +95,15 @@ python3 scripts/run_provider_sync.py --config providers/akshare/plans/enrichment
 - 公司资料、财报、财务指标和估值都是逐证券请求，不适合无节制地对全市场高频执行。
 - 该 provider 没有把 ETF 代表行业伪装成官方行业/概念分类。板块和概念仍保留现有 yfinance
   provider 的 ETF 口径；如需正式成分关系，应再接入有明确分类与成分定义的数据源。
+
+## 网络错误排查
+
+如果出现 `RemoteDisconnected` 或 `stock_us_spot_em` 失败，表示东方财富主动断开了全量分页请求，
+不是 ClickHouse 写入错误：
+
+1. 在运行 PM2 任务的服务器上填写 `sync.akshare.proxy`，不要填写只能从个人电脑访问的代理地址。
+2. 先只运行 `akshare.us_spot --limit 20 --force` 验证全量目录接口。
+3. 公司资料、分钟、财报、财务指标和估值任务传入少量 `codes`，不要直接选择全市场。
+4. 日线急需验证时可直接传 `105.AAPL`、`106.TTE` 这样的东方财富代码，绕过全量目录下载。
+
+`py_mini_racer` 输出的 `pkg_resources is deprecated` 是依赖包警告，与本次网络断开无关。

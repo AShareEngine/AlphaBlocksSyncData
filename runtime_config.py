@@ -93,6 +93,7 @@ class SyncYFinanceConfig:
 
 @dataclass(slots=True)
 class SyncAkshareConfig:
+    proxy: str = ""
     request_interval_seconds: float = 1.0
     retries: int = 2
     retry_backoff_seconds: float = 2.0

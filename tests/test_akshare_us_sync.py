@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import textwrap
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -23,9 +25,16 @@ from sync_data_system.providers.akshare.runner import (
 class _FakeAkshare:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
+        self.proxy_snapshots: list[dict[str, str | None]] = []
 
     def stock_us_spot_em(self):
         self.calls.append(("stock_us_spot_em", {}))
+        self.proxy_snapshots.append(
+            {
+                "HTTP_PROXY": os.environ.get("HTTP_PROXY"),
+                "HTTPS_PROXY": os.environ.get("HTTPS_PROXY"),
+            }
+        )
         return pd.DataFrame(
             [
                 {
@@ -210,6 +219,50 @@ class AkshareUSProviderTest(unittest.TestCase):
         )
         self.assertEqual(self.ak.calls, [])
 
+    def test_eastmoney_codes_bypass_full_spot_download(self) -> None:
+        symbols = self.provider.resolve_us_symbols(
+            ["105.AAPL", "106.TTE"],
+            require_em_code=True,
+        )
+
+        self.assertEqual(
+            symbols,
+            [
+                {"symbol": "AAPL", "em_code": "105.AAPL"},
+                {"symbol": "TTE", "em_code": "106.TTE"},
+            ],
+        )
+        self.assertEqual(self.ak.calls, [])
+
+    def test_runtime_proxy_is_scoped_to_akshare_request(self) -> None:
+        provider = AkshareUSProvider(
+            AkshareUSConfig(
+                proxy="http://127.0.0.1:7890",
+                request_interval_seconds=0,
+                retries=0,
+            ),
+            akshare_module=self.ak,
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "HTTP_PROXY": "http://old-http.example",
+                "HTTPS_PROXY": "http://old-https.example",
+            },
+            clear=False,
+        ):
+            provider.fetch_us_spot()
+            self.assertEqual(os.environ["HTTP_PROXY"], "http://old-http.example")
+            self.assertEqual(os.environ["HTTPS_PROXY"], "http://old-https.example")
+
+        self.assertEqual(
+            self.ak.proxy_snapshots[-1],
+            {
+                "HTTP_PROXY": "http://127.0.0.1:7890",
+                "HTTPS_PROXY": "http://127.0.0.1:7890",
+            },
+        )
+
     def test_daily_uses_eastmoney_code_and_requested_date_range(self) -> None:
         frame = self.provider.fetch_us_daily(
             em_code="105.AAPL",
@@ -317,6 +370,35 @@ class AkshareUSRunnerTest(unittest.TestCase):
         cursor_call = next(call for call in client.insert_calls if call[0].endswith("ak_symbol_cursor"))
         self.assertEqual(cursor_call[2][0][1], "AAPL")
         self.assertEqual(cursor_call[2][0][2], date(2024, 1, 3))
+
+    def test_high_cost_task_requires_explicit_codes(self) -> None:
+        provider = AkshareUSProvider(
+            AkshareUSConfig(request_interval_seconds=0, retries=0),
+            akshare_module=_FakeAkshare(),
+        )
+        client = _FakeClickHouseClient()
+        repository = AkshareUSRepository(client, database="akshare")
+        args = SyncArgs(
+            task="us_company_profile",
+            codes_raw="",
+            begin_date="",
+            end_date="",
+            index_code="",
+            period="",
+            fields="",
+            limit=0,
+            force=True,
+            continue_on_error=False,
+            runtime_path=None,
+            database="akshare",
+            log_level="INFO",
+        )
+
+        with self.assertRaisesRegex(ValueError, "必须显式传入美股代码"):
+            run_sync_args(args, provider, repository)
+
+        self.assertEqual(provider._akshare_module.calls, [])
+        self.assertTrue(any(call[0].endswith("ak_sync_task_log") for call in client.insert_calls))
 
     def test_load_execution_plan(self) -> None:
         content = textwrap.dedent(
