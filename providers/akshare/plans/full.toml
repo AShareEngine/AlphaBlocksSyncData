@@ -1,0 +1,21 @@
+source = "akshare"
+runtime_path = "config/runtime.local.yaml"
+database = "akshare"
+log_level = "INFO"
+continue_on_error = true
+
+[defaults]
+begin_date = 20100101
+limit = 0
+force = false
+continue_on_error = true
+
+[[tasks]]
+task = "us_spot"
+
+[[tasks]]
+task = "us_index_daily"
+
+[[tasks]]
+task = "us_daily_kline"
+

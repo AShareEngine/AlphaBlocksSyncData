@@ -84,6 +84,7 @@ API 任务元数据会从 `provider.toml` 的 `[[tasks]]` 自动注册。新增 
 - `baostock`：API 任务名形如 `baostock.daily_kline`
 - `qmt`：API 任务名形如 `qmt.kline_history`
 - `yfinance`：API 任务名形如 `yfinance.daily_kline`
+- `akshare`：API 任务名形如 `akshare.us_daily_kline`
 
 `scripts/run_provider_sync.py` 是统一 CLI 入口；provider 实现应放到 `providers/<name>/runner.py`。
 

@@ -1,0 +1,75 @@
+name = "akshare"
+display_name = "AKShare US Market"
+version = "0.1.0"
+module = "sync_data_system.providers.akshare"
+runtime_config_key = "akshare"
+default_database = "akshare"
+plans_path = "plans"
+dependencies = ["akshare", "pandas", "clickhouse-connect"]
+import_modules = ["akshare"]
+plan_fields = ["codes", "begin_date", "end_date", "index_code", "period", "fields", "limit", "force", "continue_on_error"]
+
+[entrypoints]
+provider = "provider:AkshareUSProvider"
+repository = "repository:AkshareUSRepository"
+runner = "runner:run_sync_args"
+config_runner = "runner:run_config_file"
+context_builder = "runner:build_context"
+registered_task_runner = "runner:run_registered_task"
+specs = "specs:AKSHARE_TASK_SPECS"
+
+[[tasks]]
+name = "us_spot"
+target = "ak_us_spot"
+supports_incremental = false
+freshness_mode = "event_driven"
+request_fields = ["name", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "us_daily_kline"
+target = "ak_us_daily_kline"
+supports_incremental = true
+cursor_field = "trade_date"
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "us_minute_kline"
+target = "ak_us_minute_kline"
+supports_incremental = false
+freshness_mode = "event_driven"
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "us_company_profile"
+target = "ak_us_company_profile"
+supports_incremental = false
+freshness_mode = "event_driven"
+request_fields = ["name", "codes", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "us_financial_statement"
+target = "ak_us_financial_statement"
+supports_incremental = false
+freshness_mode = "event_driven"
+request_fields = ["name", "codes", "period", "fields", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "us_financial_indicator"
+target = "ak_us_financial_indicator"
+supports_incremental = false
+freshness_mode = "event_driven"
+request_fields = ["name", "codes", "period", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "us_valuation"
+target = "ak_us_valuation"
+supports_incremental = false
+freshness_mode = "event_driven"
+request_fields = ["name", "codes", "period", "fields", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "us_index_daily"
+target = "ak_us_index_daily"
+supports_incremental = true
+cursor_field = "trade_date"
+request_fields = ["name", "index_code", "begin_date", "end_date", "force", "log_level"]

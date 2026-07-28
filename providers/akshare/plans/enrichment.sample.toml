@@ -1,0 +1,31 @@
+source = "akshare"
+runtime_path = "config/runtime.local.yaml"
+database = "akshare"
+log_level = "INFO"
+continue_on_error = true
+
+[defaults]
+codes = ["AAPL", "MSFT"]
+force = false
+continue_on_error = true
+
+[[tasks]]
+task = "us_company_profile"
+
+[[tasks]]
+task = "us_financial_statement"
+period = "年报"
+fields = "资产负债表,综合损益表,现金流量表"
+
+[[tasks]]
+task = "us_financial_indicator"
+period = "年报"
+
+[[tasks]]
+task = "us_valuation"
+period = "近一年"
+fields = "总市值,市盈率(TTM),市净率"
+
+[[tasks]]
+task = "us_minute_kline"
+

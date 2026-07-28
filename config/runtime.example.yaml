@@ -29,6 +29,14 @@ runtime_state:
   database: alphablocks
 
 sync:
+  akshare:
+    request_interval_seconds: 1.0
+    retries: 2
+    retry_backoff_seconds: 2.0
+    default_start_date: '2010-01-01'
+    adjust: ''
+    common_stock_only: true
+    include_pink: false
   amazingdata:
     username: YOUR_AMAZINGDATA_ACCOUNT
     password: YOUR_AMAZINGDATA_PASSWORD

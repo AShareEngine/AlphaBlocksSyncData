@@ -134,7 +134,7 @@ def run_task_batch(payload: dict[str, Any], *, results_path: Path, log_path: Pat
                 )
                 source = str(metadata.get("source") or result["provider"] or "").strip()
                 database = str(metadata.get("database") or result["database"] or "").strip()
-                if source == "amazingdata":
+                if source in {"akshare", "amazingdata"}:
                     context_key = (source, database)
                     context = shared_contexts.get(context_key)
                     if context is None:

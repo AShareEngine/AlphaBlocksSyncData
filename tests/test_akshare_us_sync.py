@@ -1,0 +1,354 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+from __future__ import annotations
+
+import tempfile
+import textwrap
+import unittest
+from datetime import date
+from pathlib import Path
+
+import pandas as pd
+
+from sync_data_system.providers.akshare.provider import AkshareUSConfig, AkshareUSProvider
+from sync_data_system.providers.akshare.repository import AkshareUSRepository
+from sync_data_system.providers.akshare.runner import (
+    SyncArgs,
+    load_execution_plan_from_toml,
+    run_sync_args,
+)
+
+
+class _FakeAkshare:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    def stock_us_spot_em(self):
+        self.calls.append(("stock_us_spot_em", {}))
+        return pd.DataFrame(
+            [
+                {
+                    "代码": "105.AAPL",
+                    "名称": "Apple Inc.",
+                    "最新价": 225.0,
+                    "涨跌额": 1.5,
+                    "涨跌幅": 0.67,
+                    "开盘价": 223.0,
+                    "最高价": 226.0,
+                    "最低价": 222.0,
+                    "昨收价": 223.5,
+                    "总市值": 3.4e12,
+                    "市盈率": 35.0,
+                    "成交量": 1_000_000,
+                    "成交额": 225_000_000,
+                    "振幅": 1.8,
+                    "换手率": 0.7,
+                },
+                {"代码": "106.ACACW", "名称": "Acri Capital Acquisition Warrants"},
+                {"代码": "153.ABCD", "名称": "Example OTC Common Stock"},
+            ]
+        )
+
+    def stock_us_hist(self, **kwargs):
+        self.calls.append(("stock_us_hist", kwargs))
+        return pd.DataFrame(
+            [
+                {
+                    "日期": "2024-01-02",
+                    "开盘": 100.0,
+                    "收盘": 102.0,
+                    "最高": 103.0,
+                    "最低": 99.0,
+                    "成交量": 1000,
+                    "成交额": 102000,
+                    "振幅": 4.0,
+                    "涨跌幅": 2.0,
+                    "涨跌额": 2.0,
+                    "换手率": 0.5,
+                },
+                {
+                    "日期": "2024-01-03",
+                    "开盘": 102.0,
+                    "收盘": 103.0,
+                    "最高": 104.0,
+                    "最低": 101.0,
+                    "成交量": 1100,
+                    "成交额": 113300,
+                    "振幅": 3.0,
+                    "涨跌幅": 0.98,
+                    "涨跌额": 1.0,
+                    "换手率": 0.6,
+                },
+            ]
+        )
+
+    def stock_us_hist_min_em(self, **kwargs):
+        self.calls.append(("stock_us_hist_min_em", kwargs))
+        return pd.DataFrame(
+            [
+                {
+                    "时间": "2024-01-03 09:30:00",
+                    "开盘": 102.0,
+                    "收盘": 102.5,
+                    "最高": 103.0,
+                    "最低": 101.5,
+                    "成交量": 100,
+                    "成交额": 10250,
+                    "最新价": 102.5,
+                }
+            ]
+        )
+
+    def stock_individual_basic_info_us_xq(self, **kwargs):
+        self.calls.append(("stock_individual_basic_info_us_xq", kwargs))
+        return pd.DataFrame([{"item": "公司名称", "value": "Apple Inc."}])
+
+    def stock_financial_us_report_em(self, **kwargs):
+        self.calls.append(("stock_financial_us_report_em", kwargs))
+        return pd.DataFrame(
+            [
+                {
+                    "REPORT_DATE": 20241231,
+                    "REPORT_TYPE": "FY",
+                    "SECUCODE": "AAPL.O",
+                    "SECURITY_NAME_ABBR": "Apple",
+                    "STD_ITEM_CODE": "001",
+                    "ITEM_NAME": "Cash",
+                    "AMOUNT": 100.5,
+                }
+            ]
+        )
+
+    def stock_financial_us_analysis_indicator_em(self, **kwargs):
+        self.calls.append(("stock_financial_us_analysis_indicator_em", kwargs))
+        return pd.DataFrame(
+            [
+                {
+                    "REPORT_DATE": 20241231,
+                    "NOTICE_DATE": 20250130,
+                    "CURRENCY": "USD",
+                    "OPERATE_INCOME": 1000,
+                    "PARENT_HOLDER_NETPROFIT": 200,
+                    "BASIC_EPS": 2.5,
+                    "ROE_AVG": 35.0,
+                }
+            ]
+        )
+
+    def stock_us_valuation_baidu(self, **kwargs):
+        self.calls.append(("stock_us_valuation_baidu", kwargs))
+        return pd.DataFrame([{"date": "2024-01-03", "value": 3.4e12}])
+
+    def index_us_stock_sina(self, **kwargs):
+        self.calls.append(("index_us_stock_sina", kwargs))
+        return pd.DataFrame(
+            [
+                {
+                    "date": "2024-01-03",
+                    "open": 4700,
+                    "high": 4750,
+                    "low": 4680,
+                    "close": 4730,
+                    "volume": 100000,
+                    "amount": 2.5e9,
+                }
+            ]
+        )
+
+
+class _FakeClickHouseClient:
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+        self.insert_calls: list[tuple[str, list[str], list[tuple]]] = []
+
+    def command(self, sql: str, parameters=None):
+        self.commands.append(sql)
+
+    def insert_rows(self, table: str, column_names, rows):
+        self.insert_calls.append((table, list(column_names), list(rows)))
+
+    def query_value(self, sql: str, parameters=None):
+        return None
+
+    def query_rows(self, sql: str, parameters=None):
+        return []
+
+
+class AkshareUSProviderTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.ak = _FakeAkshare()
+        self.provider = AkshareUSProvider(
+            AkshareUSConfig(
+                request_interval_seconds=0,
+                retries=0,
+                common_stock_only=True,
+                include_pink=False,
+            ),
+            akshare_module=self.ak,
+        )
+
+    def test_spot_keeps_common_us_stocks_and_normalizes_code(self) -> None:
+        frame = self.provider.fetch_us_spot(snapshot_date=date(2024, 1, 5))
+
+        self.assertEqual(frame["symbol"].tolist(), ["AAPL"])
+        self.assertEqual(frame.iloc[0]["em_code"], "105.AAPL")
+        self.assertEqual(frame.iloc[0]["instrument_type"], "common_stock")
+
+    def test_non_price_task_does_not_download_spot_for_explicit_symbols(self) -> None:
+        symbols = self.provider.resolve_us_symbols(
+            ["aapl", "BRK.B", "AAPL"],
+            require_em_code=False,
+        )
+
+        self.assertEqual(
+            symbols,
+            [
+                {"symbol": "AAPL", "em_code": ""},
+                {"symbol": "BRK.B", "em_code": ""},
+            ],
+        )
+        self.assertEqual(self.ak.calls, [])
+
+    def test_daily_uses_eastmoney_code_and_requested_date_range(self) -> None:
+        frame = self.provider.fetch_us_daily(
+            em_code="105.AAPL",
+            symbol="AAPL",
+            start_date="20240102",
+            end_date="20240103",
+        )
+
+        self.assertEqual(len(frame), 2)
+        self.assertEqual(frame["trade_date"].min(), date(2024, 1, 2))
+        _, call = next(item for item in self.ak.calls if item[0] == "stock_us_hist")
+        self.assertEqual(call["symbol"], "105.AAPL")
+        self.assertEqual(call["start_date"], "20240102")
+        self.assertEqual(call["end_date"], "20240103")
+
+    def test_financial_dates_accept_yyyymmdd_integers(self) -> None:
+        statement = self.provider.fetch_us_financial_statement(
+            "AAPL",
+            statement_type="资产负债表",
+            period_type="年报",
+        )
+        indicator = self.provider.fetch_us_financial_indicator("AAPL", period_type="年报")
+
+        self.assertEqual(statement.iloc[0]["report_date"], date(2024, 12, 31))
+        self.assertEqual(indicator.iloc[0]["report_date"], date(2024, 12, 31))
+        self.assertEqual(indicator.iloc[0]["notice_date"], date(2025, 1, 30))
+        self.assertEqual(indicator.iloc[0]["basic_eps"], 2.5)
+
+    def test_profile_minute_valuation_and_index_are_normalized(self) -> None:
+        profile = self.provider.fetch_us_company_profile("AAPL")
+        minute = self.provider.fetch_us_minute(
+            em_code="105.AAPL",
+            symbol="AAPL",
+            start_date="20240103",
+            end_date="20240103",
+        )
+        valuation = self.provider.fetch_us_valuation(
+            "AAPL",
+            indicator="总市值",
+            period="近一年",
+        )
+        index = self.provider.fetch_us_index_daily(
+            ".INX",
+            "S&P 500",
+            start_date="20240101",
+            end_date="20240131",
+        )
+
+        self.assertEqual(profile.iloc[0]["item"], "公司名称")
+        self.assertEqual(minute.iloc[0]["close"], 102.5)
+        minute_call = next(item for item in self.ak.calls if item[0] == "stock_us_hist_min_em")[1]
+        self.assertEqual(minute_call["start_date"], "2024-01-03 00:00:00")
+        self.assertEqual(minute_call["end_date"], "2024-01-03 23:59:59")
+        self.assertEqual(valuation.iloc[0]["trade_date"], date(2024, 1, 3))
+        self.assertEqual(index.iloc[0]["index_code"], ".INX")
+
+
+class AkshareUSRepositoryTest(unittest.TestCase):
+    def test_ensure_tables_creates_all_business_and_state_tables(self) -> None:
+        client = _FakeClickHouseClient()
+        repository = AkshareUSRepository(client, database="akshare")
+
+        repository.ensure_tables()
+
+        ddl = "\n".join(client.commands)
+        self.assertIn("ak_us_spot", ddl)
+        self.assertIn("ak_us_daily_kline", ddl)
+        self.assertIn("ak_us_financial_statement", ddl)
+        self.assertIn("ak_us_index_daily", ddl)
+        self.assertIn("ak_sync_task_log", ddl)
+        self.assertIn("ak_symbol_cursor", ddl)
+
+
+class AkshareUSRunnerTest(unittest.TestCase):
+    def test_daily_task_writes_data_cursor_and_sync_log(self) -> None:
+        provider = AkshareUSProvider(
+            AkshareUSConfig(request_interval_seconds=0, retries=0),
+            akshare_module=_FakeAkshare(),
+        )
+        client = _FakeClickHouseClient()
+        repository = AkshareUSRepository(client, database="akshare")
+        args = SyncArgs(
+            task="us_daily_kline",
+            codes_raw="AAPL",
+            begin_date="20240102",
+            end_date="20240110",
+            index_code="",
+            period="",
+            fields="",
+            limit=0,
+            force=True,
+            continue_on_error=False,
+            runtime_path=None,
+            database="akshare",
+            log_level="INFO",
+        )
+
+        inserted = run_sync_args(args, provider, repository)
+
+        self.assertEqual(inserted, 2)
+        tables = [call[0] for call in client.insert_calls]
+        self.assertIn("akshare.ak_us_daily_kline", tables)
+        self.assertIn("akshare.ak_symbol_cursor", tables)
+        self.assertIn("akshare.ak_sync_task_log", tables)
+        cursor_call = next(call for call in client.insert_calls if call[0].endswith("ak_symbol_cursor"))
+        self.assertEqual(cursor_call[2][0][1], "AAPL")
+        self.assertEqual(cursor_call[2][0][2], date(2024, 1, 3))
+
+    def test_load_execution_plan(self) -> None:
+        content = textwrap.dedent(
+            """
+            source = "akshare"
+            database = "us_akshare"
+
+            [defaults]
+            codes = ["AAPL", "MSFT"]
+            limit = 10
+            continue_on_error = true
+
+            [[tasks]]
+            task = "us_daily_kline"
+            begin_date = 20240101
+
+            [[tasks]]
+            task = "us_valuation"
+            period = "近一年"
+            fields = "总市值,市净率"
+            """
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "akshare.toml"
+            path.write_text(content, encoding="utf-8")
+            plan = load_execution_plan_from_toml(str(path))
+
+        self.assertEqual(plan.database, "us_akshare")
+        self.assertEqual([task.task for task in plan.tasks], ["us_daily_kline", "us_valuation"])
+        self.assertEqual(plan.tasks[0].codes_raw, "AAPL,MSFT")
+        self.assertEqual(plan.tasks[1].fields, "总市值,市净率")
+
+
+if __name__ == "__main__":
+    unittest.main()

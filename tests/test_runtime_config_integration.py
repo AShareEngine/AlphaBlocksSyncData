@@ -173,6 +173,40 @@ class RuntimeConfigIntegrationTest(unittest.TestCase):
         self.assertTrue(runtime.sync.yfinance.include_otc)
         self.assertFalse(runtime.sync.yfinance.auto_adjust)
 
+    def test_runtime_config_loads_akshare_settings(self) -> None:
+        runtime_yaml = textwrap.dedent(
+            """
+            datasource:
+              host: 127.0.0.1
+              port: 8123
+              database: starlight
+              username: default
+              password: ''
+            sync:
+              akshare:
+                request_interval_seconds: 1.5
+                retries: 4
+                retry_backoff_seconds: 3
+                default_start_date: '2018-01-01'
+                adjust: qfq
+                common_stock_only: false
+                include_pink: true
+            """
+        ).strip()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_path = Path(tmpdir) / "runtime.local.yaml"
+            runtime_path.write_text(runtime_yaml, encoding="utf-8")
+            runtime = load_runtime_config(runtime_path)
+
+        self.assertEqual(runtime.sync.akshare.request_interval_seconds, 1.5)
+        self.assertEqual(runtime.sync.akshare.retries, 4)
+        self.assertEqual(runtime.sync.akshare.retry_backoff_seconds, 3)
+        self.assertEqual(runtime.sync.akshare.default_start_date, "2018-01-01")
+        self.assertEqual(runtime.sync.akshare.adjust, "qfq")
+        self.assertFalse(runtime.sync.akshare.common_stock_only)
+        self.assertTrue(runtime.sync.akshare.include_pink)
+
     def test_validate_runtime_config_rejects_placeholders(self) -> None:
         runtime = load_runtime_config(Path(__file__).resolve().parents[1] / "config" / "runtime.example.yaml")
 

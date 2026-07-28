@@ -92,7 +92,19 @@ class SyncYFinanceConfig:
 
 
 @dataclass(slots=True)
+class SyncAkshareConfig:
+    request_interval_seconds: float = 1.0
+    retries: int = 2
+    retry_backoff_seconds: float = 2.0
+    default_start_date: str = "2010-01-01"
+    adjust: str = ""
+    common_stock_only: bool = True
+    include_pink: bool = False
+
+
+@dataclass(slots=True)
 class SyncConfig:
+    akshare: SyncAkshareConfig = field(default_factory=SyncAkshareConfig)
     amazingdata: SyncAmazingDataConfig = field(default_factory=SyncAmazingDataConfig)
     baostock: SyncBaoStockConfig = field(default_factory=SyncBaoStockConfig)
     qmt: SyncQmtConfig = field(default_factory=SyncQmtConfig)
@@ -138,6 +150,7 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
         discovery=DiscoveryConfig(**(data.get("discovery", {}) or {})),
         runtime_state=RuntimeStateConfig(**(data.get("runtime_state", {}) or {})),
         sync=SyncConfig(
+            akshare=SyncAkshareConfig(**(sync_payload.get("akshare", {}) or {})),
             amazingdata=SyncAmazingDataConfig(**(sync_payload.get("amazingdata", {}) or {})),
             baostock=SyncBaoStockConfig(**(sync_payload.get("baostock", {}) or {})),
             qmt=SyncQmtConfig(**(sync_payload.get("qmt", {}) or {})),
@@ -152,6 +165,7 @@ __all__ = [
     "LlmConfig",
     "RuntimeConfig",
     "RuntimeStateConfig",
+    "SyncAkshareConfig",
     "SyncAmazingDataConfig",
     "SyncBaoStockConfig",
     "SyncConfig",

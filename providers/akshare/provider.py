@@ -1,0 +1,847 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""AKShare US market data normalization."""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import threading
+import time
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Iterable, Sequence
+
+import pandas as pd
+
+from sync_data_system.config_paths import resolve_runtime_config_path
+from sync_data_system.runtime_config import load_runtime_config
+
+
+logger = logging.getLogger(__name__)
+
+SPOT_COLUMNS = (
+    "snapshot_date",
+    "snapshot_at",
+    "em_code",
+    "market_id",
+    "symbol",
+    "name",
+    "instrument_type",
+    "last",
+    "change_amount",
+    "change_percent",
+    "open",
+    "high",
+    "low",
+    "previous_close",
+    "market_cap",
+    "pe",
+    "volume",
+    "turnover",
+    "amplitude",
+    "turnover_rate",
+    "source",
+    "fetched_at",
+)
+
+DAILY_COLUMNS = (
+    "em_code",
+    "symbol",
+    "trade_date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "turnover",
+    "amplitude",
+    "change_percent",
+    "change_amount",
+    "turnover_rate",
+    "adjust",
+    "source",
+    "fetched_at",
+)
+
+MINUTE_COLUMNS = (
+    "em_code",
+    "symbol",
+    "trade_time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "turnover",
+    "latest",
+    "source",
+    "fetched_at",
+)
+
+PROFILE_COLUMNS = (
+    "snapshot_date",
+    "symbol",
+    "item",
+    "value",
+    "source",
+    "fetched_at",
+)
+
+FINANCIAL_STATEMENT_COLUMNS = (
+    "symbol",
+    "statement_type",
+    "period_type",
+    "report_date",
+    "report_type",
+    "secu_code",
+    "security_name",
+    "item_code",
+    "item_name",
+    "amount",
+    "raw_json",
+    "source",
+    "fetched_at",
+)
+
+FINANCIAL_INDICATOR_COLUMNS = (
+    "symbol",
+    "period_type",
+    "report_date",
+    "notice_date",
+    "currency",
+    "operate_income",
+    "operate_income_yoy",
+    "gross_profit",
+    "gross_profit_yoy",
+    "net_profit",
+    "net_profit_yoy",
+    "basic_eps",
+    "diluted_eps",
+    "gross_profit_ratio",
+    "net_profit_ratio",
+    "roe",
+    "roa",
+    "current_ratio",
+    "quick_ratio",
+    "debt_asset_ratio",
+    "raw_json",
+    "source",
+    "fetched_at",
+)
+
+VALUATION_COLUMNS = (
+    "symbol",
+    "indicator",
+    "period",
+    "trade_date",
+    "value",
+    "source",
+    "fetched_at",
+)
+
+INDEX_COLUMNS = (
+    "index_code",
+    "index_name",
+    "trade_date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "amount",
+    "source",
+    "fetched_at",
+)
+
+
+@dataclass(frozen=True)
+class AkshareUSConfig:
+    request_interval_seconds: float = 1.0
+    retries: int = 2
+    retry_backoff_seconds: float = 2.0
+    default_start_date: str = "2010-01-01"
+    adjust: str = ""
+    common_stock_only: bool = True
+    include_pink: bool = False
+
+    @classmethod
+    def from_env(cls, runtime_path: str | Path | None = None) -> "AkshareUSConfig":
+        runtime = load_runtime_config(resolve_runtime_config_path(runtime_path))
+        source = runtime.sync.akshare
+        adjust = str(source.adjust or "").strip().lower()
+        if adjust not in {"", "qfq", "hfq"}:
+            raise ValueError("sync.akshare.adjust 只能是空字符串、qfq 或 hfq。")
+        return cls(
+            request_interval_seconds=max(0.0, float(source.request_interval_seconds)),
+            retries=max(0, int(source.retries)),
+            retry_backoff_seconds=max(0.0, float(source.retry_backoff_seconds)),
+            default_start_date=str(source.default_start_date or "2010-01-01").strip() or "2010-01-01",
+            adjust=adjust,
+            common_stock_only=bool(source.common_stock_only),
+            include_pink=bool(source.include_pink),
+        )
+
+
+class AkshareUSProvider:
+    def __init__(
+        self,
+        config: AkshareUSConfig,
+        *,
+        akshare_module: Any | None = None,
+    ) -> None:
+        self.config = config
+        self._akshare_module = akshare_module
+        self._request_lock = threading.Lock()
+        self._last_request_at = 0.0
+        self._spot_cache: pd.DataFrame | None = None
+
+    def close(self) -> None:
+        self._spot_cache = None
+
+    def fetch_us_spot(
+        self,
+        *,
+        limit: int = 0,
+        snapshot_date: date | None = None,
+    ) -> pd.DataFrame:
+        raw = self._run_call("stock_us_spot_em", self._akshare.stock_us_spot_em)
+        frame = _as_dataframe(raw)
+        if frame.empty:
+            return _empty_frame(SPOT_COLUMNS)
+
+        fetched_at = _utcnow()
+        result = pd.DataFrame(index=frame.index)
+        result["em_code"] = _text_series(frame, "代码", "code")
+        result["symbol"] = result["em_code"].map(_symbol_from_em_code)
+        result["market_id"] = result["em_code"].map(_market_id_from_em_code)
+        result["name"] = _text_series(frame, "名称", "name")
+        result["instrument_type"] = [
+            _instrument_type(symbol, name, market_id)
+            for symbol, name, market_id in zip(
+                result["symbol"],
+                result["name"],
+                result["market_id"],
+            )
+        ]
+        result["snapshot_date"] = snapshot_date or date.today()
+        result["snapshot_at"] = fetched_at
+        result["last"] = _number_series(frame, "最新价", "latest")
+        result["change_amount"] = _number_series(frame, "涨跌额")
+        result["change_percent"] = _number_series(frame, "涨跌幅")
+        result["open"] = _number_series(frame, "开盘价", "开盘")
+        result["high"] = _number_series(frame, "最高价", "最高")
+        result["low"] = _number_series(frame, "最低价", "最低")
+        result["previous_close"] = _number_series(frame, "昨收价", "昨收")
+        result["market_cap"] = _number_series(frame, "总市值")
+        result["pe"] = _number_series(frame, "市盈率")
+        result["volume"] = _number_series(frame, "成交量")
+        result["turnover"] = _number_series(frame, "成交额")
+        result["amplitude"] = _number_series(frame, "振幅")
+        result["turnover_rate"] = _number_series(frame, "换手率")
+        result["source"] = "akshare:stock_us_spot_em"
+        result["fetched_at"] = fetched_at
+        result = result[(result["em_code"] != "") & (result["symbol"] != "")].copy()
+        if not self.config.include_pink:
+            result = result[result["instrument_type"] != "pink"]
+        if self.config.common_stock_only:
+            result = result[result["instrument_type"] == "common_stock"]
+        result = result.drop_duplicates(subset=["em_code"], keep="first").sort_values("symbol")
+        if limit > 0:
+            result = result.head(limit)
+        normalized = result.loc[:, list(SPOT_COLUMNS)].reset_index(drop=True)
+        if limit <= 0:
+            self._spot_cache = normalized.copy()
+        return normalized
+
+    def resolve_us_symbols(
+        self,
+        values: Iterable[Any] = (),
+        *,
+        limit: int = 0,
+        require_em_code: bool = False,
+    ) -> list[dict[str, str]]:
+        requested = [str(value or "").strip().upper() for value in values if str(value or "").strip()]
+        if requested and not require_em_code:
+            resolved = [
+                {
+                    "symbol": _symbol_from_em_code(value),
+                    "em_code": value if re.match(r"^\d+\.", value) else "",
+                }
+                for value in requested
+            ]
+            return _dedupe_symbols(resolved, limit=limit)
+
+        spot = self._spot_cache.copy() if self._spot_cache is not None else self.fetch_us_spot()
+        by_em_code = {
+            str(row.em_code).upper(): {"symbol": str(row.symbol), "em_code": str(row.em_code)}
+            for row in spot.itertuples(index=False)
+        }
+        by_symbol_key = {
+            _symbol_lookup_key(row.symbol): {"symbol": str(row.symbol), "em_code": str(row.em_code)}
+            for row in spot.itertuples(index=False)
+        }
+
+        if not requested:
+            resolved = [
+                {"symbol": str(row.symbol), "em_code": str(row.em_code)}
+                for row in spot.itertuples(index=False)
+            ]
+        else:
+            resolved = []
+            missing: list[str] = []
+            for value in requested:
+                item = by_em_code.get(value) or by_symbol_key.get(_symbol_lookup_key(value))
+                if item is None and re.match(r"^\d+\.", value):
+                    item = {"symbol": _symbol_from_em_code(value), "em_code": value}
+                if item is None:
+                    if require_em_code:
+                        missing.append(value)
+                        continue
+                    item = {"symbol": value, "em_code": ""}
+                resolved.append(item)
+            if missing:
+                preview = ",".join(missing[:10])
+                raise ValueError(f"AKShare 美股实时列表中找不到代码: {preview}")
+
+        return _dedupe_symbols(resolved, limit=limit)
+
+    def fetch_us_daily(
+        self,
+        *,
+        em_code: str,
+        symbol: str,
+        start_date: str | date,
+        end_date: str | date,
+    ) -> pd.DataFrame:
+        start = _date_value(start_date)
+        end = _date_value(end_date)
+        raw = self._run_call(
+            f"stock_us_hist:{em_code}",
+            lambda: self._akshare.stock_us_hist(
+                symbol=em_code,
+                period="daily",
+                start_date=start.strftime("%Y%m%d"),
+                end_date=end.strftime("%Y%m%d"),
+                adjust=self.config.adjust,
+            ),
+        )
+        frame = _as_dataframe(raw)
+        if frame.empty:
+            return _empty_frame(DAILY_COLUMNS)
+        fetched_at = _utcnow()
+        result = pd.DataFrame(index=frame.index)
+        result["em_code"] = em_code
+        result["symbol"] = symbol
+        result["trade_date"] = pd.to_datetime(_value_series(frame, "日期", "date"), errors="coerce").dt.date
+        result["open"] = _number_series(frame, "开盘", "open")
+        result["high"] = _number_series(frame, "最高", "high")
+        result["low"] = _number_series(frame, "最低", "low")
+        result["close"] = _number_series(frame, "收盘", "close")
+        result["volume"] = _number_series(frame, "成交量", "volume")
+        result["turnover"] = _number_series(frame, "成交额", "amount")
+        result["amplitude"] = _number_series(frame, "振幅")
+        result["change_percent"] = _number_series(frame, "涨跌幅")
+        result["change_amount"] = _number_series(frame, "涨跌额")
+        result["turnover_rate"] = _number_series(frame, "换手率")
+        result["adjust"] = self.config.adjust
+        result["source"] = "akshare:stock_us_hist"
+        result["fetched_at"] = fetched_at
+        result = result[result["trade_date"].notna()].copy()
+        result = result[
+            (result["trade_date"] >= start)
+            & (result["trade_date"] <= end)
+        ]
+        normalized = result.loc[:, list(DAILY_COLUMNS)].sort_values("trade_date").reset_index(drop=True)
+        if not normalized.empty:
+            normalized.attrs["coverage_by_symbol"] = {symbol: normalized["trade_date"].max()}
+        return normalized
+
+    def fetch_us_minute(
+        self,
+        *,
+        em_code: str,
+        symbol: str,
+        start_date: str | date | None = None,
+        end_date: str | date | None = None,
+    ) -> pd.DataFrame:
+        request: dict[str, str] = {"symbol": em_code}
+        if start_date:
+            request["start_date"] = f"{_date_value(start_date).isoformat()} 00:00:00"
+        if end_date:
+            request["end_date"] = f"{_date_value(end_date).isoformat()} 23:59:59"
+        raw = self._run_call(
+            f"stock_us_hist_min_em:{em_code}",
+            lambda: self._akshare.stock_us_hist_min_em(**request),
+        )
+        frame = _as_dataframe(raw)
+        if frame.empty:
+            return _empty_frame(MINUTE_COLUMNS)
+        fetched_at = _utcnow()
+        result = pd.DataFrame(index=frame.index)
+        result["em_code"] = em_code
+        result["symbol"] = symbol
+        result["trade_time"] = pd.to_datetime(_value_series(frame, "时间", "time"), errors="coerce")
+        result["open"] = _number_series(frame, "开盘", "open")
+        result["high"] = _number_series(frame, "最高", "high")
+        result["low"] = _number_series(frame, "最低", "low")
+        result["close"] = _number_series(frame, "收盘", "close")
+        result["volume"] = _number_series(frame, "成交量", "volume")
+        result["turnover"] = _number_series(frame, "成交额", "amount")
+        result["latest"] = _number_series(frame, "最新价", "latest")
+        result["source"] = "akshare:stock_us_hist_min_em"
+        result["fetched_at"] = fetched_at
+        result = result[result["trade_time"].notna()].copy()
+        if start_date:
+            result = result[result["trade_time"].dt.date >= _date_value(start_date)]
+        if end_date:
+            result = result[result["trade_time"].dt.date <= _date_value(end_date)]
+        return result.loc[:, list(MINUTE_COLUMNS)].sort_values("trade_time").reset_index(drop=True)
+
+    def fetch_us_company_profile(
+        self,
+        symbol: str,
+        *,
+        snapshot_date: date | None = None,
+    ) -> pd.DataFrame:
+        raw = self._run_call(
+            f"stock_individual_basic_info_us_xq:{symbol}",
+            lambda: self._akshare.stock_individual_basic_info_us_xq(symbol=symbol),
+        )
+        frame = _as_dataframe(raw)
+        if frame.empty:
+            return _empty_frame(PROFILE_COLUMNS)
+        fetched_at = _utcnow()
+        item = _text_series(frame, "item", "项目", "指标")
+        value = _text_series(frame, "value", "值", "内容")
+        if (item == "").all() and len(frame.columns) >= 2:
+            item = frame.iloc[:, 0].fillna("").astype(str)
+            value = frame.iloc[:, 1].fillna("").astype(str)
+        result = pd.DataFrame(
+            {
+                "snapshot_date": snapshot_date or date.today(),
+                "symbol": symbol,
+                "item": item,
+                "value": value,
+                "source": "akshare:stock_individual_basic_info_us_xq",
+                "fetched_at": fetched_at,
+            }
+        )
+        return result[result["item"] != ""].loc[:, list(PROFILE_COLUMNS)].reset_index(drop=True)
+
+    def fetch_us_financial_statement(
+        self,
+        symbol: str,
+        *,
+        statement_type: str,
+        period_type: str,
+    ) -> pd.DataFrame:
+        raw = self._run_call(
+            f"stock_financial_us_report_em:{symbol}:{statement_type}:{period_type}",
+            lambda: self._akshare.stock_financial_us_report_em(
+                stock=symbol.replace(".", "_").replace("-", "_"),
+                symbol=statement_type,
+                indicator=period_type,
+            ),
+        )
+        frame = _as_dataframe(raw)
+        if frame.empty:
+            return _empty_frame(FINANCIAL_STATEMENT_COLUMNS)
+        fetched_at = _utcnow()
+        rows: list[dict[str, Any]] = []
+        for record in frame.to_dict("records"):
+            report_date = _optional_date(_record_get(record, "REPORT_DATE", "STD_REPORT_DATE"))
+            if report_date is None:
+                continue
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "statement_type": statement_type,
+                    "period_type": period_type,
+                    "report_date": report_date,
+                    "report_type": _string(_record_get(record, "REPORT_TYPE", "REPORT")),
+                    "secu_code": _string(_record_get(record, "SECUCODE")),
+                    "security_name": _string(_record_get(record, "SECURITY_NAME_ABBR")),
+                    "item_code": _string(_record_get(record, "STD_ITEM_CODE")),
+                    "item_name": _string(_record_get(record, "ITEM_NAME")),
+                    "amount": _optional_float(_record_get(record, "AMOUNT")),
+                    "raw_json": _record_json(record),
+                    "source": "akshare:stock_financial_us_report_em",
+                    "fetched_at": fetched_at,
+                }
+            )
+        return pd.DataFrame(rows, columns=FINANCIAL_STATEMENT_COLUMNS)
+
+    def fetch_us_financial_indicator(
+        self,
+        symbol: str,
+        *,
+        period_type: str,
+    ) -> pd.DataFrame:
+        raw = self._run_call(
+            f"stock_financial_us_analysis_indicator_em:{symbol}:{period_type}",
+            lambda: self._akshare.stock_financial_us_analysis_indicator_em(
+                symbol=symbol,
+                indicator=period_type,
+            ),
+        )
+        frame = _as_dataframe(raw)
+        if frame.empty:
+            return _empty_frame(FINANCIAL_INDICATOR_COLUMNS)
+        fetched_at = _utcnow()
+        rows: list[dict[str, Any]] = []
+        for record in frame.to_dict("records"):
+            report_date = _optional_date(_record_get(record, "REPORT_DATE", "STD_REPORT_DATE"))
+            if report_date is None:
+                continue
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "period_type": period_type,
+                    "report_date": report_date,
+                    "notice_date": _optional_date(_record_get(record, "NOTICE_DATE")),
+                    "currency": _string(_record_get(record, "CURRENCY")),
+                    "operate_income": _optional_float(_record_get(record, "OPERATE_INCOME")),
+                    "operate_income_yoy": _optional_float(_record_get(record, "OPERATE_INCOME_YOY")),
+                    "gross_profit": _optional_float(_record_get(record, "GROSS_PROFIT")),
+                    "gross_profit_yoy": _optional_float(_record_get(record, "GROSS_PROFIT_YOY")),
+                    "net_profit": _optional_float(_record_get(record, "PARENT_HOLDER_NETPROFIT")),
+                    "net_profit_yoy": _optional_float(_record_get(record, "PARENT_HOLDER_NETPROFIT_YOY")),
+                    "basic_eps": _optional_float(_record_get(record, "BASIC_EPS")),
+                    "diluted_eps": _optional_float(_record_get(record, "DILUTED_EPS")),
+                    "gross_profit_ratio": _optional_float(_record_get(record, "GROSS_PROFIT_RATIO")),
+                    "net_profit_ratio": _optional_float(_record_get(record, "NET_PROFIT_RATIO")),
+                    "roe": _optional_float(_record_get(record, "ROE_AVG")),
+                    "roa": _optional_float(_record_get(record, "ROA")),
+                    "current_ratio": _optional_float(_record_get(record, "CURRENT_RATIO")),
+                    "quick_ratio": _optional_float(_record_get(record, "SPEED_RATIO")),
+                    "debt_asset_ratio": _optional_float(_record_get(record, "DEBT_ASSET_RATIO")),
+                    "raw_json": _record_json(record),
+                    "source": "akshare:stock_financial_us_analysis_indicator_em",
+                    "fetched_at": fetched_at,
+                }
+            )
+        return pd.DataFrame(rows, columns=FINANCIAL_INDICATOR_COLUMNS)
+
+    def fetch_us_valuation(
+        self,
+        symbol: str,
+        *,
+        indicator: str,
+        period: str,
+    ) -> pd.DataFrame:
+        raw = self._run_call(
+            f"stock_us_valuation_baidu:{symbol}:{indicator}:{period}",
+            lambda: self._akshare.stock_us_valuation_baidu(
+                symbol=symbol,
+                indicator=indicator,
+                period=period,
+            ),
+        )
+        frame = _as_dataframe(raw)
+        if frame.empty:
+            return _empty_frame(VALUATION_COLUMNS)
+        fetched_at = _utcnow()
+        result = pd.DataFrame(index=frame.index)
+        result["symbol"] = symbol
+        result["indicator"] = indicator
+        result["period"] = period
+        result["trade_date"] = pd.to_datetime(_value_series(frame, "date", "日期"), errors="coerce").dt.date
+        result["value"] = _number_series(frame, "value", "值")
+        result["source"] = "akshare:stock_us_valuation_baidu"
+        result["fetched_at"] = fetched_at
+        result = result[result["trade_date"].notna()].copy()
+        return result.loc[:, list(VALUATION_COLUMNS)].sort_values("trade_date").reset_index(drop=True)
+
+    def fetch_us_index_daily(
+        self,
+        index_code: str,
+        index_name: str,
+        *,
+        start_date: str | date,
+        end_date: str | date,
+    ) -> pd.DataFrame:
+        start = _date_value(start_date)
+        end = _date_value(end_date)
+        raw = self._run_call(
+            f"index_us_stock_sina:{index_code}",
+            lambda: self._akshare.index_us_stock_sina(symbol=index_code),
+        )
+        frame = _as_dataframe(raw)
+        if frame.empty:
+            return _empty_frame(INDEX_COLUMNS)
+        fetched_at = _utcnow()
+        result = pd.DataFrame(index=frame.index)
+        result["index_code"] = index_code
+        result["index_name"] = index_name
+        result["trade_date"] = pd.to_datetime(_value_series(frame, "date", "日期"), errors="coerce").dt.date
+        result["open"] = _number_series(frame, "open", "开盘")
+        result["high"] = _number_series(frame, "high", "最高")
+        result["low"] = _number_series(frame, "low", "最低")
+        result["close"] = _number_series(frame, "close", "收盘")
+        result["volume"] = _number_series(frame, "volume", "成交量")
+        result["amount"] = _number_series(frame, "amount", "成交额")
+        result["source"] = "akshare:index_us_stock_sina"
+        result["fetched_at"] = fetched_at
+        result = result[result["trade_date"].notna()].copy()
+        result = result[
+            (result["trade_date"] >= start)
+            & (result["trade_date"] <= end)
+        ]
+        normalized = result.loc[:, list(INDEX_COLUMNS)].sort_values("trade_date").reset_index(drop=True)
+        if not normalized.empty:
+            normalized.attrs["coverage_by_symbol"] = {index_code: normalized["trade_date"].max()}
+        return normalized
+
+    @property
+    def _akshare(self) -> Any:
+        if self._akshare_module is None:
+            try:
+                import akshare
+            except ImportError as exc:
+                raise RuntimeError(
+                    "缺少 akshare 依赖，请运行 "
+                    "`python3 scripts/install_provider_deps.py akshare --install`。"
+                ) from exc
+            self._akshare_module = akshare
+        return self._akshare_module
+
+    def _run_call(self, label: str, operation: Callable[[], Any]) -> Any:
+        with self._request_lock:
+            for attempt in range(self.config.retries + 1):
+                self._wait_for_request_slot()
+                try:
+                    return operation()
+                except Exception:
+                    if attempt >= self.config.retries:
+                        raise
+                    delay = self.config.retry_backoff_seconds * (2**attempt)
+                    logger.warning(
+                        "AKShare request failed request=%s attempt=%s/%s; retrying in %.1fs",
+                        label,
+                        attempt + 1,
+                        self.config.retries,
+                        delay,
+                        exc_info=True,
+                    )
+                    if delay > 0:
+                        time.sleep(delay)
+                finally:
+                    self._last_request_at = time.monotonic()
+        raise RuntimeError(f"AKShare request exhausted retries: {label}")
+
+    def _wait_for_request_slot(self) -> None:
+        if self._last_request_at <= 0:
+            return
+        remaining = self.config.request_interval_seconds - (time.monotonic() - self._last_request_at)
+        if remaining > 0:
+            time.sleep(remaining)
+
+
+def normalize_us_symbol(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def normalize_us_symbol_list(values: Iterable[Any]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        symbol = normalize_us_symbol(value)
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        result.append(symbol)
+    return result
+
+
+def _instrument_type(symbol: str, name: str, market_id: str) -> str:
+    upper_symbol = normalize_us_symbol(symbol)
+    upper_name = str(name or "").upper()
+    if market_id == "153":
+        return "pink"
+    if "^" in upper_symbol or re.search(r"-P[A-Z]?$", upper_symbol):
+        return "preferred"
+    if upper_symbol.endswith("W") and re.search(r"\b(WT|WTS|WARRANTS?)\b", upper_name):
+        return "warrant"
+    if upper_symbol.endswith("U") and re.search(r"\bUNITS?\b", upper_name):
+        return "unit"
+    if upper_symbol.endswith("R") and re.search(r"\bRIGHTS?\b", upper_name):
+        return "right"
+    if re.search(r"\b(ETF|ETN|FUND)\b", upper_name):
+        return "fund"
+    return "common_stock"
+
+
+def _symbol_from_em_code(value: Any) -> str:
+    text = normalize_us_symbol(value)
+    match = re.match(r"^\d+\.(.+)$", text)
+    return match.group(1) if match else text
+
+
+def _market_id_from_em_code(value: Any) -> str:
+    text = normalize_us_symbol(value)
+    match = re.match(r"^(\d+)\..+$", text)
+    return match.group(1) if match else ""
+
+
+def _symbol_lookup_key(value: Any) -> str:
+    return re.sub(r"[-._/]", "", normalize_us_symbol(value))
+
+
+def _dedupe_symbols(
+    values: Iterable[dict[str, str]],
+    *,
+    limit: int = 0,
+) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in values:
+        symbol = normalize_us_symbol(item.get("symbol"))
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        result.append(
+            {
+                "symbol": symbol,
+                "em_code": normalize_us_symbol(item.get("em_code")),
+            }
+        )
+    return result[:limit] if limit > 0 else result
+
+
+def _as_dataframe(value: Any) -> pd.DataFrame:
+    if isinstance(value, pd.DataFrame):
+        return value.copy()
+    return pd.DataFrame(value)
+
+
+def _empty_frame(columns: Sequence[str]) -> pd.DataFrame:
+    return pd.DataFrame(columns=list(columns))
+
+
+def _value_series(frame: pd.DataFrame, *candidates: str) -> pd.Series:
+    for name in candidates:
+        if name in frame.columns:
+            return frame[name]
+    return pd.Series([None] * len(frame), index=frame.index, dtype=object)
+
+
+def _text_series(frame: pd.DataFrame, *candidates: str) -> pd.Series:
+    return _value_series(frame, *candidates).fillna("").astype(str).str.strip()
+
+
+def _number_series(frame: pd.DataFrame, *candidates: str) -> pd.Series:
+    return pd.to_numeric(_value_series(frame, *candidates), errors="coerce")
+
+
+def _record_get(record: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in record:
+            return record[key]
+    return None
+
+
+def _string(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    return str(value).strip()
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        if value is None or pd.isna(value):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_date(value: Any) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = _date_text(value)
+    parsed = pd.to_datetime(
+        text,
+        format="%Y%m%d" if len(text) == 8 and text.isdigit() else None,
+        errors="coerce",
+    )
+    if pd.isna(parsed):
+        return None
+    return parsed.date()
+
+
+def _date_value(value: str | date) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = _date_text(value)
+    parsed = pd.to_datetime(
+        text,
+        format="%Y%m%d" if len(text) == 8 and text.isdigit() else None,
+        errors="raise",
+    )
+    return parsed.date()
+
+
+def _date_text(value: Any) -> str:
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return str(value).strip()
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, (datetime, date, pd.Timestamp)):
+        return value.isoformat()
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    item = getattr(value, "item", None)
+    if callable(item) and not isinstance(value, (str, bytes)):
+        try:
+            return item()
+        except Exception:
+            pass
+    return value
+
+
+def _record_json(record: dict[str, Any]) -> str:
+    return json.dumps(
+        {str(key): _json_value(value) for key, value in record.items()},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+__all__ = [
+    "AkshareUSConfig",
+    "AkshareUSProvider",
+    "DAILY_COLUMNS",
+    "FINANCIAL_INDICATOR_COLUMNS",
+    "FINANCIAL_STATEMENT_COLUMNS",
+    "INDEX_COLUMNS",
+    "MINUTE_COLUMNS",
+    "PROFILE_COLUMNS",
+    "SPOT_COLUMNS",
+    "VALUATION_COLUMNS",
+    "normalize_us_symbol",
+    "normalize_us_symbol_list",
+]
