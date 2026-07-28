@@ -15,8 +15,9 @@ from zoneinfo import ZoneInfo
 
 from sync_data_system.clickhouse_client import ClickHouseConfig, create_clickhouse_client
 from sync_data_system.scripts.run_provider_sync import run_registered_task
+from sync_data_system.service.log_redaction import redact_sensitive_text
 from sync_data_system.service.table_check_state import TableCheckStateStore
-from sync_data_system.service.task_registry import TASK_REGISTRY
+from sync_data_system.service.task_registry import TASK_REGISTRY, build_provider_context
 
 
 DATE_FIELD_CANDIDATES = (
@@ -67,6 +68,7 @@ def run_task_batch(payload: dict[str, Any], *, results_path: Path, log_path: Pat
     tasks = list(payload.get("tasks") or [])
     results: list[dict[str, Any]] = []
     clickhouse = None
+    shared_contexts: dict[tuple[str, str], Any] = {}
     failed = 0
     completed = 0
 
@@ -130,8 +132,23 @@ def run_task_batch(payload: dict[str, Any], *, results_path: Path, log_path: Pat
                     log_level=log_level,
                     parameters=parameters,
                 )
-                registered_task_started = True
-                return_code = run_registered_task(args)
+                source = str(metadata.get("source") or result["provider"] or "").strip()
+                database = str(metadata.get("database") or result["database"] or "").strip()
+                if source == "amazingdata":
+                    context_key = (source, database)
+                    context = shared_contexts.get(context_key)
+                    if context is None:
+                        context = build_provider_context(
+                            source,
+                            runtime_path=runtime_path,
+                            database=database,
+                        )
+                        shared_contexts[context_key] = context
+                    registered_task_started = True
+                    return_code = run_registered_task(args, context=context)
+                else:
+                    registered_task_started = True
+                    return_code = run_registered_task(args)
                 if return_code:
                     raise RuntimeError(f"task returned non-zero status: {return_code}")
                 result["status"] = "success"
@@ -140,7 +157,7 @@ def run_task_batch(payload: dict[str, Any], *, results_path: Path, log_path: Pat
             except Exception as exc:
                 failed += 1
                 result["status"] = "failed"
-                result["error"] = str(exc)
+                result["error"] = redact_sensitive_text(exc)
                 if not registered_task_started:
                     _record_batch_table_check(
                         result,
@@ -157,6 +174,15 @@ def run_task_batch(payload: dict[str, Any], *, results_path: Path, log_path: Pat
             if result["status"] == "failed" and not continue_on_error:
                 break
     finally:
+        for (source, database), context in reversed(tuple(shared_contexts.items())):
+            try:
+                context.close()
+            except Exception as exc:
+                _append_log(
+                    log_path,
+                    f"batch={job_id} source={source} database={database} "
+                    f"status=context_close_failed error={exc}",
+                )
         if clickhouse is not None:
             clickhouse.close()
 
@@ -316,7 +342,7 @@ def _write_results(path: Path, job_id: str, tasks: list[dict[str, Any]], *, stat
 def _append_log(path: Path, message: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(f"{utc_now_iso()} {message}\n")
+        handle.write(f"{utc_now_iso()} {redact_sensitive_text(message)}\n")
 
 
 def _parse_date(value: Any) -> date | None:

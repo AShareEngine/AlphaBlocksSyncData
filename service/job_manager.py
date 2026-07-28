@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from sync_data_system.core.providers import load_provider_registry
+from sync_data_system.service.log_redaction import redact_sensitive_text
 from sync_data_system.service.task_registry import TASK_REGISTRY
 
 
@@ -231,7 +232,7 @@ class SyncJobManager:
         path = Path(job.log_path)
         if not path.exists():
             return ""
-        text = path.read_text(encoding="utf-8", errors="ignore")
+        text = redact_sensitive_text(path.read_text(encoding="utf-8", errors="ignore"))
         lines = text.splitlines()
         if tail_lines <= 0:
             return text

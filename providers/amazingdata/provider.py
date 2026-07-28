@@ -195,11 +195,34 @@ class AmazingDataSDKSession:
             host=self.config.host,
             port=self.config.port,
         )
+        base = None
         if ok is False:
-            raise RuntimeError("AmazingData 登录失败，请检查账号、密码、IP、端口和权限。")
+            # AmazingData V1.0.24 文档没有约定 login() 的返回值。部分 SDK
+            # 版本会在 TGW 已建立会话并打印 "login success" 后仍返回 False，
+            # 因此用一个轻量查询确认会话是否真的不可用，避免误判登录失败。
+            try:
+                base = ad.BaseData()
+                calendar = base.get_calendar()
+                if not _normalize_calendar_result(calendar):
+                    raise RuntimeError("get_calendar() 返回空结果")
+            except Exception as probe_exc:
+                try:
+                    logout = getattr(ad, "logout", None)
+                    if callable(logout):
+                        logout(username=self.config.username)
+                except Exception:
+                    logger.exception("AmazingData failed-login cleanup logout failed")
+                raise RuntimeError(
+                    "AmazingData 登录失败，请检查账号、密码、IP、端口和权限；"
+                    f"会话探测失败: {type(probe_exc).__name__}: {probe_exc}"
+                ) from probe_exc
+            logger.warning(
+                "AmazingData login() returned False but authenticated session probe succeeded; "
+                "continuing for SDK compatibility"
+            )
 
         self._ad = ad
-        self._base = ad.BaseData()
+        self._base = base if base is not None else ad.BaseData()
         self._info = ad.InfoData()
         self._connected = True
         logger.info("AmazingData SDK login success host=%s port=%s", self.config.host, self.config.port)

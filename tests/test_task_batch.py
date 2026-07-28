@@ -7,7 +7,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from sync_data_system.service.task_batch import run_task_batch
 
@@ -27,10 +27,17 @@ class TaskBatchTest(unittest.TestCase):
                 ],
             }
 
-            with patch(
-                "sync_data_system.service.task_batch.run_registered_task",
-                side_effect=[1, 0],
-            ) as runner:
+            shared_context = Mock()
+            with (
+                patch(
+                    "sync_data_system.service.task_batch.run_registered_task",
+                    side_effect=[1, 0],
+                ) as runner,
+                patch(
+                    "sync_data_system.service.task_batch.build_provider_context",
+                    return_value=shared_context,
+                ),
+            ):
                 return_code = run_task_batch(payload, results_path=results_path, log_path=log_path)
 
             results = json.loads(results_path.read_text(encoding="utf-8"))
@@ -38,6 +45,7 @@ class TaskBatchTest(unittest.TestCase):
             self.assertEqual(results["status"], "partial_success")
             self.assertEqual([item["status"] for item in results["tasks"]], ["failed", "success"])
             self.assertEqual(runner.call_count, 2)
+            shared_context.close.assert_called_once_with()
 
     def test_batch_stops_after_failure_when_continue_is_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -67,6 +75,48 @@ class TaskBatchTest(unittest.TestCase):
             self.assertEqual(results["status"], "failed")
             self.assertEqual(len(results["tasks"]), 1)
             self.assertEqual(runner.call_count, 1)
+
+    def test_amazingdata_tasks_share_one_context_across_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            shared_context = Mock()
+            payload = {
+                "job_id": "job_shared_amazingdata",
+                "continue_on_error": True,
+                "runtime_path": "/tmp/runtime.local.yaml",
+                "tasks": [
+                    {"id": "one", "name": "amazingdata.code_info", "enabled": True},
+                    {"id": "two", "name": "baostock.daily_kline", "enabled": True},
+                    {"id": "three", "name": "amazingdata.long_hu_bang", "enabled": True},
+                ],
+            }
+
+            with (
+                patch(
+                    "sync_data_system.service.task_batch.run_registered_task",
+                    return_value=0,
+                ) as runner,
+                patch(
+                    "sync_data_system.service.task_batch.build_provider_context",
+                    return_value=shared_context,
+                ) as build_context,
+            ):
+                return_code = run_task_batch(
+                    payload,
+                    results_path=root / "results.json",
+                    log_path=root / "batch.log",
+                )
+
+            self.assertEqual(return_code, 0)
+            build_context.assert_called_once_with(
+                "amazingdata",
+                runtime_path="/tmp/runtime.local.yaml",
+                database="starlight",
+            )
+            self.assertIs(runner.call_args_list[0].kwargs["context"], shared_context)
+            self.assertNotIn("context", runner.call_args_list[1].kwargs)
+            self.assertIs(runner.call_args_list[2].kwargs["context"], shared_context)
+            shared_context.close.assert_called_once_with()
 
 
 if __name__ == "__main__":

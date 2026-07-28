@@ -18,6 +18,7 @@ from program_bootstrap import install_sync_data_system_alias
 
 install_sync_data_system_alias(PROJECT_ROOT)
 
+from sync_data_system.service.log_redaction import install_output_redaction
 from sync_data_system.service.task_batch import run_task_batch
 
 
@@ -30,6 +31,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    install_output_redaction()
     args = parse_args()
     payload = json.loads(Path(args.payload).read_text(encoding="utf-8"))
     return run_task_batch(

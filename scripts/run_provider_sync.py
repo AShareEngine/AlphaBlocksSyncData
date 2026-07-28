@@ -9,7 +9,7 @@ import logging
 import sys
 from dataclasses import replace
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -22,6 +22,7 @@ install_sync_data_system_alias(PROJECT_ROOT)
 from sync_data_system.core.config import detect_plan_source
 from sync_data_system.core.engine import run_provider_config
 from sync_data_system.providers.amazingdata import runner as amazingdata_runner
+from sync_data_system.service.log_redaction import install_output_redaction
 from sync_data_system.service.table_check_state import TableCheckStateStore, utc_now_iso
 from sync_data_system.service.task_registry import TASK_REGISTRY, build_provider_context, create_probe
 
@@ -106,6 +107,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    install_output_redaction()
     args = parse_args()
     if args.config:
         return run_config_sequence(args.config, args)
@@ -159,7 +161,11 @@ def run_single_config(config_path: str, args: argparse.Namespace) -> int:
     )
 
 
-def run_registered_task(args: argparse.Namespace) -> int:
+def run_registered_task(
+    args: argparse.Namespace,
+    *,
+    context: Any | None = None,
+) -> int:
     attempted_at = utc_now_iso()
     log_path = Path(args.log_path) if args.log_path else PROJECT_ROOT / ".service_state" / "logs" / "cli.log"
     probe = create_probe(
@@ -196,13 +202,14 @@ def run_registered_task(args: argparse.Namespace) -> int:
     )
     definition = TASK_REGISTRY.get_task(probe.name)
     probe.log(f"task={probe.name} source={definition.source} target={definition.target} status=preparing")
-    context = None
+    owns_context = context is None
     try:
-        context = build_provider_context(
-            definition.source,
-            runtime_path=probe.runtime_path,
-            database=definition.database,
-        )
+        if context is None:
+            context = build_provider_context(
+                definition.source,
+                runtime_path=probe.runtime_path,
+                database=definition.database,
+            )
         probe.context = context
         TASK_REGISTRY.resolve_inputs(probe)
         probe.log(
@@ -213,10 +220,11 @@ def run_registered_task(args: argparse.Namespace) -> int:
         row_count = probe.row_count or int(result or 0)
         probe.set_row_count(row_count)
         probe.log(f"task={probe.name} status=success row_count={probe.row_count}")
-        try:
-            context.close()
-        finally:
-            context = None
+        if owns_context:
+            try:
+                context.close()
+            finally:
+                context = None
         _record_table_check(
             probe,
             definition=definition,
@@ -236,7 +244,7 @@ def run_registered_task(args: argparse.Namespace) -> int:
         )
         raise
     finally:
-        if context is not None:
+        if owns_context and context is not None:
             context.close()
 
 
