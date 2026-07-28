@@ -85,6 +85,8 @@ class SyncYFinanceConfig:
     rate_limit_backoff_seconds: float = 30.0
     rate_limit_max_backoff_seconds: float = 300.0
     rate_limit_jitter_seconds: float = 3.0
+    active_symbols_only: bool = True
+    symbol_directory_timeout: int = 60
     default_start_date: str = "2010-01-01"
     include_otc: bool = False
 

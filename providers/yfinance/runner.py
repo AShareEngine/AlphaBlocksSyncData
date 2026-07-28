@@ -258,6 +258,10 @@ def resolve_symbol_list(
 ) -> list[str]:
     if args.codes_raw.strip():
         symbols = normalize_us_symbol_list(args.codes_raw.split(","))
+    elif provider.config.active_symbols_only:
+        master = provider.fetch_symbol_master(limit=args.limit)
+        repository.save_frame("symbol_master", master)
+        symbols = normalize_us_symbol_list(master["symbol"].tolist()) if not master.empty else []
     else:
         symbols = repository.load_symbols(limit=args.limit)
         if not symbols:

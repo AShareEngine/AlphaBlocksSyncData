@@ -55,5 +55,7 @@ sync:
     rate_limit_backoff_seconds: 30.0
     rate_limit_max_backoff_seconds: 300.0
     rate_limit_jitter_seconds: 3.0
+    active_symbols_only: true
+    symbol_directory_timeout: 60
     default_start_date: '2010-01-01'
     include_otc: false

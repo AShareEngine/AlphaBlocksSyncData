@@ -120,6 +120,7 @@ sync:
     request_interval_seconds: 2.0
     rate_limit_retries: 4
     rate_limit_backoff_seconds: 30.0
+    active_symbols_only: true
     default_start_date: "2010-01-01"
     include_otc: false
 ```

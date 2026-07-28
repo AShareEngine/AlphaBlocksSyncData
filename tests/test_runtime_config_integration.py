@@ -146,6 +146,8 @@ class RuntimeConfigIntegrationTest(unittest.TestCase):
                 rate_limit_backoff_seconds: 45
                 rate_limit_max_backoff_seconds: 360
                 rate_limit_jitter_seconds: 5
+                active_symbols_only: true
+                symbol_directory_timeout: 75
                 default_start_date: '2015-01-01'
                 include_otc: true
             """
@@ -165,6 +167,8 @@ class RuntimeConfigIntegrationTest(unittest.TestCase):
         self.assertEqual(runtime.sync.yfinance.rate_limit_backoff_seconds, 45)
         self.assertEqual(runtime.sync.yfinance.rate_limit_max_backoff_seconds, 360)
         self.assertEqual(runtime.sync.yfinance.rate_limit_jitter_seconds, 5)
+        self.assertTrue(runtime.sync.yfinance.active_symbols_only)
+        self.assertEqual(runtime.sync.yfinance.symbol_directory_timeout, 75)
         self.assertEqual(runtime.sync.yfinance.default_start_date, "2015-01-01")
         self.assertTrue(runtime.sync.yfinance.include_otc)
         self.assertFalse(runtime.sync.yfinance.auto_adjust)

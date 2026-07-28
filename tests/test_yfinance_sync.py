@@ -50,6 +50,14 @@ class _FakeFinanceDatabase:
                         "exchange": "LSE",
                         "market": "London Stock Exchange",
                     },
+                    {
+                        "symbol": "AAA.ST",
+                        "name": "Ambiguous Nordic Listing",
+                        "currency": "SEK",
+                        "sector": "Financials",
+                        "exchange": "NGM",
+                        "market": "Nordic Growth Market",
+                    },
                 ]
             ).set_index("symbol")
 
@@ -132,7 +140,11 @@ class YFinanceProviderTest(unittest.TestCase):
     def setUp(self) -> None:
         self.yf = _FakeYFinance()
         self.provider = YFinanceProvider(
-            YFinanceConfig(batch_size=2, request_interval_seconds=0),
+            YFinanceConfig(
+                batch_size=2,
+                request_interval_seconds=0,
+                active_symbols_only=False,
+            ),
             yfinance_module=self.yf,
             finance_database_module=_FakeFinanceDatabase,
         )
@@ -143,6 +155,46 @@ class YFinanceProviderTest(unittest.TestCase):
         self.assertEqual(frame["symbol"].tolist(), ["AAPL", "IBM"])
         self.assertEqual(frame.loc[frame["symbol"] == "AAPL", "name"].iloc[0], "Apple Inc.")
         self.assertTrue((frame["source"] == "financedatabase").all())
+
+    def test_active_directory_excludes_non_common_and_adds_current_symbols(self) -> None:
+        nasdaq_text = "\n".join(
+            (
+                "Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares",
+                "AAPL|Apple Inc. - Common Stock|Q|N|N|100|N|N",
+                "ACACW|Acri Capital Acquisition Corporation - Warrants|S|N|N|100|N|N",
+                "AACBU|Artius II Acquisition Inc. - Units|G|N|N|100|N|N",
+                "BAD|Bad Filing Corp. - Common Stock|G|N|D|100|N|N",
+                "QQQ|Invesco QQQ Trust|Q|N|N|100|Y|N",
+                "File Creation Time: 0728202618:00|||||||",
+            )
+        )
+        other_text = "\n".join(
+            (
+                "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol",
+                "IBM|International Business Machines Corporation Common Stock|N|IBM|N|100|N|IBM",
+                "BRK.B|Berkshire Hathaway Inc. Class B Common Stock|N|BRK.B|N|100|N|BRK.B",
+                "BAC^A|Bank of America Preferred Stock|N|BAC^A|N|100|N|BAC^A",
+                "SPY|SPDR S&P 500 ETF Trust|P|SPY|Y|100|N|SPY",
+                "File Creation Time: 0728202618:00|||||||",
+            )
+        )
+        texts = {
+            "nasdaqlisted.txt": nasdaq_text,
+            "otherlisted.txt": other_text,
+        }
+        provider = YFinanceProvider(
+            YFinanceConfig(active_symbols_only=True),
+            finance_database_module=_FakeFinanceDatabase,
+            url_text_loader=lambda url: next(
+                value for suffix, value in texts.items() if url.endswith(suffix)
+            ),
+        )
+
+        frame = provider.fetch_symbol_master(snapshot_date=date(2026, 7, 28))
+
+        self.assertEqual(frame["symbol"].tolist(), ["AAPL", "BRK-B", "IBM"])
+        self.assertEqual(frame.loc[frame["symbol"] == "BRK-B", "currency"].iloc[0], "USD")
+        self.assertTrue((frame["source"] == "nasdaq_trader+financedatabase").all())
 
     def test_daily_download_normalizes_multi_index_and_inclusive_end(self) -> None:
         frame = self.provider.fetch_daily(

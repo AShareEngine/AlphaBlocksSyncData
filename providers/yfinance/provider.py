@@ -11,8 +11,10 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from io import StringIO
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional, Sequence
+from urllib.request import ProxyHandler, Request, build_opener
 
 import pandas as pd
 
@@ -23,23 +25,46 @@ from sync_data_system.runtime_config import load_runtime_config
 
 logger = logging.getLogger(__name__)
 
-MAIN_US_EXCHANGES = frozenset(
+MAIN_US_MARKETS = frozenset(
     {
-        "ASE",
         "NASDAQ",
         "NASDAQ CAPITAL MARKET",
         "NASDAQ GLOBAL MARKET",
         "NASDAQ GLOBAL SELECT",
-        "NCM",
-        "NGM",
-        "NMS",
         "NYSE",
         "NYSE AMERICAN",
+        "NYSE MKT",
         "NEW YORK STOCK EXCHANGE",
-        "NYQ",
     }
 )
-OTC_EXCHANGES = frozenset({"OQB", "OQX", "OTC", "OTC MARKETS", "PNK"})
+OTC_MARKETS = frozenset({"OTC BULLETIN BOARD", "OTC MARKETS", "PINK SHEETS"})
+
+NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+OTHER_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+
+NASDAQ_MARKET_NAMES = {
+    "Q": "NASDAQ Global Select",
+    "G": "NASDAQ Global Market",
+    "S": "NASDAQ Capital Market",
+}
+NASDAQ_EXCHANGE_CODES = {
+    "Q": "NMS",
+    "G": "NASDAQ",
+    "S": "NCM",
+}
+OTHER_MARKET_NAMES = {
+    "A": "NYSE American",
+    "N": "New York Stock Exchange",
+}
+OTHER_EXCHANGE_CODES = {
+    "A": "ASE",
+    "N": "NYQ",
+}
+
+NON_COMMON_SECURITY_RE = re.compile(
+    r"\b(?:WARRANTS?|RIGHTS?|PREFERRED|PFD|DEBENTURES?|NOTES?)\b",
+    re.IGNORECASE,
+)
 
 SYMBOL_MASTER_COLUMNS = (
     "symbol",
@@ -95,6 +120,8 @@ class YFinanceConfig:
     rate_limit_backoff_seconds: float = 30.0
     rate_limit_max_backoff_seconds: float = 300.0
     rate_limit_jitter_seconds: float = 3.0
+    active_symbols_only: bool = True
+    symbol_directory_timeout: int = 60
     default_start_date: str = "2010-01-01"
     include_otc: bool = False
 
@@ -118,6 +145,8 @@ class YFinanceConfig:
                 float(config.rate_limit_max_backoff_seconds),
             ),
             rate_limit_jitter_seconds=max(0.0, float(config.rate_limit_jitter_seconds)),
+            active_symbols_only=bool(config.active_symbols_only),
+            symbol_directory_timeout=max(1, int(config.symbol_directory_timeout or 60)),
             default_start_date=str(config.default_start_date or "2010-01-01").strip() or "2010-01-01",
             include_otc=bool(config.include_otc),
         )
@@ -130,13 +159,16 @@ class YFinanceProvider:
         *,
         yfinance_module: Any | None = None,
         finance_database_module: Any | None = None,
+        url_text_loader: Callable[[str], str] | None = None,
     ) -> None:
         self.config = config
         self._yfinance_module = yfinance_module
         self._finance_database_module = finance_database_module
+        self._url_text_loader = url_text_loader
         self._yfinance_configured = False
         self._request_lock = threading.Lock()
         self._last_request_at = 0.0
+        self._active_symbol_directory_cache: pd.DataFrame | None = None
 
     def close(self) -> None:
         return None
@@ -166,10 +198,17 @@ class YFinanceProvider:
         frame = _ensure_columns(frame, SYMBOL_MASTER_COLUMNS)
         frame = frame.loc[:, list(SYMBOL_MASTER_COLUMNS)]
         frame = frame.drop_duplicates(subset=["symbol"], keep="first").sort_values("symbol")
+        source = "financedatabase"
+        if self.config.active_symbols_only:
+            frame = _merge_active_symbol_directory(
+                self._load_active_symbol_directory(),
+                frame,
+            )
+            source = "nasdaq_trader+financedatabase"
         if limit > 0:
             frame = frame.head(limit)
         frame["snapshot_date"] = snapshot_date or date.today()
-        frame["source"] = "financedatabase"
+        frame["source"] = source
         return frame.reset_index(drop=True)
 
     def fetch_industry_membership(
@@ -391,19 +430,64 @@ class YFinanceProvider:
         return result.loc[:, list(columns)].reset_index(drop=True)
 
     def _filter_us_listings(self, frame: pd.DataFrame) -> pd.DataFrame:
-        allowed = set(MAIN_US_EXCHANGES)
+        if "market" not in frame.columns:
+            logger.warning("FinanceDatabase equities 数据缺少 market 字段，无法识别美国上市市场。")
+            return frame.iloc[0:0].copy()
+        allowed = set(MAIN_US_MARKETS)
         if self.config.include_otc:
-            allowed.update(OTC_EXCHANGES)
-        mask = pd.Series(False, index=frame.index)
-        for column in ("exchange", "market"):
-            if column not in frame.columns:
-                continue
-            normalized = frame[column].fillna("").astype(str).str.strip().str.upper()
-            mask |= normalized.isin(allowed)
-            mask |= normalized.str.contains(r"\bNASDAQ\b|\bNYSE\b|NEW YORK STOCK EXCHANGE", regex=True)
-            if self.config.include_otc:
-                mask |= normalized.str.contains(r"\bOTC\b|PINK", regex=True)
+            allowed.update(OTC_MARKETS)
+        normalized = frame["market"].fillna("").astype(str).str.strip().str.upper()
+        mask = normalized.isin(allowed)
         return frame.loc[mask].copy()
+
+    def _load_active_symbol_directory(self) -> pd.DataFrame:
+        if self._active_symbol_directory_cache is not None:
+            return self._active_symbol_directory_cache.copy()
+
+        nasdaq = _parse_nasdaq_listed(self._download_text(NASDAQ_LISTED_URL))
+        other = _parse_other_listed(self._download_text(OTHER_LISTED_URL))
+        directory = pd.concat((nasdaq, other), ignore_index=True)
+        directory = directory.drop_duplicates(subset=["symbol"], keep="first").sort_values("symbol")
+        if directory.empty:
+            raise RuntimeError("Nasdaq Trader 当前上市证券目录为空，已停止生成 symbol_master。")
+        self._active_symbol_directory_cache = directory.reset_index(drop=True)
+        logger.info("Loaded %s active common US symbols from Nasdaq Trader", len(directory))
+        return self._active_symbol_directory_cache.copy()
+
+    def _download_text(self, url: str) -> str:
+        if self._url_text_loader is not None:
+            return self._url_text_loader(url)
+
+        proxy_map: dict[str, str] = {}
+        if self.config.proxy:
+            proxy_map = {
+                "http": self.config.proxy,
+                "https": self.config.proxy,
+            }
+        opener = build_opener(ProxyHandler(proxy_map) if proxy_map else ProxyHandler())
+        request = Request(
+            url,
+            headers={"User-Agent": "AlphaBlocksSyncData/1.0"},
+        )
+        for attempt in range(self.config.network_retries + 1):
+            try:
+                with opener.open(
+                    request,
+                    timeout=self.config.symbol_directory_timeout,
+                ) as response:
+                    return response.read().decode("utf-8-sig")
+            except Exception as exc:
+                if attempt >= self.config.network_retries:
+                    raise RuntimeError(f"无法下载当前美股证券目录: {url}") from exc
+                delay = min(2**attempt, 10)
+                logger.warning(
+                    "US symbol directory download failed attempt=%s/%s; retrying in %ss",
+                    attempt + 1,
+                    self.config.network_retries,
+                    delay,
+                )
+                time.sleep(delay)
+        raise RuntimeError(f"无法下载当前美股证券目录: {url}")
 
     @property
     def _yfinance(self) -> Any:
@@ -496,7 +580,11 @@ class YFinanceProvider:
 
 
 def normalize_us_symbol(value: Any) -> str:
-    return str(value or "").strip().upper()
+    symbol = str(value or "").strip().upper()
+    share_class = re.fullmatch(r"([A-Z0-9]+)[/.]([A-Z])", symbol)
+    if share_class:
+        return f"{share_class.group(1)}-{share_class.group(2)}"
+    return symbol
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -511,6 +599,121 @@ def _is_rate_limit_error(exc: Exception) -> bool:
             "status code 429",
         )
     )
+
+
+def _parse_nasdaq_listed(text: str) -> pd.DataFrame:
+    frame = _read_pipe_directory(text)
+    required = {
+        "symbol",
+        "security_name",
+        "market_category",
+        "test_issue",
+        "financial_status",
+        "etf",
+    }
+    if not required.issubset(frame.columns):
+        missing = sorted(required - set(frame.columns))
+        raise ValueError(f"nasdaqlisted.txt 缺少字段: {missing}")
+
+    raw_symbol = frame["symbol"].fillna("").astype(str).str.strip().str.upper()
+    name = frame["security_name"].fillna("").astype(str).str.strip()
+    category = frame["market_category"].fillna("").astype(str).str.strip().str.upper()
+    mask = (
+        (raw_symbol != "")
+        & ~raw_symbol.str.startswith("FILE CREATION TIME")
+        & frame["test_issue"].fillna("").astype(str).str.upper().eq("N")
+        & frame["financial_status"].fillna("").astype(str).str.upper().eq("N")
+        & frame["etf"].fillna("").astype(str).str.upper().eq("N")
+        & category.isin(NASDAQ_MARKET_NAMES)
+        & _common_security_mask(raw_symbol, name)
+    )
+    result = pd.DataFrame(
+        {
+            "symbol": raw_symbol[mask].map(normalize_us_symbol),
+            "directory_name": name[mask],
+            "directory_exchange": category[mask].map(NASDAQ_EXCHANGE_CODES),
+            "directory_market": category[mask].map(NASDAQ_MARKET_NAMES),
+        }
+    )
+    return result[result["symbol"] != ""].reset_index(drop=True)
+
+
+def _parse_other_listed(text: str) -> pd.DataFrame:
+    frame = _read_pipe_directory(text)
+    required = {
+        "act_symbol",
+        "security_name",
+        "exchange",
+        "cqs_symbol",
+        "etf",
+        "test_issue",
+    }
+    if not required.issubset(frame.columns):
+        missing = sorted(required - set(frame.columns))
+        raise ValueError(f"otherlisted.txt 缺少字段: {missing}")
+
+    raw_symbol = (
+        frame["cqs_symbol"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .where(lambda values: values != "", frame["act_symbol"].fillna("").astype(str).str.strip())
+        .str.upper()
+    )
+    name = frame["security_name"].fillna("").astype(str).str.strip()
+    exchange = frame["exchange"].fillna("").astype(str).str.strip().str.upper()
+    mask = (
+        (raw_symbol != "")
+        & ~raw_symbol.str.startswith("FILE CREATION TIME")
+        & frame["test_issue"].fillna("").astype(str).str.upper().eq("N")
+        & frame["etf"].fillna("").astype(str).str.upper().eq("N")
+        & exchange.isin(OTHER_MARKET_NAMES)
+        & _common_security_mask(raw_symbol, name)
+    )
+    result = pd.DataFrame(
+        {
+            "symbol": raw_symbol[mask].map(normalize_us_symbol),
+            "directory_name": name[mask],
+            "directory_exchange": exchange[mask].map(OTHER_EXCHANGE_CODES),
+            "directory_market": exchange[mask].map(OTHER_MARKET_NAMES),
+        }
+    )
+    return result[result["symbol"] != ""].reset_index(drop=True)
+
+
+def _read_pipe_directory(text: str) -> pd.DataFrame:
+    frame = pd.read_csv(
+        StringIO(str(text or "")),
+        sep="|",
+        dtype=str,
+        keep_default_na=False,
+    )
+    return _normalize_columns(frame)
+
+
+def _common_security_mask(symbol: pd.Series, name: pd.Series) -> pd.Series:
+    non_common_name = name.str.contains(NON_COMMON_SECURITY_RE, na=False)
+    spac_unit = name.str.contains(r"\bUNITS?\b", case=False, regex=True, na=False) & symbol.str.endswith("U")
+    return ~(non_common_name | spac_unit)
+
+
+def _merge_active_symbol_directory(
+    directory: pd.DataFrame,
+    metadata: pd.DataFrame,
+) -> pd.DataFrame:
+    finance = metadata.drop_duplicates(subset=["symbol"], keep="first").copy()
+    result = directory.merge(finance, on="symbol", how="left")
+    result = _ensure_columns(result, SYMBOL_MASTER_COLUMNS)
+    for column, fallback_column in (
+        ("name", "directory_name"),
+        ("exchange", "directory_exchange"),
+        ("market", "directory_market"),
+    ):
+        values = result[column].fillna("").astype(str).str.strip()
+        result[column] = result[column].where(values != "", result[fallback_column])
+    currency = result["currency"].fillna("").astype(str).str.strip()
+    result["currency"] = result["currency"].where(currency != "", "USD")
+    return result.loc[:, list(SYMBOL_MASTER_COLUMNS)].sort_values("symbol").reset_index(drop=True)
 
 
 def normalize_us_symbol_list(values: Iterable[Any]) -> list[str]:
