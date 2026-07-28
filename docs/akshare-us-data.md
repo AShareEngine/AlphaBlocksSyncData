@@ -72,9 +72,14 @@ python3 scripts/run_provider_sync.py akshare.us_index_daily \
   --index-code .INX,.IXIC --begin-date 20240101 --force
 ```
 
-公司资料、分钟行情、财务报表、财务指标和估值都是逐股接口，必须显式传 `--codes`。日线和分钟
-接口依赖东方财富市场代码；若全量实时目录暂时不可用，可以直接传 `105.AAPL` 这种
-`市场编号.股票代码`，跳过全量代码映射。
+公司资料、财务报表、财务指标和估值都是逐股接口。未传 `--codes` 时会自动使用最新
+`ak_us_spot` 普通股股票池；首次运行若表为空，会先下载股票池。全市场逐股运行耗时较长，建议先用
+`--codes AAPL,MSFT` 或 `--limit 20` 验证。
+
+股票池优先使用东方财富 `stock_us_spot_em`，失败时自动回退到新浪 `stock_us_spot`，再失败则使用
+新浪 `get_us_stock_name` 代码表。日线有东方财富市场代码时使用 `stock_us_hist`，否则自动回退到新浪
+`stock_us_daily`。分钟线目前只有东方财富接口，仍需要 `105.AAPL` 这种
+`市场编号.股票代码`；无法取得市场编号时应配置代理或显式传入代码。
 
 按计划运行：
 
@@ -99,11 +104,12 @@ python3 scripts/run_provider_sync.py --config providers/akshare/plans/enrichment
 ## 网络错误排查
 
 如果出现 `RemoteDisconnected` 或 `stock_us_spot_em` 失败，表示东方财富主动断开了全量分页请求，
-不是 ClickHouse 写入错误：
+不是 ClickHouse 写入错误。程序会自动尝试新浪股票池和新浪日线：
 
 1. 在运行 PM2 任务的服务器上填写 `sync.akshare.proxy`，不要填写只能从个人电脑访问的代理地址。
-2. 先只运行 `akshare.us_spot --limit 20 --force` 验证全量目录接口。
-3. 公司资料、分钟、财报、财务指标和估值任务传入少量 `codes`，不要直接选择全市场。
-4. 日线急需验证时可直接传 `105.AAPL`、`106.TTE` 这样的东方财富代码，绕过全量目录下载。
+2. 先只运行 `akshare.us_spot --limit 20 --force` 验证股票池；日志中的
+   `source=stock_us_spot_em; trying fallback` 表示正在自动切换新浪，并非最终失败。
+3. 公司资料、财报、财务指标和估值任务先传少量 `codes`，避免首次测试直接发起全市场逐股请求。
+4. 分钟线仍可直接传 `105.AAPL`、`106.TTE` 这样的东方财富代码，绕过全量目录下载。
 
 `py_mini_racer` 输出的 `pkg_resources is deprecated` 是依赖包警告，与本次网络断开无关。

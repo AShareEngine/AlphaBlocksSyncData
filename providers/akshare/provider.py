@@ -213,17 +213,23 @@ class AkshareUSProvider:
         limit: int = 0,
         snapshot_date: date | None = None,
     ) -> pd.DataFrame:
-        raw = self._run_call("stock_us_spot_em", self._akshare.stock_us_spot_em)
+        raw, source = self._fetch_us_spot_raw()
         frame = _as_dataframe(raw)
         if frame.empty:
             return _empty_frame(SPOT_COLUMNS)
 
         fetched_at = _utcnow()
         result = pd.DataFrame(index=frame.index)
-        result["em_code"] = _text_series(frame, "代码", "code")
-        result["symbol"] = result["em_code"].map(_symbol_from_em_code)
-        result["market_id"] = result["em_code"].map(_market_id_from_em_code)
-        result["name"] = _text_series(frame, "名称", "name")
+        if source == "akshare:stock_us_spot_em":
+            result["em_code"] = _text_series(frame, "代码", "code")
+            result["symbol"] = result["em_code"].map(_symbol_from_em_code)
+            result["market_id"] = result["em_code"].map(_market_id_from_em_code)
+            result["name"] = _coalesced_text_series(frame, "名称", "name", "cname")
+        else:
+            result["symbol"] = _text_series(frame, "symbol", "代码", "code").map(normalize_us_symbol)
+            result["em_code"] = result["symbol"]
+            result["market_id"] = _text_series(frame, "market", "市场")
+            result["name"] = _coalesced_text_series(frame, "name", "cname", "名称")
         result["instrument_type"] = [
             _instrument_type(symbol, name, market_id)
             for symbol, name, market_id in zip(
@@ -234,20 +240,20 @@ class AkshareUSProvider:
         ]
         result["snapshot_date"] = snapshot_date or date.today()
         result["snapshot_at"] = fetched_at
-        result["last"] = _number_series(frame, "最新价", "latest")
-        result["change_amount"] = _number_series(frame, "涨跌额")
-        result["change_percent"] = _number_series(frame, "涨跌幅")
-        result["open"] = _number_series(frame, "开盘价", "开盘")
-        result["high"] = _number_series(frame, "最高价", "最高")
-        result["low"] = _number_series(frame, "最低价", "最低")
-        result["previous_close"] = _number_series(frame, "昨收价", "昨收")
-        result["market_cap"] = _number_series(frame, "总市值")
-        result["pe"] = _number_series(frame, "市盈率")
-        result["volume"] = _number_series(frame, "成交量")
-        result["turnover"] = _number_series(frame, "成交额")
-        result["amplitude"] = _number_series(frame, "振幅")
-        result["turnover_rate"] = _number_series(frame, "换手率")
-        result["source"] = "akshare:stock_us_spot_em"
+        result["last"] = _number_series(frame, "最新价", "latest", "price")
+        result["change_amount"] = _number_series(frame, "涨跌额", "diff")
+        result["change_percent"] = _number_series(frame, "涨跌幅", "chg")
+        result["open"] = _number_series(frame, "开盘价", "开盘", "open")
+        result["high"] = _number_series(frame, "最高价", "最高", "high")
+        result["low"] = _number_series(frame, "最低价", "最低", "low")
+        result["previous_close"] = _number_series(frame, "昨收价", "昨收", "preclose")
+        result["market_cap"] = _number_series(frame, "总市值", "mktcap")
+        result["pe"] = _number_series(frame, "市盈率", "pe")
+        result["volume"] = _number_series(frame, "成交量", "volume")
+        result["turnover"] = _number_series(frame, "成交额", "amount")
+        result["amplitude"] = _number_series(frame, "振幅", "amplitude")
+        result["turnover_rate"] = _number_series(frame, "换手率", "turnover_rate")
+        result["source"] = source
         result["fetched_at"] = fetched_at
         result = result[(result["em_code"] != "") & (result["symbol"] != "")].copy()
         if not self.config.include_pink:
@@ -261,6 +267,31 @@ class AkshareUSProvider:
         if limit <= 0:
             self._spot_cache = normalized.copy()
         return normalized
+
+    def _fetch_us_spot_raw(self) -> tuple[Any, str]:
+        failures: list[Exception] = []
+        sources = (
+            ("stock_us_spot_em", "akshare:stock_us_spot_em"),
+            ("stock_us_spot", "akshare:stock_us_spot"),
+            ("get_us_stock_name", "akshare:get_us_stock_name"),
+        )
+        for method_name, source in sources:
+            operation = getattr(self._akshare, method_name, None)
+            if not callable(operation):
+                continue
+            try:
+                return self._run_call(method_name, operation), source
+            except RuntimeError as exc:
+                failures.append(exc)
+                logger.warning(
+                    "AKShare US symbol source unavailable source=%s; trying fallback",
+                    method_name,
+                )
+        cause = failures[-1] if failures else None
+        raise RuntimeError(
+            "AKShare 美股代码表获取失败：东方财富 stock_us_spot_em 与新浪 "
+            "stock_us_spot/get_us_stock_name 均不可用；请检查网络或配置 sync.akshare.proxy。"
+        ) from cause
 
     def resolve_us_symbols(
         self,
@@ -335,22 +366,42 @@ class AkshareUSProvider:
     ) -> pd.DataFrame:
         start = _date_value(start_date)
         end = _date_value(end_date)
-        raw = self._run_call(
-            f"stock_us_hist:{em_code}",
-            lambda: self._akshare.stock_us_hist(
-                symbol=em_code,
-                period="daily",
-                start_date=start.strftime("%Y%m%d"),
-                end_date=end.strftime("%Y%m%d"),
-                adjust=self.config.adjust,
-            ),
-        )
+        source = "akshare:stock_us_hist"
+        actual_adjust = self.config.adjust
+        has_eastmoney_code = bool(re.match(r"^\d+\..+$", normalize_us_symbol(em_code)))
+        try:
+            if not has_eastmoney_code:
+                raise RuntimeError("Eastmoney market-prefixed code is unavailable")
+            raw = self._run_call(
+                f"stock_us_hist:{em_code}",
+                lambda: self._akshare.stock_us_hist(
+                    symbol=em_code,
+                    period="daily",
+                    start_date=start.strftime("%Y%m%d"),
+                    end_date=end.strftime("%Y%m%d"),
+                    adjust=self.config.adjust,
+                ),
+            )
+        except RuntimeError:
+            operation = getattr(self._akshare, "stock_us_daily", None)
+            if not callable(operation):
+                raise
+            source = "akshare:stock_us_daily"
+            actual_adjust = self.config.adjust if self.config.adjust in {"", "qfq"} else ""
+            logger.warning(
+                "AKShare daily Eastmoney source unavailable symbol=%s; falling back to Sina stock_us_daily",
+                symbol,
+            )
+            raw = self._run_call(
+                f"stock_us_daily:{symbol}",
+                lambda: operation(symbol=symbol, adjust=actual_adjust),
+            )
         frame = _as_dataframe(raw)
         if frame.empty:
             return _empty_frame(DAILY_COLUMNS)
         fetched_at = _utcnow()
         result = pd.DataFrame(index=frame.index)
-        result["em_code"] = em_code
+        result["em_code"] = em_code or symbol
         result["symbol"] = symbol
         result["trade_date"] = pd.to_datetime(_value_series(frame, "日期", "date"), errors="coerce").dt.date
         result["open"] = _number_series(frame, "开盘", "open")
@@ -363,8 +414,8 @@ class AkshareUSProvider:
         result["change_percent"] = _number_series(frame, "涨跌幅")
         result["change_amount"] = _number_series(frame, "涨跌额")
         result["turnover_rate"] = _number_series(frame, "换手率")
-        result["adjust"] = self.config.adjust
-        result["source"] = "akshare:stock_us_hist"
+        result["adjust"] = actual_adjust
+        result["source"] = source
         result["fetched_at"] = fetched_at
         result = result[result["trade_date"].notna()].copy()
         result = result[
@@ -772,6 +823,16 @@ def _value_series(frame: pd.DataFrame, *candidates: str) -> pd.Series:
 
 def _text_series(frame: pd.DataFrame, *candidates: str) -> pd.Series:
     return _value_series(frame, *candidates).fillna("").astype(str).str.strip()
+
+
+def _coalesced_text_series(frame: pd.DataFrame, *candidates: str) -> pd.Series:
+    result = pd.Series([""] * len(frame), index=frame.index, dtype=object)
+    for name in candidates:
+        if name not in frame.columns:
+            continue
+        candidate = frame[name].fillna("").astype(str).str.strip()
+        result = result.where(result != "", candidate)
+    return result
 
 
 def _number_series(frame: pd.DataFrame, *candidates: str) -> pd.Series:

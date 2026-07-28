@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import logging
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -34,15 +35,6 @@ from sync_data_system.toml_compat import tomllib
 
 
 logger = logging.getLogger(__name__)
-EXPLICIT_CODE_TASKS = frozenset(
-    {
-        "us_company_profile",
-        "us_financial_statement",
-        "us_financial_indicator",
-        "us_minute_kline",
-        "us_valuation",
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -244,16 +236,23 @@ def _execute_task(
         return repository.save_frame("us_spot", provider.fetch_us_spot(limit=args.limit))
     if args.task == "us_index_daily":
         return _run_index_task(args, provider, repository, request_meta)
-    if args.task in EXPLICIT_CODE_TASKS and not normalize_us_symbol_list(args.codes_raw.split(",")):
-        raise ValueError(
-            f"AKShare 任务 {args.task} 必须显式传入美股代码；"
-            "这些逐股接口不允许在未指定 codes 时自动请求全市场。"
-        )
 
     require_em_code = args.task in {"us_daily_kline", "us_minute_kline"}
     symbols = _resolve_symbols(args, provider, repository, require_em_code=require_em_code)
     if not symbols:
         raise ValueError("未获取到可用的美股代码；请先同步 us_spot 或显式传 --codes。")
+    if args.task == "us_minute_kline":
+        unresolved = [
+            item["symbol"]
+            for item in symbols
+            if not re.match(r"^\d+\..+$", str(item.get("em_code") or ""))
+        ]
+        if unresolved:
+            preview = ",".join(unresolved[:10])
+            raise ValueError(
+                "AKShare 美股分钟线只能使用东方财富市场代码；stock_us_spot_em 当前不可用。"
+                f"请配置 sync.akshare.proxy，或显式传入类似 105.AAPL 的代码。未解析代码: {preview}"
+            )
 
     if args.task == "us_daily_kline":
         return _run_daily_task(args, provider, repository, symbols, request_meta)

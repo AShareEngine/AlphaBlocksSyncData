@@ -59,6 +59,33 @@ class _FakeAkshare:
             ]
         )
 
+    def stock_us_spot(self):
+        self.calls.append(("stock_us_spot", {}))
+        return pd.DataFrame(
+            [
+                {
+                    "name": "Apple, Inc.",
+                    "cname": "苹果公司",
+                    "category": "计算机",
+                    "symbol": "AAPL",
+                    "price": 225.0,
+                    "diff": 1.5,
+                    "chg": 0.67,
+                    "preclose": 223.5,
+                    "open": 223.0,
+                    "high": 226.0,
+                    "low": 222.0,
+                    "volume": 1_000_000,
+                    "mktcap": 3.4e12,
+                    "pe": 35.0,
+                }
+            ]
+        )
+
+    def get_us_stock_name(self):
+        self.calls.append(("get_us_stock_name", {}))
+        return pd.DataFrame([{"name": "Apple, Inc.", "cname": "苹果公司", "symbol": "AAPL"}])
+
     def stock_us_hist(self, **kwargs):
         self.calls.append(("stock_us_hist", kwargs))
         return pd.DataFrame(
@@ -88,6 +115,29 @@ class _FakeAkshare:
                     "涨跌幅": 0.98,
                     "涨跌额": 1.0,
                     "换手率": 0.6,
+                },
+            ]
+        )
+
+    def stock_us_daily(self, **kwargs):
+        self.calls.append(("stock_us_daily", kwargs))
+        return pd.DataFrame(
+            [
+                {
+                    "date": "2024-01-02",
+                    "open": 100.0,
+                    "close": 102.0,
+                    "high": 103.0,
+                    "low": 99.0,
+                    "volume": 1000,
+                },
+                {
+                    "date": "2024-01-03",
+                    "open": 102.0,
+                    "close": 103.0,
+                    "high": 104.0,
+                    "low": 101.0,
+                    "volume": 1100,
                 },
             ]
         )
@@ -184,6 +234,12 @@ class _FakeClickHouseClient:
         return []
 
 
+class _FailingEastmoneyAkshare(_FakeAkshare):
+    def stock_us_spot_em(self):
+        self.calls.append(("stock_us_spot_em", {}))
+        raise ConnectionError("Eastmoney unavailable")
+
+
 class AkshareUSProviderTest(unittest.TestCase):
     def setUp(self) -> None:
         self.ak = _FakeAkshare()
@@ -203,6 +259,21 @@ class AkshareUSProviderTest(unittest.TestCase):
         self.assertEqual(frame["symbol"].tolist(), ["AAPL"])
         self.assertEqual(frame.iloc[0]["em_code"], "105.AAPL")
         self.assertEqual(frame.iloc[0]["instrument_type"], "common_stock")
+
+    def test_spot_falls_back_to_sina_when_eastmoney_is_unavailable(self) -> None:
+        akshare = _FailingEastmoneyAkshare()
+        provider = AkshareUSProvider(
+            AkshareUSConfig(request_interval_seconds=0, retries=0),
+            akshare_module=akshare,
+        )
+
+        frame = provider.fetch_us_spot(snapshot_date=date(2024, 1, 5))
+
+        self.assertEqual(frame["symbol"].tolist(), ["AAPL"])
+        self.assertEqual(frame.iloc[0]["em_code"], "AAPL")
+        self.assertEqual(frame.iloc[0]["source"], "akshare:stock_us_spot")
+        self.assertEqual(frame.iloc[0]["last"], 225.0)
+        self.assertEqual([call[0] for call in akshare.calls[:2]], ["stock_us_spot_em", "stock_us_spot"])
 
     def test_non_price_task_does_not_download_spot_for_explicit_symbols(self) -> None:
         symbols = self.provider.resolve_us_symbols(
@@ -277,6 +348,21 @@ class AkshareUSProviderTest(unittest.TestCase):
         self.assertEqual(call["symbol"], "105.AAPL")
         self.assertEqual(call["start_date"], "20240102")
         self.assertEqual(call["end_date"], "20240103")
+
+    def test_daily_uses_sina_when_eastmoney_code_is_unavailable(self) -> None:
+        frame = self.provider.fetch_us_daily(
+            em_code="",
+            symbol="AAPL",
+            start_date="20240102",
+            end_date="20240103",
+        )
+
+        self.assertEqual(len(frame), 2)
+        self.assertEqual(frame.iloc[0]["source"], "akshare:stock_us_daily")
+        self.assertEqual(frame.iloc[0]["em_code"], "AAPL")
+        daily_call = next(item for item in self.ak.calls if item[0] == "stock_us_daily")[1]
+        self.assertEqual(daily_call["symbol"], "AAPL")
+        self.assertEqual(daily_call["adjust"], "")
 
     def test_financial_dates_accept_yyyymmdd_integers(self) -> None:
         statement = self.provider.fetch_us_financial_statement(
@@ -371,7 +457,7 @@ class AkshareUSRunnerTest(unittest.TestCase):
         self.assertEqual(cursor_call[2][0][1], "AAPL")
         self.assertEqual(cursor_call[2][0][2], date(2024, 1, 3))
 
-    def test_high_cost_task_requires_explicit_codes(self) -> None:
+    def test_profile_without_codes_uses_saved_symbol_universe(self) -> None:
         provider = AkshareUSProvider(
             AkshareUSConfig(request_interval_seconds=0, retries=0),
             akshare_module=_FakeAkshare(),
@@ -394,10 +480,15 @@ class AkshareUSRunnerTest(unittest.TestCase):
             log_level="INFO",
         )
 
-        with self.assertRaisesRegex(ValueError, "必须显式传入美股代码"):
-            run_sync_args(args, provider, repository)
+        with patch.object(repository, "load_symbols", return_value=["AAPL"]):
+            inserted = run_sync_args(args, provider, repository)
 
-        self.assertEqual(provider._akshare_module.calls, [])
+        self.assertEqual(inserted, 1)
+        self.assertTrue(
+            any(call[0] == "stock_individual_basic_info_us_xq" for call in provider._akshare_module.calls)
+        )
+        self.assertFalse(any(call[0] == "stock_us_spot_em" for call in provider._akshare_module.calls))
+        self.assertTrue(any(call[0].endswith("ak_us_company_profile") for call in client.insert_calls))
         self.assertTrue(any(call[0].endswith("ak_sync_task_log") for call in client.insert_calls))
 
     def test_load_execution_plan(self) -> None:
