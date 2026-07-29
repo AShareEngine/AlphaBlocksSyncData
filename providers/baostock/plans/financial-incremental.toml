@@ -1,0 +1,37 @@
+source = "baostock"
+database = "baostock"
+log_level = "INFO"
+continue_on_error = true
+
+# 不配置 year/quarter，启用逐股票自动增量：
+# - 目标表没有该股票：从 2010Q1 / 2010 年开始；
+# - 已有数据但落后：从该股票游标后的季度（分红按游标所在年度）开始；
+# - 已到最近完成季度：不请求 BaoStock。
+# historical 会把历史退市 A 股纳入代码池，但不会把指数和 ETF 传给财务接口。
+[defaults]
+universe_mode = "historical"
+continue_on_error = true
+force = false
+limit = 0
+
+[[tasks]]
+task = "growth_data"
+
+[[tasks]]
+task = "profit_data"
+
+[[tasks]]
+task = "operation_data"
+
+[[tasks]]
+task = "dupont_data"
+
+[[tasks]]
+task = "balance_data"
+
+[[tasks]]
+task = "cash_flow_data"
+
+[[tasks]]
+task = "dividend_data"
+year_type = "report"

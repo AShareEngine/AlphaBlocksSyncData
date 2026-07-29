@@ -300,6 +300,53 @@ sync:
         self.assertEqual(item["latest_date"], "2026-06-18")
         self.assertEqual(item["check_state"], check_state)
 
+    def test_sync_table_status_returns_quarterly_freshness_mode(self) -> None:
+        client = TestClient(app)
+
+        class _FakeClient:
+            def query_rows(self, sql, parameters=None):
+                if "FROM system.tables" in sql:
+                    return [("baostock", "bs_growth_data")]
+                if "FROM system.columns" in sql:
+                    return [
+                        ("baostock", "bs_growth_data", "code"),
+                        ("baostock", "bs_growth_data", "stat_date"),
+                    ]
+                if "AS latest_date" in sql:
+                    return [(0, "2026-03-31")]
+                if "FROM system.parts" in sql:
+                    return [("baostock", "bs_growth_data", True, "2026-07-21 10:00:00")]
+                return []
+
+            def close(self):
+                return None
+
+        task = {
+            "name": "baostock.growth_data",
+            "source": "baostock",
+            "database": "baostock",
+            "target": "bs_growth_data",
+            "cursor_field": "statDate",
+            "freshness_mode": "quarterly",
+        }
+        with patch("sync_data_system.service.api.JOB_MANAGER.list_registered_tasks", return_value=[task]), patch(
+            "sync_data_system.service.api.TABLE_CHECK_STATE_STORE.list_states",
+            return_value=[],
+        ), patch(
+            "sync_data_system.service.api.ClickHouseConfig.from_env",
+            return_value=object(),
+        ), patch(
+            "sync_data_system.service.api.create_clickhouse_client",
+            return_value=_FakeClient(),
+        ):
+            response = client.get("/api/sync-table-status")
+
+        self.assertEqual(response.status_code, 200)
+        item = response.json()["items"][0]
+        self.assertEqual(item["freshness_mode"], "quarterly")
+        self.assertEqual(item["latest_field"], "stat_date")
+        self.assertEqual(item["latest_date"], "2026-03-31")
+
     def test_run_batch_endpoint_creates_transient_task_snapshot(self) -> None:
         client = TestClient(app)
         fake_job = JobRecord(

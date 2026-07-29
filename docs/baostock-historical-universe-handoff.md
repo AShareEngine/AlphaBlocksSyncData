@@ -24,6 +24,44 @@ AmazingData 的历史代码接口已经在本项目中实现并落库：
 `starlight.ad_hist_code_daily` 的 `EXTRA_STOCK_A` 区间代码并集作为历史股票池来源，
 不使用只返回最新快照的 `get_code_info/ad_code_info`。
 
+### 财务表逐股票增量补齐
+
+`dividend_data`、`profit_data`、`operation_data`、`growth_data`、`dupont_data`、
+`balance_data`、`cash_flow_data` 在不显式传 `year/quarter` 时，已经改为：
+
+- 每张表用一次 ClickHouse 分组查询批量取得全部股票的最新业务日期，不会逐股票发数据库查询。
+- 单只股票无记录时从 2010 年开始。
+- 季频表有记录但落后时，从该股票最新 `stat_date` 的下一季度同步到最近已完成季度。
+- 已到最近完成季度的股票不调用 BaoStock。
+- 历史模式的代码池覆盖 2010 年至最近完成季度，合并历史 A 股与
+  `bs_stock_basic.type='1'`，包含退市股票并排除指数、ETF。
+- `/sync/freshness` 页面触发这些任务时使用历史股票池，且按最近完成季度展示应到日期。
+
+可直接执行：
+
+```bash
+python3 scripts/run_provider_sync.py \
+  --config providers/baostock/plans/financial-incremental.toml
+```
+
+### 其他股票表的逐股票增量
+
+同步任务清单新增 `incremental_scope = "code"`。BaoStock、AmazingData、QMT、
+AKShare 和 yfinance 中按股票/代码执行且支持日期区间的任务，都会由 Provider
+按单只股票游标决定开始日期。服务批量层不再把整张表的最大日期作为这些任务的开始日期。
+
+`/sync/freshness` 的行为：
+
+- 无数据股票以 `20100101` 为开始下限。
+- 有数据股票由 Provider 推进到自身最新日期之后。
+- 已最新股票跳过远端请求。
+- BaoStock/AmazingData 支持历史股票池的股票任务使用
+  `current UNION ad_hist_code_daily.EXTRA_STOCK_A`，包含退市股票。
+- 快照表、宏观表和没有代码维度的表仍使用整表/请求级逻辑。
+
+边界：最大日期游标只保证补齐尾部，不能证明最新日期之前没有内部日期缺口。
+要保证内部连续性，需要额外按交易日历检查 `(code, trade_date)` 缺口。
+
 ## 已确认的现象
 
 AlphaBlocks 对 2020-05-06 的数据覆盖审计结果：

@@ -17,7 +17,10 @@ from sync_data_system.clickhouse_tables import (
     CREATE_AD_SHARE_HOLDER_TABLE,
 )
 from sync_data_system.providers.amazingdata.info import InfoData
-from sync_data_system.providers.amazingdata.runner import resolve_missing_historical_code_list
+from sync_data_system.providers.amazingdata.runner import (
+    resolve_historical_code_list,
+    resolve_missing_historical_code_list,
+)
 
 
 class _MissingHistoricalClient:
@@ -32,6 +35,33 @@ class _MissingHistoricalClient:
 
 
 class AmazingDataReplacingMergeTreeKeyTest(unittest.TestCase):
+    def test_historical_universe_merges_current_and_delisted_stocks(self) -> None:
+        class _HistoricalClient:
+            def query_rows(self, sql, parameters):
+                self.parameters = dict(parameters)
+                return [("000005.SZ",), ("600000.SH",)]
+
+        client = _HistoricalClient()
+        base_data = SimpleNamespace(
+            repository=SimpleNamespace(client=client),
+            get_stock_universe=lambda security_type, force=False: ["000001.SZ", "600000.SH"],
+        )
+        context = SimpleNamespace(
+            base_data=base_data,
+            sdk_config=SimpleNamespace(local_path="/tmp"),
+        )
+
+        codes = resolve_historical_code_list(
+            context=context,
+            task="income",
+            begin_date=20100101,
+            end_date=20260729,
+            limit=0,
+        )
+
+        self.assertEqual(codes, ["000001.SZ", "000005.SZ", "600000.SH"])
+        self.assertEqual(client.parameters["security_type"], "EXTRA_STOCK_A")
+
     def test_profit_express_preserves_announcement_versions(self) -> None:
         ddl = CREATE_AD_PROFIT_EXPRESS_TABLE
 

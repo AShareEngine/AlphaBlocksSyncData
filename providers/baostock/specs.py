@@ -31,6 +31,7 @@ class BaoStockTaskSpec:
     uses_year_type: bool = False
     auto_code_universe: bool = False
     supports_bulk_without_code: bool = False
+    stock_only_universe: bool = False
     cursor_fields: tuple[str, ...] = ()
     cursor_granularity: str = ""
     persist_request_columns: bool = True
@@ -83,6 +84,7 @@ BAOSTOCK_TASK_SPECS: dict[str, BaoStockTaskSpec] = {
         uses_code=True,
         uses_begin_end=True,
         auto_code_universe=True,
+        stock_only_universe=True,
         cursor_fields=("dividOperateDate",),
         cursor_granularity="day",
     ),
@@ -179,6 +181,7 @@ BAOSTOCK_TASK_SPECS: dict[str, BaoStockTaskSpec] = {
         uses_year=True,
         uses_year_type=True,
         auto_code_universe=True,
+        stock_only_universe=True,
         cursor_fields=("dividOperateDate",),
         cursor_granularity="day",
     ),
@@ -203,6 +206,7 @@ BAOSTOCK_TASK_SPECS: dict[str, BaoStockTaskSpec] = {
         uses_year=True,
         uses_quarter=True,
         auto_code_universe=True,
+        stock_only_universe=True,
         cursor_fields=("statDate",),
         cursor_granularity="day",
     ),
@@ -215,6 +219,7 @@ BAOSTOCK_TASK_SPECS: dict[str, BaoStockTaskSpec] = {
         uses_year=True,
         uses_quarter=True,
         auto_code_universe=True,
+        stock_only_universe=True,
         cursor_fields=("statDate",),
         cursor_granularity="day",
     ),
@@ -227,6 +232,7 @@ BAOSTOCK_TASK_SPECS: dict[str, BaoStockTaskSpec] = {
         uses_year=True,
         uses_quarter=True,
         auto_code_universe=True,
+        stock_only_universe=True,
         cursor_fields=("statDate",),
         cursor_granularity="day",
     ),
@@ -251,6 +257,7 @@ BAOSTOCK_TASK_SPECS: dict[str, BaoStockTaskSpec] = {
         uses_year=True,
         uses_quarter=True,
         auto_code_universe=True,
+        stock_only_universe=True,
         cursor_fields=("statDate",),
         cursor_granularity="day",
     ),
@@ -263,6 +270,7 @@ BAOSTOCK_TASK_SPECS: dict[str, BaoStockTaskSpec] = {
         uses_year=True,
         uses_quarter=True,
         auto_code_universe=True,
+        stock_only_universe=True,
         cursor_fields=("statDate",),
         cursor_granularity="day",
     ),
@@ -286,6 +294,7 @@ BAOSTOCK_TASK_SPECS: dict[str, BaoStockTaskSpec] = {
         uses_year=True,
         uses_quarter=True,
         auto_code_universe=True,
+        stock_only_universe=True,
         cursor_fields=("statDate",),
         cursor_granularity="day",
     ),
@@ -309,6 +318,7 @@ BAOSTOCK_TASK_SPECS: dict[str, BaoStockTaskSpec] = {
         uses_code=True,
         uses_begin_end=True,
         auto_code_universe=True,
+        stock_only_universe=True,
         cursor_fields=("performanceExpUpdateDate",),
         cursor_granularity="day",
     ),
@@ -328,6 +338,7 @@ BAOSTOCK_TASK_SPECS: dict[str, BaoStockTaskSpec] = {
         uses_code=True,
         uses_begin_end=True,
         auto_code_universe=True,
+        stock_only_universe=True,
         cursor_fields=("profitForcastExpPubDate",),
         cursor_granularity="day",
     ),

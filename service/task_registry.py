@@ -79,6 +79,7 @@ class TaskDefinition:
     request_fields: tuple[str, ...]
     supports_incremental: bool
     cursor_field: str
+    incremental_scope: str
     freshness_mode: str
     handler: Callable[["SyncTaskProbe"], Any]
 
@@ -205,6 +206,7 @@ class SyncTaskRegistry:
         request_fields: tuple[str, ...] | None = None,
         supports_incremental: bool = False,
         cursor_field: str = "",
+        incremental_scope: str = "global",
         freshness_mode: str = "daily",
     ) -> Callable:
         if name in self._tasks:
@@ -218,6 +220,7 @@ class SyncTaskRegistry:
             request_fields=tuple(request_fields or RUN_TASK_REQUEST_FIELDS),
             supports_incremental=bool(supports_incremental),
             cursor_field=str(cursor_field or "").strip(),
+            incremental_scope=str(incremental_scope or "global").strip() or "global",
             freshness_mode=str(freshness_mode or "daily").strip() or "daily",
             handler=handler,
         )
@@ -248,6 +251,7 @@ class SyncTaskRegistry:
                 "request_fields": list(task.request_fields),
                 "supports_incremental": task.supports_incremental,
                 "cursor_field": task.cursor_field,
+                "incremental_scope": task.incremental_scope,
                 "freshness_mode": task.freshness_mode,
                 "probe_fields": list(PROBE_PUBLIC_FIELDS),
             }
@@ -265,6 +269,7 @@ class SyncTaskRegistry:
             "request_fields": list(task.request_fields),
             "supports_incremental": task.supports_incremental,
             "cursor_field": task.cursor_field,
+            "incremental_scope": task.incremental_scope,
             "freshness_mode": task.freshness_mode,
             "probe_fields": list(PROBE_PUBLIC_FIELDS),
         }
@@ -294,6 +299,7 @@ def sync_task(
     request_fields: tuple[str, ...] | None = None,
     supports_incremental: bool = False,
     cursor_field: str = "",
+    incremental_scope: str = "global",
     freshness_mode: str = "daily",
 ):
     def decorator(handler):
@@ -307,6 +313,7 @@ def sync_task(
             request_fields=request_fields,
             supports_incremental=supports_incremental,
             cursor_field=cursor_field,
+            incremental_scope=incremental_scope,
             freshness_mode=freshness_mode,
         )
 
@@ -346,7 +353,10 @@ def resolve_run_sync_defaults(probe: SyncTaskProbe) -> None:
 
     codes: list[str] = []
     if amazingdata_runner.task_requires_code_list(task):
-        if task == "backward_factor":
+        universe_mode = str(probe.input_universe_mode or "current").strip() or "current"
+        if universe_mode == "historical" and not probe.input_codes:
+            codes = []
+        elif task == "backward_factor":
             codes = amazingdata_runner.resolve_backward_factor_code_list(
                 base_data=probe.context.base_data,
                 raw_codes=",".join(probe.input_codes),
@@ -375,14 +385,16 @@ def resolve_run_sync_defaults(probe: SyncTaskProbe) -> None:
             limit=probe.limit,
             force=probe.force,
             resume=probe.resume,
+            universe_mode=universe_mode,
         )
-        codes = amazingdata_runner.filter_code_list_for_resume(
-            context=probe.context,
-            task_spec=task_spec,
-            code_list=codes,
-            begin_date=begin_date,
-            end_date=end_date,
-        )
+        if codes:
+            codes = amazingdata_runner.filter_code_list_for_resume(
+                context=probe.context,
+                task_spec=task_spec,
+                code_list=codes,
+                begin_date=begin_date,
+                end_date=end_date,
+            )
 
     probe.codes = codes
     probe.begin_date = begin_date
@@ -399,7 +411,10 @@ def resolve_market_kline_defaults(probe: SyncTaskProbe) -> None:
         begin_date=probe.input_begin_date,
         end_date=probe.input_end_date,
     )
-    if probe.input_codes:
+    universe_mode = str(probe.input_universe_mode or "current").strip() or "current"
+    if universe_mode == "historical" and not probe.input_codes:
+        codes = []
+    elif probe.input_codes:
         codes = normalize_code_list(probe.input_codes)
         if probe.limit and probe.limit > 0:
             codes = codes[: probe.limit]
@@ -418,13 +433,18 @@ def resolve_market_kline_defaults(probe: SyncTaskProbe) -> None:
         limit=probe.limit,
         force=probe.force,
         resume=probe.resume,
+        universe_mode=universe_mode,
     )
-    probe.codes = amazingdata_runner.filter_code_list_for_resume(
-        context=probe.context,
-        task_spec=task_spec,
-        code_list=codes,
-        begin_date=probe.begin_date,
-        end_date=probe.end_date,
+    probe.codes = (
+        amazingdata_runner.filter_code_list_for_resume(
+            context=probe.context,
+            task_spec=task_spec,
+            code_list=codes,
+            begin_date=probe.begin_date,
+            end_date=probe.end_date,
+        )
+        if codes
+        else []
     )
 
 
@@ -443,6 +463,7 @@ def _register_provider_task(manifest: ProviderManifest, task: ProviderTaskManife
         request_fields=task.request_fields or RUN_TASK_REQUEST_FIELDS,
         supports_incremental=task.supports_incremental,
         cursor_field=task.cursor_field,
+        incremental_scope=task.incremental_scope,
         freshness_mode=task.freshness_mode,
     )
     def _generated_provider_task(probe: SyncTaskProbe) -> int:

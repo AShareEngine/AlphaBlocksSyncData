@@ -30,6 +30,7 @@ name = "us_daily_kline"
 target = "ak_us_daily_kline"
 supports_incremental = true
 cursor_field = "trade_date"
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
 
 [[tasks]]
@@ -72,4 +73,5 @@ name = "us_index_daily"
 target = "ak_us_index_daily"
 supports_incremental = true
 cursor_field = "trade_date"
+incremental_scope = "code"
 request_fields = ["name", "index_code", "begin_date", "end_date", "force", "log_level"]

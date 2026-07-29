@@ -43,14 +43,16 @@ name = "adjust_factor"
 target = "bs_adjust_factor"
 supports_incremental = true
 cursor_field = "dividOperateDate"
+incremental_scope = "code"
 freshness_mode = "event_driven"
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "continue_on_error", "log_level"]
 
 [[tasks]]
 name = "daily_kline"
 target = "bs_daily_kline"
 supports_incremental = true
 cursor_field = "date"
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "continue_on_error", "log_level", "adjustflag", "frequency"]
 
 [[tasks]]
@@ -86,63 +88,78 @@ name = "dividend_data"
 target = "bs_dividend_data"
 supports_incremental = true
 cursor_field = "dividOperateDate"
-request_fields = ["name", "codes", "year", "year_type", "limit", "force", "log_level"]
+incremental_scope = "code"
+request_fields = ["name", "codes", "year", "year_type", "universe_mode", "limit", "force", "resume", "continue_on_error", "log_level"]
 
 [[tasks]]
 name = "profit_data"
 target = "bs_profit_data"
 supports_incremental = true
 cursor_field = "statDate"
-request_fields = ["name", "codes", "year", "quarter", "limit", "force", "log_level"]
+incremental_scope = "code"
+freshness_mode = "quarterly"
+request_fields = ["name", "codes", "year", "quarter", "universe_mode", "limit", "force", "resume", "continue_on_error", "log_level"]
 
 [[tasks]]
 name = "operation_data"
 target = "bs_operation_data"
 supports_incremental = true
 cursor_field = "statDate"
-request_fields = ["name", "codes", "year", "quarter", "limit", "force", "log_level"]
+incremental_scope = "code"
+freshness_mode = "quarterly"
+request_fields = ["name", "codes", "year", "quarter", "universe_mode", "limit", "force", "resume", "continue_on_error", "log_level"]
 
 [[tasks]]
 name = "growth_data"
 target = "bs_growth_data"
 supports_incremental = true
 cursor_field = "statDate"
-request_fields = ["name", "codes", "year", "quarter", "limit", "force", "log_level"]
+incremental_scope = "code"
+freshness_mode = "quarterly"
+request_fields = ["name", "codes", "year", "quarter", "universe_mode", "limit", "force", "resume", "continue_on_error", "log_level"]
 
 [[tasks]]
 name = "dupont_data"
 target = "bs_dupont_data"
 supports_incremental = true
 cursor_field = "statDate"
-request_fields = ["name", "codes", "year", "quarter", "limit", "force", "log_level"]
+incremental_scope = "code"
+freshness_mode = "quarterly"
+request_fields = ["name", "codes", "year", "quarter", "universe_mode", "limit", "force", "resume", "continue_on_error", "log_level"]
 
 [[tasks]]
 name = "balance_data"
 target = "bs_balance_data"
 supports_incremental = true
 cursor_field = "statDate"
-request_fields = ["name", "codes", "year", "quarter", "limit", "force", "log_level"]
+incremental_scope = "code"
+freshness_mode = "quarterly"
+request_fields = ["name", "codes", "year", "quarter", "universe_mode", "limit", "force", "resume", "continue_on_error", "log_level"]
 
 [[tasks]]
 name = "cash_flow_data"
 target = "bs_cash_flow_data"
 supports_incremental = true
 cursor_field = "statDate"
-request_fields = ["name", "codes", "year", "quarter", "limit", "force", "log_level"]
+incremental_scope = "code"
+freshness_mode = "quarterly"
+request_fields = ["name", "codes", "year", "quarter", "universe_mode", "limit", "force", "resume", "continue_on_error", "log_level"]
 
 [[tasks]]
 name = "performance_express_report"
 target = "bs_performance_express_report"
 supports_incremental = true
 cursor_field = "performanceExpUpdateDate"
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
+incremental_scope = "code"
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "continue_on_error", "log_level"]
 
 [[tasks]]
 name = "forecast_report"
 target = "bs_forecast_report"
 supports_incremental = true
 cursor_field = "profitForcastExpPubDate"
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
+incremental_scope = "code"
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "continue_on_error", "log_level"]
 
 [[tasks]]
 name = "deposit_rate_data"

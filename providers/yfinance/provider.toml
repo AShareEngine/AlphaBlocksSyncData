@@ -30,6 +30,7 @@ name = "daily_kline"
 target = "yf_daily_kline"
 supports_incremental = true
 cursor_field = "trade_date"
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
 
 [[tasks]]
@@ -37,6 +38,7 @@ name = "corporate_actions"
 target = "yf_corporate_actions"
 supports_incremental = true
 cursor_field = "event_date"
+incremental_scope = "code"
 freshness_mode = "event_driven"
 request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
 

@@ -215,6 +215,29 @@ class BaoStockRepository:
         text = self._stringify(value)
         return text or None
 
+    def load_latest_cursors(self, task: str, codes: Sequence[str]) -> dict[str, str]:
+        """Load all per-stock cursors for one task in a single ClickHouse query."""
+        spec = BAOSTOCK_TASK_SPECS[task]
+        normalized_codes = normalize_baostock_code_list(codes)
+        if not spec.has_code_field or not spec.cursor_columns or not normalized_codes:
+            return {}
+
+        expr = self._cursor_select_expr(spec)
+        cursor_clauses = [f"{column} != ''" for column in spec.cursor_columns]
+        sql = f"""
+        SELECT code, {expr}
+        FROM {self._table_ref(spec.table_name)}
+        WHERE code IN {{codes:Array(String)}}
+          AND {' AND '.join(cursor_clauses)}
+        GROUP BY code
+        """
+        rows = self.client.query_rows(sql, {"codes": normalized_codes})
+        return {
+            normalize_baostock_code(row[0]): self._stringify(row[1])
+            for row in rows
+            if len(row) >= 2 and row[0] is not None and self._stringify(row[1])
+        }
+
     def load_historical_stock_codes(
         self,
         begin_date: str,

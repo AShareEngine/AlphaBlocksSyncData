@@ -477,8 +477,10 @@ def _as_bool(value: Any, field_name: str) -> bool:
 
 def _normalize_universe_mode(value: Any, *, field_name: str = "universe_mode") -> str:
     mode = str(value or "current").strip().lower() or "current"
-    if mode not in {"current", "missing_historical"}:
-        raise ValueError(f"{field_name} 必须是 current 或 missing_historical，当前值: {value!r}")
+    if mode not in {"current", "historical", "missing_historical"}:
+        raise ValueError(
+            f"{field_name} 必须是 current、historical 或 missing_historical，当前值: {value!r}"
+        )
     return mode
 
 
@@ -652,7 +654,15 @@ def execute_task_spec(context: SyncExecutionContext, task_spec: TaskRunSpec) -> 
     display_end_date = "N/A" if ignores_date_range else end_date
     code_list: list[str] = []
     if task_requires_code_list(task_spec.task):
-        if task_spec.universe_mode == "missing_historical" and not task_spec.codes_raw.strip():
+        if task_spec.universe_mode == "historical" and not task_spec.codes_raw.strip():
+            code_list = resolve_historical_code_list(
+                context=context,
+                task=task_spec.task,
+                begin_date=begin_date,
+                end_date=end_date,
+                limit=task_spec.limit,
+            )
+        elif task_spec.universe_mode == "missing_historical" and not task_spec.codes_raw.strip():
             code_list = resolve_missing_historical_code_list(
                 context=context,
                 task=task_spec.task,
@@ -2141,6 +2151,69 @@ def resolve_missing_historical_code_list(
         security_type,
         begin_date,
         end_date,
+        len(codes),
+    )
+    return codes
+
+
+def resolve_historical_code_list(
+    *,
+    context: SyncExecutionContext,
+    task: str,
+    begin_date: int,
+    end_date: int,
+    limit: int,
+) -> list[str]:
+    security_type = resolve_task_security_type(task)
+    if task in {"daily_kline", "minute_kline"}:
+        security_type = DEFAULT_SYNC_SECURITY_TYPE
+    if security_type != DEFAULT_SYNC_SECURITY_TYPE:
+        raise ValueError(f"AmazingData 任务 {task} 不支持 historical 股票代码池。")
+
+    current_codes = resolve_code_list(
+        base_data=context.base_data,
+        task=task,
+        raw_codes="",
+        limit=0,
+        local_path=context.sdk_config.local_path,
+        end_date=end_date,
+    )
+    rows = context.base_data.repository.client.query_rows(
+        """
+        SELECT code
+        FROM starlight.ad_hist_code_daily
+        WHERE security_type = {security_type:String}
+          AND trade_date >= {begin_date:Date}
+          AND trade_date <= {end_date:Date}
+        GROUP BY code
+        ORDER BY code
+        """,
+        {
+            "security_type": security_type,
+            "begin_date": to_ch_date(begin_date),
+            "end_date": to_ch_date(end_date),
+        },
+    )
+    historical_codes = normalize_code_list(
+        [str(row[0]) for row in rows if row and row[0] is not None]
+    )
+    if not historical_codes:
+        raise ValueError(
+            "starlight.ad_hist_code_daily 在请求区间内没有 EXTRA_STOCK_A 历史代码，"
+            "拒绝降级为当前股票池；请先同步 amazingdata.hist_code_list。"
+        )
+    codes = sorted(normalize_code_list([*current_codes, *historical_codes]))
+    if limit > 0:
+        codes = codes[:limit]
+    logger.info(
+        "historical universe task=%s security_type=%s begin=%s end=%s "
+        "current=%s historical=%s merged=%s",
+        task,
+        security_type,
+        begin_date,
+        end_date,
+        len(current_codes),
+        len(historical_codes),
         len(codes),
     )
     return codes

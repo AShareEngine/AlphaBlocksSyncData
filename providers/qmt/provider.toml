@@ -23,6 +23,7 @@ name = "kline_history"
 target = "qmt_kline_history"
 supports_incremental = true
 cursor_field = "time_ms"
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "period", "fields", "adjust_type", "fill_data", "limit", "force", "log_level"]
 
 [[tasks]]
@@ -30,6 +31,7 @@ name = "tick_history"
 target = "qmt_tick_history"
 supports_incremental = true
 cursor_field = "time_ms"
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "fields", "adjust_type", "limit", "force", "log_level"]
 
 [[tasks]]
@@ -74,6 +76,7 @@ name = "l2_quote"
 target = "qmt_l2_quote"
 supports_incremental = true
 cursor_field = "time_ms"
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
 
 [[tasks]]
@@ -81,6 +84,7 @@ name = "l2_order"
 target = "qmt_l2_order"
 supports_incremental = true
 cursor_field = "time_ms"
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
 
 [[tasks]]
@@ -88,6 +92,7 @@ name = "l2_transaction"
 target = "qmt_l2_transaction"
 supports_incremental = true
 cursor_field = "time_ms"
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
 
 [[tasks]]
@@ -95,6 +100,7 @@ name = "market_data_ex"
 target = "qmt_market_data_ex"
 supports_incremental = true
 cursor_field = "time_ms"
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "period", "fields", "adjust_type", "fill_data", "count", "limit", "force", "log_level"]
 
 [[tasks]]
@@ -102,6 +108,7 @@ name = "local_data"
 target = "qmt_local_data"
 supports_incremental = true
 cursor_field = "time_ms"
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "period", "fields", "adjust_type", "fill_data", "count", "limit", "force", "log_level"]
 
 [[tasks]]

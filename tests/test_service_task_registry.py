@@ -47,6 +47,8 @@ class ServiceTaskRegistryTest(unittest.TestCase):
         self.assertEqual(metadata["amazingdata.daily_kline"]["source"], "amazingdata")
         self.assertEqual(metadata["amazingdata.daily_kline"]["database"], "starlight")
         self.assertEqual(metadata["amazingdata.daily_kline"]["target"], "ad_market_kline_daily")
+        self.assertEqual(metadata["amazingdata.daily_kline"]["incremental_scope"], "code")
+        self.assertIn("universe_mode", metadata["amazingdata.daily_kline"]["request_fields"])
         self.assertIn("request_fields", metadata["amazingdata.daily_kline"])
         self.assertIn("probe_fields", metadata["amazingdata.daily_kline"])
 
@@ -56,6 +58,7 @@ class ServiceTaskRegistryTest(unittest.TestCase):
         self.assertEqual(metadata["baostock.daily_kline"]["source"], "baostock")
         self.assertEqual(metadata["baostock.daily_kline"]["database"], "baostock")
         self.assertEqual(metadata["baostock.daily_kline"]["target"], "bs_daily_kline")
+        self.assertEqual(metadata["baostock.daily_kline"]["incremental_scope"], "code")
         self.assertIn("frequency", metadata["baostock.daily_kline"]["request_fields"])
         self.assertIn("universe_mode", metadata["baostock.daily_kline"]["request_fields"])
         self.assertIn("continue_on_error", metadata["baostock.daily_kline"]["request_fields"])
@@ -66,6 +69,7 @@ class ServiceTaskRegistryTest(unittest.TestCase):
         self.assertEqual(metadata["qmt.kline_history"]["source"], "qmt")
         self.assertEqual(metadata["qmt.kline_history"]["database"], "qmt")
         self.assertEqual(metadata["qmt.kline_history"]["target"], "qmt_kline_history")
+        self.assertEqual(metadata["qmt.kline_history"]["incremental_scope"], "code")
         self.assertIn("codes", metadata["qmt.kline_history"]["request_fields"])
         self.assertIn("period", metadata["qmt.kline_history"]["request_fields"])
 
@@ -116,6 +120,28 @@ class ServiceTaskRegistryTest(unittest.TestCase):
         self.assertEqual(probe.begin_date, 20240101)
         self.assertEqual(probe.end_date, 20240131)
         self.assertEqual(probe.codes, ["000001.SZ", "600000.SH", "000300.SH", "510300.SH"])
+
+    def test_historical_market_resolver_defers_code_pool_to_provider_runner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            probe = create_probe(
+                task_name="amazingdata.daily_kline",
+                job_id="job1",
+                project_root=Path(tmpdir),
+                log_path=Path(tmpdir) / "job1.log",
+                begin_date=20100101,
+                end_date=20240131,
+                universe_mode="historical",
+            )
+            probe.context = SimpleNamespace(
+                base_data=_FakeBaseData(),
+                provider=_FakeProvider(),
+            )
+
+            TASK_REGISTRY.resolve_inputs(probe)
+
+        self.assertEqual(probe.begin_date, 20100101)
+        self.assertEqual(probe.end_date, 20240131)
+        self.assertEqual(probe.codes, [])
 
 
 if __name__ == "__main__":

@@ -6,13 +6,55 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from sync_data_system.service.task_batch import run_task_batch
+from sync_data_system.service.task_batch import _resolve_incremental_parameters, run_task_batch
 
 
 class TaskBatchTest(unittest.TestCase):
+    def test_code_scoped_incremental_keeps_per_code_floor_instead_of_table_max(self) -> None:
+        connection = Mock()
+        metadata = {
+            "incremental_scope": "code",
+            "request_fields": ["begin_date", "end_date"],
+        }
+
+        with patch(
+            "sync_data_system.service.task_batch.expected_business_date",
+            return_value=date(2026, 7, 28),
+        ):
+            parameters = _resolve_incremental_parameters(metadata, {}, connection)
+
+        self.assertEqual(
+            parameters,
+            {"begin_date": 20100101, "end_date": 20260728},
+        )
+        connection.query_rows.assert_not_called()
+        connection.query_value.assert_not_called()
+
+    def test_code_scoped_incremental_preserves_explicit_begin_date(self) -> None:
+        metadata = {
+            "incremental_scope": "code",
+            "request_fields": ["begin_date", "end_date"],
+        }
+
+        with patch(
+            "sync_data_system.service.task_batch.expected_business_date",
+            return_value=date(2026, 7, 28),
+        ):
+            parameters = _resolve_incremental_parameters(
+                metadata,
+                {"begin_date": 20150101},
+                None,
+            )
+
+        self.assertEqual(
+            parameters,
+            {"begin_date": 20150101, "end_date": 20260728},
+        )
+
     def test_batch_continues_after_failure_and_records_partial_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

@@ -33,6 +33,7 @@ class ProviderTaskManifest:
     target: str
     supports_incremental: bool = False
     cursor_field: str = ""
+    incremental_scope: str = "global"
     freshness_mode: str = "daily"
     request_fields: tuple[str, ...] = ()
 
@@ -215,6 +216,7 @@ def provider_manifest_to_dict(manifest: ProviderManifest) -> dict[str, Any]:
                 "target": task.target,
                 "supports_incremental": task.supports_incremental,
                 "cursor_field": task.cursor_field,
+                "incremental_scope": task.incremental_scope,
                 "freshness_mode": task.freshness_mode,
                 "request_fields": list(task.request_fields),
             }
@@ -250,7 +252,15 @@ def _parse_tasks(value: Any, *, manifest_path: Path) -> tuple[ProviderTaskManife
         raise ValueError(f"{manifest_path}: [[tasks]] must be an array of tables")
     tasks: list[ProviderTaskManifest] = []
     seen: set[str] = set()
-    allowed = {"name", "target", "supports_incremental", "cursor_field", "freshness_mode", "request_fields"}
+    allowed = {
+        "name",
+        "target",
+        "supports_incremental",
+        "cursor_field",
+        "incremental_scope",
+        "freshness_mode",
+        "request_fields",
+    }
     for index, item in enumerate(value, start=1):
         if not isinstance(item, dict):
             raise ValueError(f"{manifest_path}: tasks[{index}] must be a table")
@@ -267,6 +277,7 @@ def _parse_tasks(value: Any, *, manifest_path: Path) -> tuple[ProviderTaskManife
                 target=_required_string(item, "target", manifest_path, prefix=f"tasks[{index}]."),
                 supports_incremental=_optional_bool(item, "supports_incremental", False, manifest_path),
                 cursor_field=_optional_string(item, "cursor_field", ""),
+                incremental_scope=_parse_incremental_scope(item, manifest_path),
                 freshness_mode=_optional_string(item, "freshness_mode", "daily"),
                 request_fields=_string_tuple(
                     item.get("request_fields"),
@@ -276,6 +287,13 @@ def _parse_tasks(value: Any, *, manifest_path: Path) -> tuple[ProviderTaskManife
             )
         )
     return tuple(tasks)
+
+
+def _parse_incremental_scope(data: dict[str, Any], manifest_path: Path) -> str:
+    scope = _optional_string(data, "incremental_scope", "global")
+    if scope not in {"global", "code"}:
+        raise ValueError(f"{manifest_path}: incremental_scope must be 'global' or 'code'")
+    return scope
 
 
 def _required_string(data: dict[str, Any], key: str, manifest_path: Path, prefix: str = "") -> str:

@@ -105,7 +105,7 @@ def run_task_batch(payload: dict[str, Any], *, results_path: Path, log_path: Pat
                 metadata = TASK_REGISTRY.get_task_metadata(result["name"])
                 parameters = deepcopy(task.get("parameters") or {})
                 if str(task.get("date_mode") or "provider_default") == "incremental":
-                    if clickhouse is None:
+                    if metadata.get("incremental_scope") != "code" and clickhouse is None:
                         clickhouse = create_clickhouse_client(ClickHouseConfig.from_env(runtime_path=runtime_path))
                     incremental = _resolve_incremental_parameters(metadata, parameters, clickhouse)
                     if incremental is None:
@@ -223,13 +223,21 @@ def _record_batch_table_check(
 def _resolve_incremental_parameters(
     metadata: dict[str, Any],
     parameters: dict[str, Any],
-    connection: Any,
+    connection: Any | None,
 ) -> dict[str, Any] | None:
     request_fields = set(metadata.get("request_fields") or [])
     if "incrementally" in request_fields:
         parameters["incrementally"] = True
+    if metadata.get("incremental_scope") == "code":
+        if "begin_date" in request_fields:
+            parameters.setdefault("begin_date", 20100101)
+        if "end_date" in request_fields:
+            parameters.setdefault("end_date", int(expected_business_date().strftime("%Y%m%d")))
+        return parameters
     if "begin_date" not in request_fields or "end_date" not in request_fields:
         return parameters
+    if connection is None:
+        raise RuntimeError("global incremental resolution requires ClickHouse")
 
     database = _safe_identifier(metadata.get("database"), "database")
     target = _safe_identifier(metadata.get("target"), "target")

@@ -192,6 +192,45 @@ python3 scripts/run_provider_sync.py \
 `task + code + year + quarter` 跳过任何日期已经成功的请求。当前仍处于披露期的
 年度/季度不启用永久跳过，重新执行计划可以刷新后来披露的数据。
 
+季频财务逐股票增量：
+
+```bash
+python3 scripts/run_provider_sync.py \
+  --config providers/baostock/plans/financial-incremental.toml
+```
+
+这个配置不固定 `year/quarter`，由运行器一次批量读取每张目标表中各股票的最大业务日期：
+
+- 股票没有任何记录：从 2010Q1 开始；分红从 2010 年开始。
+- 股票已有记录但落后：季频表从游标后的季度开始；分红从游标所在年度开始。
+- 股票已经到最近完成季度：跳过，不调用 BaoStock。
+- 最近完成季度仍无返回时，只在当天跳过；以后再次执行会重新检查，避免披露期空结果被永久标记完成。
+- 自动增量的历史代码池覆盖 2010 年至最近完成季度，并合并
+  `ad_hist_code_daily.EXTRA_STOCK_A` 与 `bs_stock_basic.type='1'`，因此包含退市股票但排除指数和 ETF。
+
+`/sync/freshness` 页面的上述七个 BaoStock 财务任务使用同一逻辑；页面按最近完成季度判断时效，
+不会再把正在进行的季度当成应到日期。
+
+### 按股票增量与整表增量
+
+Provider 清单通过 `incremental_scope = "code"` 明确标记按股票/代码增量的任务。
+从 `/sync/freshness` 立即同步或创建批量配置时，这类任务不会再使用目标表整体的
+`max(date)` 覆盖开始日期，而是：
+
+1. 将 `20100101` 作为无数据股票的历史下限。
+2. 将结束日期设为当前应到交易日。
+3. 由 Provider 查询每只股票自己的最新业务日期。
+4. 无记录的股票从 2010 年开始；已有记录的股票从自身游标后开始；已最新的股票跳过。
+
+BaoStock 的 `daily_kline`、`adjust_factor`、`performance_express_report`、
+`forecast_report` 以及七张年/季频财务表都使用该模式。页面触发时，
+BaoStock 和 AmazingData 支持历史股票池的股票任务还会合并
+`ad_hist_code_daily.EXTRA_STOCK_A`，避免退市股票不进入任务。
+
+该规则能发现“整只股票无数据”和“最新日期之后缺数据”，但仅凭最大日期不能发现
+最新日期之前的内部断档。例如某股票已有 2026 年数据，但单独缺少 2022 年某天，
+仍需要交易日历反连接的数据质量审计或定期重叠窗口回补。
+
 宏观数据：
 
 ```bash

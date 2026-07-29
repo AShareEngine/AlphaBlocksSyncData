@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import argparse
 import logging
-from dataclasses import dataclass
+from calendar import monthrange
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -197,6 +198,8 @@ def run_sync_args(args: SyncArgs, provider: BaoStockProvider, repository: BaoSto
     spec = BAOSTOCK_TASK_SPECS[args.task]
     codes = resolve_code_list(provider, args, repository)
     if codes:
+        if _uses_automatic_financial_period(args, spec):
+            return run_financial_incremental_task(args, provider, repository, codes)
         return run_code_task(args, provider, repository, codes)
     if _normalize_universe_mode(args.universe_mode) == "missing_historical" and not args.codes_raw.strip():
         logger.info("skip task=%s reason=no_missing_historical_codes", args.task)
@@ -209,6 +212,145 @@ def run_sync_args(args: SyncArgs, provider: BaoStockProvider, repository: BaoSto
             "如果今天是非交易日，请改在交易日执行，或显式传 --codes。"
         )
     return run_single_task(args, provider, repository)
+
+
+def _uses_automatic_financial_period(args: SyncArgs, spec) -> bool:
+    if not spec.uses_year or args.year is not None:
+        return False
+    if spec.uses_quarter and args.quarter is not None:
+        return False
+    return True
+
+
+def run_financial_incremental_task(
+    args: SyncArgs,
+    provider: BaoStockProvider,
+    repository: BaoStockRepository,
+    codes: list[str],
+) -> int:
+    """Run year/quarter APIs from each stock's own latest persisted cursor."""
+    spec = BAOSTOCK_TASK_SPECS[args.task]
+    total = 0
+    latest_cursors = {} if args.force else repository.load_latest_cursors(args.task, codes)
+    if spec.uses_quarter:
+        end_period = _latest_completed_quarter()
+        for code_index, code in enumerate(codes, start=1):
+            latest_cursor = latest_cursors.get(code)
+            periods = _quarterly_incremental_periods(latest_cursor, end_period=end_period)
+            logger.info(
+                "BaoStock financial incremental task=%s code_progress=%s/%s code=%s "
+                "latest_cursor=%s period_count=%s end=%sQ%s",
+                args.task,
+                code_index,
+                len(codes),
+                code,
+                latest_cursor or "",
+                len(periods),
+                end_period[0],
+                end_period[1],
+            )
+            for year, quarter in periods:
+                period_args = replace(
+                    args,
+                    codes_raw=code,
+                    begin_date="",
+                    end_date="",
+                    year=year,
+                    quarter=quarter,
+                    resume=(year, quarter) != end_period,
+                )
+                total += run_code_task(period_args, provider, repository, [code])
+        return total
+
+    current_year = date.today().year
+    for code_index, code in enumerate(codes, start=1):
+        latest_cursor = latest_cursors.get(code)
+        years = _annual_incremental_years(latest_cursor, end_year=current_year)
+        logger.info(
+            "BaoStock annual incremental task=%s code_progress=%s/%s code=%s "
+            "latest_cursor=%s year_count=%s end_year=%s",
+            args.task,
+            code_index,
+            len(codes),
+            code,
+            latest_cursor or "",
+            len(years),
+            current_year,
+        )
+        for year in years:
+            year_args = replace(
+                args,
+                codes_raw=code,
+                begin_date="",
+                end_date="",
+                year=year,
+                resume=year != current_year,
+            )
+            total += run_code_task(year_args, provider, repository, [code])
+    return total
+
+
+def _latest_completed_quarter(today: date | None = None) -> tuple[int, int]:
+    current = today or date.today()
+    current_quarter = ((current.month - 1) // 3) + 1
+    if current_quarter == 1:
+        return current.year - 1, 4
+    return current.year, current_quarter - 1
+
+
+def _quarterly_incremental_periods(
+    latest_cursor: Any,
+    *,
+    end_period: tuple[int, int],
+    begin_period: tuple[int, int] = (2010, 1),
+) -> list[tuple[int, int]]:
+    latest_date = _parse_financial_cursor_date(latest_cursor)
+    if latest_date is None:
+        start_period = begin_period
+    else:
+        latest_quarter = ((latest_date.month - 1) // 3) + 1
+        start_period = _next_quarter((latest_date.year, latest_quarter))
+        if start_period < begin_period:
+            start_period = begin_period
+    if start_period > end_period:
+        return []
+
+    periods: list[tuple[int, int]] = []
+    year, quarter = start_period
+    while (year, quarter) <= end_period:
+        periods.append((year, quarter))
+        year, quarter = _next_quarter((year, quarter))
+    return periods
+
+
+def _annual_incremental_years(
+    latest_cursor: Any,
+    *,
+    end_year: int,
+    begin_year: int = 2010,
+) -> list[int]:
+    latest_date = _parse_financial_cursor_date(latest_cursor)
+    start_year = begin_year if latest_date is None else max(begin_year, latest_date.year)
+    if start_year > end_year:
+        return []
+    return list(range(start_year, end_year + 1))
+
+
+def _next_quarter(period: tuple[int, int]) -> tuple[int, int]:
+    year, quarter = period
+    return (year + 1, 1) if quarter == 4 else (year, quarter + 1)
+
+
+def _parse_financial_cursor_date(value: Any) -> date | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for pattern in ("%Y-%m-%d", "%Y%m%d"):
+        try:
+            return datetime.strptime(text[:10] if "-" in text else text[:8], pattern).date()
+        except ValueError:
+            continue
+    return None
 
 
 def run_registered_task(probe: Any) -> int:
@@ -265,7 +407,7 @@ def resolve_code_list(
         universe_mode = _normalize_universe_mode(args.universe_mode)
         if universe_mode in {"historical", "missing_historical"}:
             codes = resolve_historical_code_list(provider, args, repository)
-        elif spec.uses_year:
+        elif spec.stock_only_universe:
             codes = resolve_current_stock_code_list(args, repository)
         else:
             codes = resolve_current_code_list(provider, args)
@@ -297,8 +439,17 @@ def resolve_current_stock_code_list(
     """Resolve stock-only codes for year/quarter financial APIs."""
     if repository is None:
         raise ValueError(f"BaoStock 任务 {args.task} 的股票代码池需要 Repository 读取 bs_stock_basic。")
-    snapshot_day = _normalize_universe_day(args.day or args.end_date) or default_request_end("day")
-    codes = repository.load_stock_basic_codes(snapshot_day, snapshot_day)
+    spec = BAOSTOCK_TASK_SPECS[args.task]
+    if spec.uses_year:
+        begin_day, end_day = _financial_period_universe_days(args)
+    elif spec.uses_begin_end:
+        begin_day = _normalize_universe_day(args.begin_date) or default_request_end("day")
+        end_day = _normalize_universe_day(args.end_date) or default_request_end("day")
+    else:
+        snapshot_day = _normalize_universe_day(args.day or args.end_date) or default_request_end("day")
+        begin_day = snapshot_day
+        end_day = snapshot_day
+    codes = repository.load_stock_basic_codes(begin_day, end_day)
     if not codes:
         raise ValueError(
             "baostock.bs_stock_basic 没有可用的 type='1' 股票代码，"
@@ -319,20 +470,25 @@ def resolve_historical_code_list(
         and _normalize_universe_mode(args.universe_mode) != "missing_historical"
     ):
         raise ValueError(f"BaoStock 任务 {args.task} 不支持 historical 代码池：任务没有日期区间。")
-    begin_day = _normalize_required_universe_day(args.begin_date, "begin_date")
-    end_day = _normalize_universe_day(args.end_date) or default_request_end("day")
+    if spec.uses_year and args.year is None:
+        begin_day, end_day = _automatic_financial_universe_days(args)
+    else:
+        begin_day = _normalize_required_universe_day(args.begin_date, "begin_date")
+        end_day = _normalize_universe_day(args.end_date) or default_request_end("day")
+    if spec.uses_year and args.year is not None:
+        begin_day, end_day = _financial_period_universe_days(args)
     if begin_day > end_day:
         raise ValueError(f"historical 代码池日期区间非法 begin_date={begin_day} end_date={end_day}")
 
     if repository is None:
         raise ValueError("BaoStock historical 代码池需要 Repository 读取 starlight.ad_hist_code_daily。")
     historical_codes = repository.load_historical_stock_codes(begin_day, end_day)
-    if not historical_codes:
-        raise ValueError(
-            "starlight.ad_hist_code_daily 在请求区间内没有 EXTRA_STOCK_A 历史代码，"
-            "拒绝降级为当前股票池；请先同步 amazingdata.hist_code_list。"
-        )
     if _normalize_universe_mode(args.universe_mode) == "missing_historical":
+        if not historical_codes:
+            raise ValueError(
+                "starlight.ad_hist_code_daily 在请求区间内没有 EXTRA_STOCK_A 历史代码，"
+                "拒绝降级为当前股票池；请先同步 amazingdata.hist_code_list。"
+            )
         existing_codes = repository.load_task_codes(args.task, begin_day, end_day)
         codes = sorted(set(historical_codes) - set(existing_codes))
         logger.info(
@@ -345,7 +501,7 @@ def resolve_historical_code_list(
         )
         return codes
 
-    if spec.uses_year:
+    if spec.stock_only_universe:
         stock_basic_codes = repository.load_stock_basic_codes(begin_day, end_day)
         codes = sorted(set(stock_basic_codes) | set(historical_codes))
         logger.info(
@@ -359,9 +515,17 @@ def resolve_historical_code_list(
             len(codes),
         )
         if not codes:
-            raise ValueError("BaoStock historical 股票代码池为空，拒绝继续同步。")
+            raise ValueError(
+                f"BaoStock historical 股票代码池在 {begin_day} 至 {end_day} 为空，"
+                "请先同步 baostock.stock_basic 和 amazingdata.hist_code_list。"
+            )
         return codes
 
+    if not historical_codes:
+        raise ValueError(
+            "starlight.ad_hist_code_daily 在请求区间内没有 EXTRA_STOCK_A 历史代码，"
+            "拒绝降级为当前股票池；请先同步 amazingdata.hist_code_list。"
+        )
     current_codes = resolve_current_code_list(provider, args)
     codes = sorted(set(current_codes) | set(historical_codes))
     if not codes:
@@ -395,6 +559,36 @@ def _normalize_required_universe_day(value: Any, field_name: str) -> str:
     if not normalized:
         raise ValueError(f"historical 代码池要求有效的 {field_name}，当前值: {value!r}")
     return normalized
+
+
+def _financial_period_universe_days(args: SyncArgs) -> tuple[str, str]:
+    year = args.year
+    quarter = args.quarter
+    if year is None and quarter is None and BAOSTOCK_TASK_SPECS[args.task].uses_quarter:
+        year, quarter = _latest_completed_quarter()
+    if year is None:
+        year = date.today().year
+    if quarter is None:
+        if BAOSTOCK_TASK_SPECS[args.task].uses_quarter:
+            quarter = ((date.today().month - 1) // 3) + 1
+        else:
+            return f"{year:04d}0101", f"{year:04d}1231"
+    start_month = (quarter - 1) * 3 + 1
+    end_month = start_month + 2
+    end_day = monthrange(year, end_month)[1]
+    return (
+        f"{year:04d}{start_month:02d}01",
+        f"{year:04d}{end_month:02d}{end_day:02d}",
+    )
+
+
+def _automatic_financial_universe_days(args: SyncArgs) -> tuple[str, str]:
+    spec = BAOSTOCK_TASK_SPECS[args.task]
+    if spec.uses_quarter:
+        end_year, end_quarter = _latest_completed_quarter()
+        end_month = end_quarter * 3
+        return "20100101", f"{end_year:04d}{end_month:02d}{monthrange(end_year, end_month)[1]:02d}"
+    return "20100101", f"{date.today().year:04d}1231"
 
 
 def run_single_task(args: SyncArgs, provider: BaoStockProvider, repository: BaoStockRepository) -> int:

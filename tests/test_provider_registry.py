@@ -31,6 +31,11 @@ class ProviderRegistryTest(unittest.TestCase):
         self.assertIn("akshare", registry.get("akshare").import_modules)
         adjust_factor = next(task for task in registry.get("baostock").tasks if task.name == "adjust_factor")
         self.assertEqual(adjust_factor.freshness_mode, "event_driven")
+        growth_data = next(task for task in registry.get("baostock").tasks if task.name == "growth_data")
+        self.assertEqual(growth_data.freshness_mode, "quarterly")
+        self.assertEqual(growth_data.incremental_scope, "code")
+        ad_daily = next(task for task in registry.get("amazingdata").tasks if task.name == "daily_kline")
+        self.assertEqual(ad_daily.incremental_scope, "code")
 
     def test_provider_root_points_to_structured_provider_dir(self) -> None:
         root = resolve_provider_root()
@@ -70,6 +75,29 @@ class ProviderRegistryTest(unittest.TestCase):
             manifest = load_provider_manifest(path)
             with self.assertRaises(ValueError):
                 validate_manifest(manifest, load_entrypoints=False)
+
+    def test_provider_manifest_rejects_unknown_incremental_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "provider.toml"
+            path.write_text(
+                textwrap.dedent(
+                    """
+                    name = "bad"
+                    module = "sync_data_system.providers.qmt"
+
+                    [entrypoints]
+                    config_runner = "runner:run_config_file"
+
+                    [[tasks]]
+                    name = "daily"
+                    target = "daily_table"
+                    incremental_scope = "table"
+                    """
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "incremental_scope"):
+                load_provider_manifest(path)
 
     def test_registry_config_runner_can_dispatch_qmt(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

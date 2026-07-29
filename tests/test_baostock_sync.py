@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import date
 
 try:
     import pandas as pd
@@ -14,6 +15,9 @@ from sync_data_system.providers.baostock.provider import normalize_baostock_code
 from sync_data_system.providers.baostock.repository import BaoStockRepository
 from sync_data_system.providers.baostock.runner import (
     SyncArgs,
+    _annual_incremental_years,
+    _latest_completed_quarter,
+    _quarterly_incremental_periods,
     load_execution_plan_from_toml,
     resolve_all_stock_request_meta,
     resolve_code_list,
@@ -114,15 +118,30 @@ class _FakeHistoricalRepository:
 
 
 class _FakeRunRepository:
-    def __init__(self, latest_cursor: str | None = None, has_successful_sync: bool = False) -> None:
+    def __init__(
+        self,
+        latest_cursor: str | None = None,
+        has_successful_sync: bool = False,
+        latest_cursors: dict[str, str | None] | None = None,
+    ) -> None:
         self.latest_cursor = latest_cursor
+        self.latest_cursors = latest_cursors or {}
         self.has_successful_sync_result = has_successful_sync
         self.saved_request_meta: list[dict] = []
         self.fetch_logs: list[object] = []
         self.successful_sync_calls: list[tuple[str, str]] = []
+        self.latest_cursor_batch_calls: list[tuple[str, list[str]]] = []
 
     def load_latest_cursor(self, task: str, *, code: str | None = None):
-        return self.latest_cursor
+        return self.latest_cursors.get(str(code), self.latest_cursor)
+
+    def load_latest_cursors(self, task: str, codes: list[str]):
+        self.latest_cursor_batch_calls.append((task, list(codes)))
+        return {
+            code: cursor
+            for code in codes
+            if (cursor := self.latest_cursors.get(code, self.latest_cursor))
+        }
 
     def has_task_data_for_request(self, task: str, request_meta):
         return False
@@ -218,6 +237,37 @@ class BaoStockIncrementalHelperTest(unittest.TestCase):
         self.assertEqual(advance_cursor_value("2024-01-31", "day"), "20240201")
         self.assertEqual(advance_cursor_value("2024-12", "month"), "202501")
         self.assertEqual(advance_cursor_value("2024", "year"), "2025")
+
+    def test_latest_completed_quarter_does_not_use_in_progress_quarter(self) -> None:
+        self.assertEqual(_latest_completed_quarter(date(2026, 7, 29)), (2026, 2))
+        self.assertEqual(_latest_completed_quarter(date(2026, 1, 2)), (2025, 4))
+
+    def test_quarterly_incremental_periods_start_at_2010_when_stock_has_no_data(self) -> None:
+        periods = _quarterly_incremental_periods(None, end_period=(2026, 2))
+
+        self.assertEqual(periods[0], (2010, 1))
+        self.assertEqual(periods[-1], (2026, 2))
+        self.assertEqual(len(periods), 66)
+
+    def test_quarterly_incremental_periods_continue_after_stock_cursor(self) -> None:
+        self.assertEqual(
+            _quarterly_incremental_periods("2025-12-31", end_period=(2026, 2)),
+            [(2026, 1), (2026, 2)],
+        )
+        self.assertEqual(
+            _quarterly_incremental_periods("2026-06-30", end_period=(2026, 2)),
+            [],
+        )
+
+    def test_annual_incremental_years_refresh_latest_cursor_year(self) -> None:
+        self.assertEqual(
+            _annual_incremental_years("2024-07-09", end_year=2026),
+            [2024, 2025, 2026],
+        )
+        self.assertEqual(
+            _annual_incremental_years(None, end_year=2026),
+            list(range(2010, 2027)),
+        )
 
     def test_resolve_effective_request_meta_pushes_begin_date_forward(self) -> None:
         args = SyncArgs(
@@ -444,9 +494,48 @@ class BaoStockIncrementalHelperTest(unittest.TestCase):
         codes = resolve_code_list(provider, args, repository)
 
         self.assertEqual(codes, ["000005.SZ", "001234.SZ", "600000.SH"])
-        self.assertEqual(repository.calls, [("20100101", "20260729")])
-        self.assertEqual(repository.stock_basic_calls, [("20100101", "20260729")])
+        self.assertEqual(repository.calls, [("20241001", "20241231")])
+        self.assertEqual(repository.stock_basic_calls, [("20241001", "20241231")])
         self.assertEqual(provider.fetch_latest_all_stock_calls, [])
+
+    def test_automatic_financial_historical_universe_covers_2010_through_latest_quarter(self) -> None:
+        args = SyncArgs(
+            task="growth_data",
+            codes_raw="",
+            begin_date="",
+            end_date="",
+            day="",
+            year=None,
+            quarter=None,
+            year_type="",
+            adjustflag="3",
+            frequency="d",
+            limit=0,
+            force=False,
+            continue_on_error=True,
+            runtime_path=None,
+            database="baostock",
+            log_level="INFO",
+            universe_mode="historical",
+        )
+        repository = _FakeHistoricalRepository(
+            ["000005.SZ"],
+            stock_basic_codes=["600000.SH"],
+        )
+        end_year, end_quarter = _latest_completed_quarter()
+        end_month = end_quarter * 3
+        next_month = (
+            date(end_year, end_month + 1, 1)
+            if end_month < 12
+            else date(end_year + 1, 1, 1)
+        )
+        expected_end = (next_month - date.resolution).strftime("%Y%m%d")
+
+        codes = resolve_code_list(_FakeBaoStockProvider(), args, repository)
+
+        self.assertEqual(codes, ["000005.SZ", "600000.SH"])
+        self.assertEqual(repository.calls, [("20100101", expected_end)])
+        self.assertEqual(repository.stock_basic_calls, [("20100101", expected_end)])
 
     def test_quarterly_finance_current_universe_uses_stock_basic_not_all_stock(self) -> None:
         args = SyncArgs(
@@ -479,7 +568,42 @@ class BaoStockIncrementalHelperTest(unittest.TestCase):
         codes = resolve_code_list(provider, args, repository)
 
         self.assertEqual(codes, ["000001.SZ", "600000.SH"])
-        self.assertEqual(repository.stock_basic_calls, [("20260729", "20260729")])
+        self.assertEqual(repository.stock_basic_calls, [("20260401", "20260630")])
+        self.assertEqual(provider.fetch_latest_all_stock_calls, [])
+
+    def test_adjust_factor_historical_universe_excludes_indices_and_etfs(self) -> None:
+        args = SyncArgs(
+            task="adjust_factor",
+            codes_raw="",
+            begin_date="20100101",
+            end_date="20260729",
+            day="",
+            year=None,
+            quarter=None,
+            year_type="",
+            adjustflag="3",
+            frequency="d",
+            limit=0,
+            force=False,
+            continue_on_error=True,
+            runtime_path=None,
+            database="baostock",
+            log_level="INFO",
+            universe_mode="historical",
+        )
+        provider = _FakeBaoStockProvider(
+            codes_by_day={"20260729": ["000300.SH", "510300.SH", "600000.SH"]}
+        )
+        repository = _FakeHistoricalRepository(
+            ["000005.SZ", "600000.SH"],
+            stock_basic_codes=["000001.SZ", "600000.SH"],
+        )
+
+        codes = resolve_code_list(provider, args, repository)
+
+        self.assertEqual(codes, ["000001.SZ", "000005.SZ", "600000.SH"])
+        self.assertEqual(repository.calls, [("20100101", "20260729")])
+        self.assertEqual(repository.stock_basic_calls, [("20100101", "20260729")])
         self.assertEqual(provider.fetch_latest_all_stock_calls, [])
 
     def test_historical_universe_refuses_empty_history(self) -> None:
@@ -628,6 +752,34 @@ class BaoStockIncrementalHelperTest(unittest.TestCase):
 
 @unittest.skipIf(pd is None, "pandas is required")
 class BaoStockRepositoryTest(unittest.TestCase):
+    def test_load_latest_cursors_reads_all_stock_cursors_in_one_query(self) -> None:
+        client = _FakeClickHouseClient()
+        captured: dict[str, object] = {}
+
+        def query_rows(sql, parameters=None):
+            captured["sql"] = sql
+            captured["parameters"] = parameters
+            return [("sz.000005", "2024-12-31"), ("600000.SH", "2026-03-31")]
+
+        client.query_rows = query_rows
+        repository = BaoStockRepository(client, database="baostock")
+
+        cursors = repository.load_latest_cursors(
+            "growth_data",
+            ["sz.000005", "600000.SH", "000005.SZ"],
+        )
+
+        self.assertEqual(
+            cursors,
+            {"000005.SZ": "2024-12-31", "600000.SH": "2026-03-31"},
+        )
+        self.assertIn("max(stat_date)", str(captured["sql"]))
+        self.assertIn("GROUP BY code", str(captured["sql"]))
+        self.assertEqual(
+            captured["parameters"],
+            {"codes": ["000005.SZ", "600000.SH"]},
+        )
+
     def test_load_historical_stock_codes_filters_amazingdata_a_share_history(self) -> None:
         client = _FakeClickHouseClient()
         client.query_rows = lambda sql, parameters=None: [("sz.000005",), ("600000.SH",), ("sz.000005",)]
@@ -764,6 +916,16 @@ class BaoStockRepositoryTest(unittest.TestCase):
 
 @unittest.skipIf(pd is None, "pandas is required")
 class BaoStockRunnerExecutionTest(unittest.TestCase):
+    def test_financial_incremental_plan_uses_automatic_per_stock_periods(self) -> None:
+        plan = load_execution_plan_from_toml(
+            "providers/baostock/plans/financial-incremental.toml"
+        )
+
+        self.assertEqual(len(plan.tasks), 7)
+        self.assertTrue(all(task.year is None for task in plan.tasks))
+        self.assertTrue(all(task.quarter is None for task in plan.tasks))
+        self.assertTrue(all(task.universe_mode == "historical" for task in plan.tasks))
+
     def test_historical_financial_plan_expands_all_years_and_quarters(self) -> None:
         plan = load_execution_plan_from_toml(
             "providers/baostock/plans/historical-financial-backfill.toml"
@@ -872,6 +1034,104 @@ class BaoStockRunnerExecutionTest(unittest.TestCase):
         self.assertEqual(provider.fetch_calls[0]["start_date"], "20240111")
         self.assertEqual(provider.fetch_calls[0]["end_date"], "20240131")
         self.assertEqual(repository.saved_request_meta[0]["start_date"], "20240111")
+
+    def test_automatic_quarterly_sync_uses_each_stocks_own_cursor(self) -> None:
+        end_year, end_quarter = _latest_completed_quarter()
+        previous_year, previous_quarter = (
+            (end_year - 1, 4) if end_quarter == 1 else (end_year, end_quarter - 1)
+        )
+        previous_month = previous_quarter * 3
+        previous_next_month = (
+            date(previous_year, previous_month + 1, 1)
+            if previous_month < 12
+            else date(previous_year + 1, 1, 1)
+        )
+        previous_end = previous_next_month - date.resolution
+        current_month = end_quarter * 3
+        current_next_month = (
+            date(end_year, current_month + 1, 1)
+            if current_month < 12
+            else date(end_year + 1, 1, 1)
+        )
+        current_end = current_next_month - date.resolution
+        args = SyncArgs(
+            task="growth_data",
+            codes_raw="000001.SZ,600000.SH",
+            begin_date="",
+            end_date="",
+            day="",
+            year=None,
+            quarter=None,
+            year_type="",
+            adjustflag="3",
+            frequency="d",
+            limit=0,
+            force=False,
+            continue_on_error=True,
+            runtime_path=None,
+            database="baostock",
+            log_level="INFO",
+            universe_mode="historical",
+        )
+        provider = _FakeRunProvider(pd.DataFrame())
+        repository = _FakeRunRepository(
+            latest_cursors={
+                "000001.SZ": current_end.isoformat(),
+                "600000.SH": previous_end.isoformat(),
+            }
+        )
+
+        inserted = run_sync_args(args, provider, repository)
+
+        self.assertEqual(inserted, 0)
+        self.assertEqual(len(provider.fetch_calls), 1)
+        self.assertEqual(
+            repository.latest_cursor_batch_calls,
+            [("growth_data", ["000001.SZ", "600000.SH"])],
+        )
+        self.assertEqual(provider.fetch_calls[0]["code"], "600000.SH")
+        self.assertEqual(provider.fetch_calls[0]["year"], end_year)
+        self.assertEqual(provider.fetch_calls[0]["quarter"], end_quarter)
+
+    def test_automatic_quarterly_sync_starts_at_2010_for_stock_without_rows(self) -> None:
+        args = SyncArgs(
+            task="growth_data",
+            codes_raw="000005.SZ",
+            begin_date="",
+            end_date="",
+            day="",
+            year=None,
+            quarter=None,
+            year_type="",
+            adjustflag="3",
+            frequency="d",
+            limit=0,
+            force=False,
+            continue_on_error=True,
+            runtime_path=None,
+            database="baostock",
+            log_level="INFO",
+            universe_mode="historical",
+        )
+        provider = _FakeRunProvider(pd.DataFrame())
+        repository = _FakeRunRepository()
+        expected_periods = _quarterly_incremental_periods(
+            None,
+            end_period=_latest_completed_quarter(),
+        )
+
+        inserted = run_sync_args(args, provider, repository)
+
+        self.assertEqual(inserted, 0)
+        self.assertEqual(len(provider.fetch_calls), len(expected_periods))
+        self.assertEqual(
+            (provider.fetch_calls[0]["year"], provider.fetch_calls[0]["quarter"]),
+            (2010, 1),
+        )
+        self.assertEqual(
+            (provider.fetch_calls[-1]["year"], provider.fetch_calls[-1]["quarter"]),
+            _latest_completed_quarter(),
+        )
 
     def test_run_code_task_resume_skips_success_from_prior_date(self) -> None:
         args = SyncArgs(

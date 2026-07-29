@@ -898,13 +898,14 @@ def sync_table_status(runtime_path: Optional[str] = Query(None)):
             for target in targets:
                 related_tasks = tasks_by_target.get(target, [])
                 task_names = [str(item.get("name") or "") for item in related_tasks]
-                freshness_mode = next(
-                    (
-                        str(item.get("freshness_mode") or "daily").strip()
-                        for item in related_tasks
-                        if str(item.get("freshness_mode") or "daily").strip() == "event_driven"
-                    ),
-                    "daily",
+                task_freshness_modes = [
+                    str(item.get("freshness_mode") or "daily").strip() or "daily"
+                    for item in related_tasks
+                ]
+                freshness_mode = (
+                    "event_driven"
+                    if "event_driven" in task_freshness_modes
+                    else next((mode for mode in task_freshness_modes if mode != "daily"), "daily")
                 )
                 task_check_states = [check_states_by_task[name] for name in task_names if name in check_states_by_task]
                 check_state = max(

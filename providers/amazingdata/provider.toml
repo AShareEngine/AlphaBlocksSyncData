@@ -46,6 +46,7 @@ request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "l
 name = "history_stock_status"
 target = "ad_history_stock_status"
 supports_incremental = false
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
@@ -64,73 +65,85 @@ request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "
 name = "balance_sheet"
 target = "ad_balance_sheet"
 supports_incremental = false
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "cash_flow"
 target = "ad_cash_flow"
 supports_incremental = false
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "income"
 target = "ad_income"
 supports_incremental = false
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "profit_express"
 target = "ad_profit_express"
 supports_incremental = false
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+incremental_scope = "code"
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "profit_notice"
 target = "ad_profit_notice"
 supports_incremental = false
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+incremental_scope = "code"
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "share_holder"
 target = "ad_share_holder"
 supports_incremental = false
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+incremental_scope = "code"
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "holder_num"
 target = "ad_holder_num"
 supports_incremental = false
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+incremental_scope = "code"
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "equity_structure"
 target = "ad_equity_structure"
 supports_incremental = false
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "equity_pledge_freeze"
 target = "ad_equity_pledge_freeze"
 supports_incremental = false
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+incremental_scope = "code"
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "equity_restricted"
 target = "ad_equity_restricted"
 supports_incremental = false
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+incremental_scope = "code"
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "dividend"
 target = "ad_dividend"
 supports_incremental = false
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+incremental_scope = "code"
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "right_issue"
 target = "ad_right_issue"
 supports_incremental = false
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+incremental_scope = "code"
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "index_constituent"
@@ -142,6 +155,7 @@ request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "
 name = "index_weight"
 target = "ad_index_weight"
 supports_incremental = false
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
@@ -160,12 +174,14 @@ request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "
 name = "industry_weight"
 target = "ad_industry_weight"
 supports_incremental = false
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "industry_daily"
 target = "ad_industry_daily"
 supports_incremental = false
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
@@ -178,12 +194,14 @@ request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "
 name = "fund_share"
 target = "ad_fund_share"
 supports_incremental = false
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "fund_iopv"
 target = "ad_fund_iopv"
 supports_incremental = false
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
@@ -250,6 +268,7 @@ request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "
 name = "treasury_yield"
 target = "ad_treasury_yield"
 supports_incremental = false
+incremental_scope = "code"
 request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
@@ -280,19 +299,22 @@ request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "
 name = "block_trading"
 target = "ad_block_trading"
 supports_incremental = false
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+incremental_scope = "code"
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "long_hu_bang"
 target = "ad_long_hu_bang"
 supports_incremental = false
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+incremental_scope = "code"
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "margin_detail"
 target = "ad_margin_detail"
 supports_incremental = false
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+incremental_scope = "code"
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "margin_summary"
@@ -305,14 +327,16 @@ name = "daily_kline"
 target = "ad_market_kline_daily"
 supports_incremental = true
 cursor_field = "trade_time"
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+incremental_scope = "code"
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "minute_kline"
 target = "ad_market_kline_minute"
 supports_incremental = true
 cursor_field = "trade_time"
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+incremental_scope = "code"
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "market_snapshot"
