@@ -322,6 +322,8 @@ def _task_namespace(
         resume=_optional_bool(scalar("resume"), default=False),
         adjustflag=str(scalar("adjustflag", "3") or "3"),
         frequency=str(scalar("frequency", "d") or "d"),
+        universe_mode=str(scalar("universe_mode", "current") or "current"),
+        continue_on_error=_optional_bool(scalar("continue_on_error"), default=False),
         log_level=log_level,
     )
 

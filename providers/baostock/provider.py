@@ -90,6 +90,7 @@ class BaoStockProvider:
     def __init__(self, config: BaoStockConfig) -> None:
         self.session = BaoStockSession(config)
         self._all_stock_codes_cache: dict[str, list[str]] = {}
+        self._stock_basic_universe_cache = None
 
     def close(self) -> None:
         self.session.close()
@@ -216,6 +217,13 @@ class BaoStockProvider:
         resolved = [code for code in codes if code]
         self._all_stock_codes_cache[cache_key] = resolved
         return list(resolved)
+
+    def fetch_stock_basic_universe(self):
+        """Fetch the complete stock-basic catalogue with one bulk API call."""
+        if self._stock_basic_universe_cache is None:
+            frame = self.fetch_dataframe("stock_basic", code=None)
+            self._stock_basic_universe_cache = frame.copy()
+        return self._stock_basic_universe_cache.copy()
 
     def fetch_latest_all_stock_codes(self, day: str | None = None, *, lookback_days: int = 30) -> tuple[str | None, list[str]]:
         """Return the nearest trading day with a non-empty all_stock universe."""

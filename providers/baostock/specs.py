@@ -30,6 +30,7 @@ class BaoStockTaskSpec:
     uses_quarter: bool = False
     uses_year_type: bool = False
     auto_code_universe: bool = False
+    supports_bulk_without_code: bool = False
     cursor_fields: tuple[str, ...] = ()
     cursor_granularity: str = ""
     persist_request_columns: bool = True
@@ -72,7 +73,7 @@ BAOSTOCK_TASK_SPECS: dict[str, BaoStockTaskSpec] = {
         table_name="bs_stock_basic",
         fields=("code", "code_name", "ipoDate", "outDate", "type", "status"),
         uses_code=True,
-        auto_code_universe=True,
+        supports_bulk_without_code=True,
     ),
     "adjust_factor": BaoStockTaskSpec(
         task="adjust_factor",

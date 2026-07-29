@@ -69,6 +69,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", action="store_true", help="Resume from successful checkpoints")
     parser.add_argument("--adjustflag", default="3")
     parser.add_argument("--frequency", default="d")
+    parser.add_argument("--universe-mode", choices=("current", "historical"), default="current")
+    parser.add_argument("--continue-on-error", action="store_true", help="Continue after a per-item failure")
     parser.add_argument("--log-level", default=None)
     args = parser.parse_args()
     if args.task_name and args.task_option:
@@ -101,6 +103,8 @@ def parse_args() -> argparse.Namespace:
         or args.force
         or args.adjustflag != "3"
         or args.frequency != "d"
+        or args.universe_mode != "current"
+        or args.continue_on_error
     ):
         parser.error("--config mode cannot be mixed with task request options.")
     return args
@@ -198,6 +202,8 @@ def run_registered_task(
         resume=args.resume,
         adjustflag=args.adjustflag,
         frequency=args.frequency,
+        universe_mode=args.universe_mode,
+        continue_on_error=args.continue_on_error,
         log_level=args.log_level,
     )
     definition = TASK_REGISTRY.get_task(probe.name)

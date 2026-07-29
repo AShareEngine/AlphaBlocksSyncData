@@ -10,7 +10,7 @@ from typing import Any, Mapping, Sequence
 
 from sync_data_system.sync_core.clickhouse import ClickHouseConnection
 from sync_data_system.sync_core.sync_models import SyncCheckpointRow, SyncTaskLogRow, to_ch_date
-from sync_data_system.providers.baostock.provider import normalize_baostock_code
+from sync_data_system.providers.baostock.provider import normalize_baostock_code, normalize_baostock_code_list
 from sync_data_system.providers.baostock.specs import (
     BAOSTOCK_TASK_SPECS,
     BaoStockTaskSpec,
@@ -201,6 +201,36 @@ class BaoStockRepository:
         value = self.client.query_value(sql, parameters)
         text = self._stringify(value)
         return text or None
+
+    def load_historical_stock_codes(
+        self,
+        begin_date: str,
+        end_date: str,
+        *,
+        source_table: str = "starlight.ad_hist_code_daily",
+        security_type: str = "EXTRA_STOCK_A",
+    ) -> list[str]:
+        """Load the AmazingData historical A-share universe for an interval."""
+        sql = f"""
+        SELECT code
+        FROM {source_table}
+        WHERE security_type = {{security_type:String}}
+          AND trade_date >= {{begin_date:Date}}
+          AND trade_date <= {{end_date:Date}}
+        GROUP BY code
+        ORDER BY code
+        """
+        rows = self.client.query_rows(
+            sql,
+            {
+                "security_type": security_type,
+                "begin_date": to_ch_date(begin_date),
+                "end_date": to_ch_date(end_date),
+            },
+        )
+        return normalize_baostock_code_list(
+            [str(row[0]) for row in rows if row and row[0] is not None]
+        )
 
     def _insert_rows_in_batches(
         self,

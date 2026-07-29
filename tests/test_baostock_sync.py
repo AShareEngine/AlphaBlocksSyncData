@@ -74,6 +74,16 @@ class _FakeBaoStockProvider:
         return None, []
 
 
+class _FakeHistoricalRepository:
+    def __init__(self, codes: list[str]) -> None:
+        self.codes = codes
+        self.calls: list[tuple[str, str]] = []
+
+    def load_historical_stock_codes(self, begin_date: str, end_date: str) -> list[str]:
+        self.calls.append((begin_date, end_date))
+        return list(self.codes)
+
+
 class _FakeRunRepository:
     def __init__(self, latest_cursor: str | None = None) -> None:
         self.latest_cursor = latest_cursor
@@ -283,6 +293,116 @@ class BaoStockIncrementalHelperTest(unittest.TestCase):
         self.assertEqual(provider.fetch_all_stock_calls, ["20260426", "20260424"])
         self.assertEqual(provider.fetch_latest_all_stock_calls, ["20260426"])
 
+    def test_explicit_codes_take_priority_over_historical_universe(self) -> None:
+        args = SyncArgs(
+            task="daily_kline",
+            codes_raw="000005.SZ,sh.600000,000005.SZ",
+            begin_date="20200101",
+            end_date="20241231",
+            day="",
+            year=None,
+            quarter=None,
+            year_type="",
+            adjustflag="3",
+            frequency="d",
+            limit=0,
+            force=True,
+            continue_on_error=False,
+            runtime_path=None,
+            database="baostock",
+            log_level="INFO",
+            universe_mode="historical",
+        )
+        provider = _FakeBaoStockProvider()
+        repository = _FakeHistoricalRepository(["000023.SZ"])
+
+        codes = resolve_code_list(provider, args, repository)
+
+        self.assertEqual(codes, ["000005.SZ", "600000.SH"])
+        self.assertEqual(provider.fetch_latest_all_stock_calls, [])
+        self.assertEqual(repository.calls, [])
+
+    def test_historical_universe_uses_amazingdata_history_and_unions_current_codes(self) -> None:
+        args = SyncArgs(
+            task="daily_kline",
+            codes_raw="",
+            begin_date="20200101",
+            end_date="20241231",
+            day="",
+            year=None,
+            quarter=None,
+            year_type="",
+            adjustflag="3",
+            frequency="d",
+            limit=0,
+            force=False,
+            continue_on_error=False,
+            runtime_path=None,
+            database="baostock",
+            log_level="INFO",
+            universe_mode="historical",
+        )
+        provider = _FakeBaoStockProvider(
+            codes_by_day={"20241231": ["510300.SH", "600000.SH"]},
+        )
+        repository = _FakeHistoricalRepository(["600000.SH", "000005.SZ", "000023.SZ"])
+
+        codes = resolve_code_list(provider, args, repository)
+
+        self.assertEqual(codes, ["000005.SZ", "000023.SZ", "510300.SH", "600000.SH"])
+        self.assertEqual(repository.calls, [("20200101", "20241231")])
+        self.assertEqual(provider.fetch_latest_all_stock_calls, ["20241231"])
+
+    def test_historical_universe_applies_limit_after_merge_and_sort(self) -> None:
+        args = SyncArgs(
+            task="daily_kline",
+            codes_raw="",
+            begin_date="20200101",
+            end_date="20241231",
+            day="",
+            year=None,
+            quarter=None,
+            year_type="",
+            adjustflag="3",
+            frequency="d",
+            limit=2,
+            force=False,
+            continue_on_error=False,
+            runtime_path=None,
+            database="baostock",
+            log_level="INFO",
+            universe_mode="historical",
+        )
+        provider = _FakeBaoStockProvider(codes_by_day={"20241231": ["600000.SH"]})
+        repository = _FakeHistoricalRepository(["000023.SZ", "000005.SZ"])
+
+        self.assertEqual(resolve_code_list(provider, args, repository), ["000005.SZ", "000023.SZ"])
+
+    def test_historical_universe_refuses_empty_history(self) -> None:
+        args = SyncArgs(
+            task="daily_kline",
+            codes_raw="",
+            begin_date="20200101",
+            end_date="20241231",
+            day="",
+            year=None,
+            quarter=None,
+            year_type="",
+            adjustflag="3",
+            frequency="d",
+            limit=0,
+            force=False,
+            continue_on_error=False,
+            runtime_path=None,
+            database="baostock",
+            log_level="INFO",
+            universe_mode="historical",
+        )
+        provider = _FakeBaoStockProvider(codes_by_day={"20241231": ["600000.SH"]})
+
+        with self.assertRaisesRegex(ValueError, "拒绝降级为当前股票池"):
+            resolve_code_list(provider, args, _FakeHistoricalRepository([]))
+
     def test_resolve_all_stock_request_meta_falls_back_to_latest_populated_universe_day(self) -> None:
         args = SyncArgs(
             task="all_stock",
@@ -344,6 +464,15 @@ class BaoStockIncrementalHelperTest(unittest.TestCase):
 
 @unittest.skipIf(pd is None, "pandas is required")
 class BaoStockRepositoryTest(unittest.TestCase):
+    def test_load_historical_stock_codes_filters_amazingdata_a_share_history(self) -> None:
+        client = _FakeClickHouseClient()
+        client.query_rows = lambda sql, parameters=None: [("sz.000005",), ("600000.SH",), ("sz.000005",)]
+        repository = BaoStockRepository(client, database="baostock")
+
+        codes = repository.load_historical_stock_codes("20200101", "20241231")
+
+        self.assertEqual(codes, ["000005.SZ", "600000.SH"])
+
     def test_save_task_frame_normalizes_code_column(self) -> None:
         client = _FakeClickHouseClient()
         repository = BaoStockRepository(client, database="baostock")
@@ -441,6 +570,67 @@ class BaoStockRepositoryTest(unittest.TestCase):
 
 @unittest.skipIf(pd is None, "pandas is required")
 class BaoStockRunnerExecutionTest(unittest.TestCase):
+    def test_stock_basic_without_codes_uses_one_bulk_request(self) -> None:
+        args = SyncArgs(
+            task="stock_basic",
+            codes_raw="",
+            begin_date="",
+            end_date="",
+            day="",
+            year=None,
+            quarter=None,
+            year_type="",
+            adjustflag="3",
+            frequency="d",
+            limit=0,
+            force=True,
+            continue_on_error=False,
+            runtime_path=None,
+            database="baostock",
+            log_level="INFO",
+        )
+        provider = _FakeRunProvider(pd.DataFrame([
+            {"code": "sh.600000", "status": "1"},
+            {"code": "sz.000005", "status": "0", "outDate": "2024-04-25"},
+        ]))
+        repository = _FakeRunRepository()
+
+        inserted = run_sync_args(args, provider, repository)
+
+        self.assertEqual(inserted, 2)
+        self.assertEqual(len(provider.fetch_calls), 1)
+        self.assertIsNone(provider.fetch_calls[0]["code"])
+
+    def test_stock_basic_with_explicit_codes_still_queries_each_code(self) -> None:
+        args = SyncArgs(
+            task="stock_basic",
+            codes_raw="600000.SH,000005.SZ",
+            begin_date="",
+            end_date="",
+            day="",
+            year=None,
+            quarter=None,
+            year_type="",
+            adjustflag="3",
+            frequency="d",
+            limit=0,
+            force=True,
+            continue_on_error=False,
+            runtime_path=None,
+            database="baostock",
+            log_level="INFO",
+        )
+        provider = _FakeRunProvider(pd.DataFrame([{"code": "sh.600000", "status": "1"}]))
+        repository = _FakeRunRepository()
+
+        inserted = run_sync_args(args, provider, repository)
+
+        self.assertEqual(inserted, 2)
+        self.assertEqual(
+            [call["code"] for call in provider.fetch_calls],
+            ["600000.SH", "000005.SZ"],
+        )
+
     def test_run_code_task_uses_effective_incremental_window_for_fetch(self) -> None:
         args = SyncArgs(
             task="daily_kline",

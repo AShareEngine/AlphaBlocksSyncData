@@ -22,3 +22,4 @@ continue_on_error = true
 task = "daily_kline"
 enabled = true
 begin_date = 20100101
+universe_mode = "current"

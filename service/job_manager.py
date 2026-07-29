@@ -340,6 +340,8 @@ class SyncJobManager:
         resume: bool = False,
         adjustflag: Optional[str] = None,
         frequency: Optional[str] = None,
+        universe_mode: Optional[str] = None,
+        continue_on_error: bool = False,
         log_level: Optional[str] = None,
         runtime_path: Optional[str] = None,
     ) -> JobRecord:
@@ -408,6 +410,10 @@ class SyncJobManager:
             command.extend(["--adjustflag", str(adjustflag)])
         if frequency:
             command.extend(["--frequency", str(frequency)])
+        if universe_mode:
+            command.extend(["--universe-mode", str(universe_mode)])
+        if continue_on_error:
+            command.append("--continue-on-error")
         if log_level:
             command.extend(["--log-level", str(log_level)])
         return self._start_job(
@@ -444,6 +450,8 @@ class SyncJobManager:
                 "resume": resume,
                 "adjustflag": adjustflag,
                 "frequency": frequency,
+                "universe_mode": universe_mode,
+                "continue_on_error": continue_on_error,
                 "log_level": log_level,
                 "runtime_path": runtime_path,
             },

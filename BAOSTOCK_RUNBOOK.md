@@ -31,6 +31,27 @@ python3 scripts/run_provider_sync.py baostock.<task> [options]
 
 默认会使用现有 `CLICKHOUSE_*` 连接信息，把表写入 ClickHouse 的 `baostock` database。
 
+## 当前股票池与历史股票池
+
+- `--universe-mode current` 使用结束日附近的 BaoStock `query_all_stock` 快照，适合日常增量同步。
+- `--universe-mode historical` 从 `starlight.ad_hist_code_daily` 读取请求区间内
+  `security_type='EXTRA_STOCK_A'` 的历史股票代码，并与结束日附近的 BaoStock
+  当前证券列表取并集，适合包含退市股票的历史回补。
+- 历史模式要求先同步 `amazingdata.hist_code_list`；历史表不可用或请求区间为空时会
+  明确失败，不会静默降级为当前股票池。
+- 显式 `--codes` 始终优先于上述两种自动代码池。
+
+示例：
+
+```bash
+python3 scripts/run_provider_sync.py baostock.daily_kline \
+  --begin-date 20200101 \
+  --end-date 20241231 \
+  --universe-mode historical \
+  --force \
+  --continue-on-error
+```
+
 BaoStock 登录默认走匿名账号：
 
 - `BAOSTOCK_USER_ID=anonymous`

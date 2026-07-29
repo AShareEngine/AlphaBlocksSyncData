@@ -57,6 +57,8 @@ class ServiceTaskRegistryTest(unittest.TestCase):
         self.assertEqual(metadata["baostock.daily_kline"]["database"], "baostock")
         self.assertEqual(metadata["baostock.daily_kline"]["target"], "bs_daily_kline")
         self.assertIn("frequency", metadata["baostock.daily_kline"]["request_fields"])
+        self.assertIn("universe_mode", metadata["baostock.daily_kline"]["request_fields"])
+        self.assertIn("continue_on_error", metadata["baostock.daily_kline"]["request_fields"])
 
     def test_registry_metadata_contains_qmt_tasks(self) -> None:
         metadata = {item["name"]: item for item in TASK_REGISTRY.list_task_metadata()}

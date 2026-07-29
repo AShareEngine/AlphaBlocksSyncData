@@ -39,6 +39,7 @@ PROBE_PUBLIC_FIELDS = (
     "input_year",
     "input_quarter",
     "input_year_type",
+    "input_universe_mode",
     "input_market",
     "input_index_code",
     "input_table_names",
@@ -56,6 +57,7 @@ PROBE_PUBLIC_FIELDS = (
     "resume",
     "adjustflag",
     "frequency",
+    "continue_on_error",
     "log_level",
     "codes",
     "begin_date",
@@ -98,6 +100,7 @@ class SyncTaskProbe:
     input_year: Optional[int] = None
     input_quarter: Optional[int] = None
     input_year_type: Optional[str] = None
+    input_universe_mode: Optional[str] = None
     input_market: Optional[str] = None
     input_index_code: Optional[str] = None
     input_table_names: Optional[str] = None
@@ -115,6 +118,7 @@ class SyncTaskProbe:
     resume: bool = False
     adjustflag: str = "3"
     frequency: str = "d"
+    continue_on_error: bool = False
     log_level: Optional[str] = None
     codes: list[str] = field(default_factory=list)
     begin_date: Optional[int] = None
@@ -154,6 +158,7 @@ class SyncTaskProbe:
             "input_year": self.input_year,
             "input_quarter": self.input_quarter,
             "input_year_type": self.input_year_type,
+            "input_universe_mode": self.input_universe_mode,
             "input_market": self.input_market,
             "input_index_code": self.input_index_code,
             "input_table_names": self.input_table_names,
@@ -171,6 +176,7 @@ class SyncTaskProbe:
             "resume": self.resume,
             "adjustflag": self.adjustflag,
             "frequency": self.frequency,
+            "continue_on_error": self.continue_on_error,
             "log_level": self.log_level,
             "codes": list(self.codes),
             "begin_date": self.begin_date,
@@ -469,6 +475,7 @@ def create_probe(
     year: Optional[int] = None,
     quarter: Optional[int] = None,
     year_type: Optional[str] = None,
+    universe_mode: Optional[str] = None,
     market: Optional[str] = None,
     index_code: Optional[str] = None,
     table_names: Optional[str] = None,
@@ -486,6 +493,7 @@ def create_probe(
     resume: bool = False,
     adjustflag: str = "3",
     frequency: str = "d",
+    continue_on_error: bool = False,
     log_level: Optional[str] = None,
 ) -> SyncTaskProbe:
     definition = TASK_REGISTRY.get_task(task_name)
@@ -505,6 +513,7 @@ def create_probe(
         input_year=year,
         input_quarter=quarter,
         input_year_type=year_type,
+        input_universe_mode=universe_mode,
         input_market=market,
         input_index_code=index_code,
         input_table_names=table_names,
@@ -522,6 +531,7 @@ def create_probe(
         resume=resume,
         adjustflag=str(adjustflag or "3").strip() or "3",
         frequency=str(frequency or "d").strip() or "d",
+        continue_on_error=bool(continue_on_error),
         log_level=log_level,
     )
 

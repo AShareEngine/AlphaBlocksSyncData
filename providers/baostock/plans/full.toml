@@ -17,6 +17,7 @@ database = "baostock"
 limit = 0
 force = false
 continue_on_error = true
+universe_mode = "current"
 
 # 1. 全市场证券列表
 [[tasks]]

@@ -7,7 +7,7 @@ default_database = "baostock"
 plans_path = "plans"
 dependencies = ["baostock", "pandas", "clickhouse-connect"]
 import_modules = ["baostock"]
-plan_fields = ["codes", "begin_date", "end_date", "day", "year", "quarter", "year_type", "adjustflag", "frequency", "limit", "force", "continue_on_error"]
+plan_fields = ["codes", "begin_date", "end_date", "day", "year", "quarter", "year_type", "adjustflag", "frequency", "universe_mode", "limit", "force", "continue_on_error"]
 
 [entrypoints]
 provider = "provider:BaoStockProvider"
@@ -51,7 +51,7 @@ name = "daily_kline"
 target = "bs_daily_kline"
 supports_incremental = true
 cursor_field = "date"
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level", "adjustflag", "frequency"]
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "continue_on_error", "log_level", "adjustflag", "frequency"]
 
 [[tasks]]
 name = "hs300_stocks"

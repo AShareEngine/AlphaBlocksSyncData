@@ -48,6 +48,7 @@ class SyncArgs:
     runtime_path: str | None
     database: str
     log_level: str
+    universe_mode: str = "current"
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,12 @@ def parse_args() -> SyncArgs:
     parser.add_argument("--year-type", default="", help="分红/准备金等接口附加参数")
     parser.add_argument("--adjustflag", default="3", help="K 线复权参数，默认 3=不复权")
     parser.add_argument("--frequency", default="d", help="K 线周期，当前默认 d")
+    parser.add_argument(
+        "--universe-mode",
+        choices=("current", "historical"),
+        default="current",
+        help="自动代码池模式：current=结束日附近证券，historical=与请求区间相交的完整历史股票池",
+    )
     parser.add_argument("--limit", type=int, default=0, help="仅同步前 N 个 code，0 表示不限制")
     parser.add_argument("--force", action="store_true", help="忽略当天成功日志，强制重跑")
     parser.add_argument("--continue-on-error", action="store_true", help="单 code 失败后继续后续 code")
@@ -109,6 +116,7 @@ def parse_args() -> SyncArgs:
         runtime_path=args.runtime_path,
         database=str(args.database or "baostock").strip() or "baostock",
         log_level=str(args.log_level or "INFO").strip() or "INFO",
+        universe_mode=_normalize_universe_mode(args.universe_mode),
     )
 
 
@@ -181,10 +189,10 @@ def main() -> int:
 
 def run_sync_args(args: SyncArgs, provider: BaoStockProvider, repository: BaoStockRepository) -> int:
     spec = BAOSTOCK_TASK_SPECS[args.task]
-    codes = resolve_code_list(provider, args)
+    codes = resolve_code_list(provider, args, repository)
     if codes:
         return run_code_task(args, provider, repository, codes)
-    if spec.uses_code:
+    if spec.uses_code and not (spec.supports_bulk_without_code and not args.codes_raw.strip()):
         if args.codes_raw.strip():
             raise ValueError(f"BaoStock 任务 {args.task} 未解析出有效股票代码，请检查 codes 参数。")
         raise ValueError(
@@ -208,10 +216,11 @@ def run_registered_task(probe: Any) -> int:
         frequency=str(probe.frequency or "d").strip() or "d",
         limit=probe.limit,
         force=probe.force,
-        continue_on_error=False,
+        continue_on_error=bool(getattr(probe, "continue_on_error", False)),
         runtime_path=probe.runtime_path,
         database=str(probe.database or "baostock"),
         log_level=str(probe.log_level or "INFO"),
+        universe_mode=_normalize_universe_mode(getattr(probe, "input_universe_mode", None)),
     )
     inserted = run_sync_args(args, probe.context.provider, probe.context.repository)
     probe.set_row_count(inserted)
@@ -227,29 +236,96 @@ def _format_optional_int(value: Any) -> str:
     return "" if value is None else str(value)
 
 
-def resolve_code_list(provider: BaoStockProvider, args: SyncArgs) -> list[str]:
+def resolve_code_list(
+    provider: BaoStockProvider,
+    args: SyncArgs,
+    repository: BaoStockRepository | None = None,
+) -> list[str]:
     spec = BAOSTOCK_TASK_SPECS[args.task]
     if not spec.uses_code:
         return []
 
     if args.codes_raw.strip():
         codes = normalize_baostock_code_list([part.strip() for part in args.codes_raw.split(",") if part.strip()])
+    elif spec.supports_bulk_without_code:
+        codes = []
     elif spec.auto_code_universe:
-        snapshot_day = args.day or args.end_date or datetime.now().strftime("%Y%m%d")
-        resolved_day, codes = provider.fetch_latest_all_stock_codes(snapshot_day)
-        if resolved_day and resolved_day != snapshot_day:
-            logger.warning(
-                "BaoStock code universe empty task=%s snapshot_day=%s; fallback to latest all_stock day=%s",
-                args.task,
-                snapshot_day,
-                resolved_day,
-            )
+        if _normalize_universe_mode(args.universe_mode) == "historical":
+            codes = resolve_historical_code_list(provider, args, repository)
+        else:
+            codes = resolve_current_code_list(provider, args)
     else:
         codes = []
 
     if args.limit > 0:
         codes = codes[: args.limit]
     return codes
+
+
+def resolve_current_code_list(provider: BaoStockProvider, args: SyncArgs) -> list[str]:
+    snapshot_day = args.day or args.end_date or datetime.now().strftime("%Y%m%d")
+    resolved_day, codes = provider.fetch_latest_all_stock_codes(snapshot_day)
+    if resolved_day and resolved_day != snapshot_day:
+        logger.warning(
+            "BaoStock code universe empty task=%s snapshot_day=%s; fallback to latest all_stock day=%s",
+            args.task,
+            snapshot_day,
+            resolved_day,
+        )
+    return normalize_baostock_code_list(codes)
+
+
+def resolve_historical_code_list(
+    provider: BaoStockProvider,
+    args: SyncArgs,
+    repository: BaoStockRepository | None,
+) -> list[str]:
+    spec = BAOSTOCK_TASK_SPECS[args.task]
+    if not spec.uses_begin_end:
+        raise ValueError(f"BaoStock 任务 {args.task} 不支持 historical 代码池：任务没有日期区间。")
+    begin_day = _normalize_required_universe_day(args.begin_date, "begin_date")
+    end_day = _normalize_universe_day(args.end_date) or default_request_end("day")
+    if begin_day > end_day:
+        raise ValueError(f"historical 代码池日期区间非法 begin_date={begin_day} end_date={end_day}")
+
+    if repository is None:
+        raise ValueError("BaoStock historical 代码池需要 Repository 读取 starlight.ad_hist_code_daily。")
+    historical_codes = repository.load_historical_stock_codes(begin_day, end_day)
+    if not historical_codes:
+        raise ValueError(
+            "starlight.ad_hist_code_daily 在请求区间内没有 EXTRA_STOCK_A 历史代码，"
+            "拒绝降级为当前股票池；请先同步 amazingdata.hist_code_list。"
+        )
+    current_codes = resolve_current_code_list(provider, args)
+    codes = sorted(set(current_codes) | set(historical_codes))
+    if not codes:
+        raise ValueError("BaoStock historical 代码池为空，拒绝继续同步。")
+    return codes
+
+
+def _normalize_universe_mode(value: Any) -> str:
+    mode = str(value or "current").strip().lower() or "current"
+    if mode not in {"current", "historical"}:
+        raise ValueError(f"universe_mode 必须是 current 或 historical，当前值: {value!r}")
+    return mode
+
+
+def _normalize_universe_day(value: Any) -> str:
+    try:
+        normalized = normalize_request_value(value, "day")
+        if not normalized:
+            return ""
+        datetime.strptime(normalized, "%Y%m%d")
+        return normalized
+    except (TypeError, ValueError):
+        return ""
+
+
+def _normalize_required_universe_day(value: Any, field_name: str) -> str:
+    normalized = _normalize_universe_day(value)
+    if not normalized:
+        raise ValueError(f"historical 代码池要求有效的 {field_name}，当前值: {value!r}")
+    return normalized
 
 
 def run_single_task(args: SyncArgs, provider: BaoStockProvider, repository: BaoStockRepository) -> int:
@@ -471,7 +547,7 @@ CONFIG_TOP_LEVEL_KEYS = frozenset(
     {"source", "runtime_path", "log_level", "continue_on_error", "database", "defaults", "tasks"}
 )
 CONFIG_DEFAULT_KEYS = frozenset(
-    {"codes", "begin_date", "end_date", "day", "year", "quarter", "year_type", "adjustflag", "frequency", "limit", "force", "continue_on_error"}
+    {"codes", "begin_date", "end_date", "day", "year", "quarter", "year_type", "adjustflag", "frequency", "universe_mode", "limit", "force", "continue_on_error"}
 )
 CONFIG_TASK_KEYS = frozenset({"task", "enabled"} | CONFIG_DEFAULT_KEYS)
 
@@ -541,6 +617,7 @@ def load_execution_plan_from_toml(path: str, *, log_level_override: str | None =
                 runtime_path=str(data.get("runtime_path") or "").strip() or None,
                 database=str(data.get("database") or "baostock").strip() or "baostock",
                 log_level=str(log_level_override or data.get("log_level") or "INFO").strip() or "INFO",
+                universe_mode=_normalize_universe_mode(merged.get("universe_mode", "current")),
             )
         )
 

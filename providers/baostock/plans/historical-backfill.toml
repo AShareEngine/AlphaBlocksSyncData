@@ -1,0 +1,21 @@
+# BaoStock 历史股票池日线回补配置
+#
+# 使用与请求区间有上市时间交集的完整历史股票池，包含区间内已退市股票。
+# 建议先通过 --codes 小样本探针确认 BaoStock 源站可用，再运行本计划。
+
+source = "baostock"
+log_level = "INFO"
+continue_on_error = true
+database = "baostock"
+
+[defaults]
+limit = 0
+force = true
+continue_on_error = true
+
+[[tasks]]
+task = "daily_kline"
+enabled = true
+begin_date = 20200101
+end_date = 20241231
+universe_mode = "historical"

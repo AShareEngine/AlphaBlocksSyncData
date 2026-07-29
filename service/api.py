@@ -9,7 +9,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import yaml
 from fastapi import FastAPI, HTTPException, Query
@@ -225,6 +225,8 @@ class RunTaskRequest(BaseModel):
     resume: bool = False
     adjustflag: Optional[str] = None
     frequency: Optional[str] = None
+    universe_mode: Optional[Literal["current", "historical"]] = None
+    continue_on_error: bool = False
     log_level: Optional[str] = None
     runtime_path: Optional[str] = None
 
@@ -1115,6 +1117,8 @@ def run_task(request: RunTaskRequest):
                 resume=request.resume,
                 adjustflag=request.adjustflag,
                 frequency=request.frequency,
+                universe_mode=request.universe_mode,
+                continue_on_error=request.continue_on_error,
                 log_level=request.log_level,
                 runtime_path=request.runtime_path,
             )

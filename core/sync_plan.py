@@ -38,6 +38,7 @@ STRING_FIELDS = frozenset(
         "year_type",
         "adjustflag",
         "frequency",
+        "universe_mode",
     }
 )
 
