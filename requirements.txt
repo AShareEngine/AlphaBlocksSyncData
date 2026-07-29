@@ -3,6 +3,7 @@ clickhouse-connect
 fastapi
 httpx
 pandas
+tables
 pydantic
 PyYAML
 uvicorn

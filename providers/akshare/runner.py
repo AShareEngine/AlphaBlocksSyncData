@@ -36,6 +36,8 @@ from sync_data_system.toml_compat import tomllib
 
 logger = logging.getLogger(__name__)
 
+MAX_CONSECUTIVE_SYMBOL_FAILURES = 5
+
 
 @dataclass(frozen=True)
 class SyncArgs:
@@ -171,7 +173,7 @@ def run_registered_task(probe: Any) -> int:
         fields=str(probe.input_fields or "").strip(),
         limit=max(0, int(probe.limit or 0)),
         force=bool(probe.force),
-        continue_on_error=False,
+        continue_on_error=True,
         runtime_path=probe.runtime_path,
         database=str(probe.database or "akshare"),
         log_level=str(probe.log_level or "INFO"),
@@ -249,9 +251,21 @@ def _execute_task(
         ]
         if unresolved:
             preview = ",".join(unresolved[:10])
+            logger.warning(
+                "AKShare minute symbols without Eastmoney market code will be skipped "
+                "count=%s preview=%s",
+                len(unresolved),
+                preview,
+            )
+            symbols = [
+                item
+                for item in symbols
+                if re.match(r"^\d+\..+$", str(item.get("em_code") or ""))
+            ]
+        if not symbols:
             raise ValueError(
-                "AKShare 美股分钟线只能使用东方财富市场代码；stock_us_spot_em 当前不可用。"
-                f"请配置 sync.akshare.proxy，或显式传入类似 105.AAPL 的代码。未解析代码: {preview}"
+                "AKShare 美股分钟线没有可用的东方财富市场代码；"
+                "请先同步最新 us_spot，或显式传入类似 105.AAPL 的代码。"
             )
 
     if args.task == "us_daily_kline":
@@ -383,6 +397,7 @@ def _run_daily_task(
     total = 0
     succeeded = 0
     failures: list[str] = []
+    consecutive_failures = 0
     for item in symbols:
         symbol = item["symbol"]
         effective_start = _effective_start(
@@ -404,11 +419,18 @@ def _run_daily_task(
             if cursor is not None:
                 repository.upsert_task_cursor(args.task, symbol, cursor)
             succeeded += 1
+            consecutive_failures = 0
         except Exception as exc:
             if not args.continue_on_error:
                 raise
             failures.append(f"{symbol}: {exc}")
+            consecutive_failures += 1
             logger.exception("AKShare symbol failed task=%s symbol=%s", args.task, symbol)
+            _raise_if_failure_circuit_open(
+                args.task,
+                consecutive_failures=consecutive_failures,
+                failures=failures,
+            )
     _raise_if_all_failed(args.task, succeeded=succeeded, failures=failures)
     return total
 
@@ -422,17 +444,40 @@ def _run_per_symbol(
     total = 0
     succeeded = 0
     failures: list[str] = []
+    consecutive_failures = 0
     for item in symbols:
         try:
             total += repository.save_frame(args.task, fetcher(item))
             succeeded += 1
+            consecutive_failures = 0
         except Exception as exc:
             if not args.continue_on_error:
                 raise
             failures.append(f"{item['symbol']}: {exc}")
+            consecutive_failures += 1
             logger.exception("AKShare symbol failed task=%s symbol=%s", args.task, item["symbol"])
+            _raise_if_failure_circuit_open(
+                args.task,
+                consecutive_failures=consecutive_failures,
+                failures=failures,
+            )
     _raise_if_all_failed(args.task, succeeded=succeeded, failures=failures)
     return total
+
+
+def _raise_if_failure_circuit_open(
+    task: str,
+    *,
+    consecutive_failures: int,
+    failures: list[str],
+) -> None:
+    if consecutive_failures < MAX_CONSECUTIVE_SYMBOL_FAILURES:
+        return
+    preview = "; ".join(failures[-MAX_CONSECUTIVE_SYMBOL_FAILURES:])
+    raise RuntimeError(
+        f"AKShare 任务 {task} 连续 {consecutive_failures} 个代码请求失败，"
+        f"已停止后续全市场请求: {preview}"
+    )
 
 
 def _run_index_task(

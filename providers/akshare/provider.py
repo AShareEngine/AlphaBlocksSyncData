@@ -230,11 +230,16 @@ class AkshareUSProvider:
             result["em_code"] = result["symbol"]
             result["market_id"] = _text_series(frame, "market", "市场")
             result["name"] = _coalesced_text_series(frame, "name", "cname", "名称")
+        classification_names = (
+            result["name"].fillna("").astype(str)
+            + " "
+            + _text_series(frame, "category", "证券类型", "类型")
+        )
         result["instrument_type"] = [
-            _instrument_type(symbol, name, market_id)
-            for symbol, name, market_id in zip(
+            _instrument_type(symbol, classification_name, market_id)
+            for symbol, classification_name, market_id in zip(
                 result["symbol"],
-                result["name"],
+                classification_names,
                 result["market_id"],
             )
         ]
@@ -256,6 +261,8 @@ class AkshareUSProvider:
         result["source"] = source
         result["fetched_at"] = fetched_at
         result = result[(result["em_code"] != "") & (result["symbol"] != "")].copy()
+        if source == "akshare:stock_us_spot":
+            result = result[result["last"].notna()]
         if not self.config.include_pink:
             result = result[result["instrument_type"] != "pink"]
         if self.config.common_stock_only:
@@ -347,12 +354,16 @@ class AkshareUSProvider:
                 if item is None:
                     if require_em_code:
                         missing.append(value)
-                        continue
-                    item = {"symbol": value, "em_code": ""}
+                    item = {"symbol": _symbol_from_em_code(value), "em_code": ""}
                 resolved.append(item)
             if missing:
                 preview = ",".join(missing[:10])
-                raise ValueError(f"AKShare 美股实时列表中找不到代码: {preview}")
+                logger.warning(
+                    "AKShare symbols missing from Eastmoney directory count=%s preview=%s; "
+                    "keeping plain symbols for available fallback sources",
+                    len(missing),
+                    preview,
+                )
 
         return _dedupe_symbols(resolved, limit=limit)
 
@@ -506,7 +517,7 @@ class AkshareUSProvider:
         statement_type: str,
         period_type: str,
     ) -> pd.DataFrame:
-        raw = self._run_call(
+        raw = self._run_optional_call(
             f"stock_financial_us_report_em:{symbol}:{statement_type}:{period_type}",
             lambda: self._akshare.stock_financial_us_report_em(
                 stock=symbol.replace(".", "_").replace("-", "_"),
@@ -548,7 +559,7 @@ class AkshareUSProvider:
         *,
         period_type: str,
     ) -> pd.DataFrame:
-        raw = self._run_call(
+        raw = self._run_optional_call(
             f"stock_financial_us_analysis_indicator_em:{symbol}:{period_type}",
             lambda: self._akshare.stock_financial_us_analysis_indicator_em(
                 symbol=symbol,
@@ -684,10 +695,11 @@ class AkshareUSProvider:
                     with _configured_proxy(self.config.proxy):
                         return operation()
                 except Exception as exc:
-                    if attempt >= self.config.retries:
+                    if not _is_retryable_akshare_error(exc) or attempt >= self.config.retries:
                         raise RuntimeError(
-                            f"AKShare 请求失败 request={label}；请检查上游接口连通性，"
-                            "必要时在 runtime.local.yaml 配置 sync.akshare.proxy。"
+                            f"AKShare 请求失败 request={label} error_type={type(exc).__name__}；"
+                            "连接或超时错误请检查 sync.akshare.proxy，数据解析错误请升级 AKShare "
+                            "或等待上游接口恢复。"
                         ) from exc
                     delay = self.config.retry_backoff_seconds * (2**attempt)
                     logger.warning(
@@ -704,6 +716,24 @@ class AkshareUSProvider:
                 finally:
                     self._last_request_at = time.monotonic()
         raise RuntimeError(f"AKShare request exhausted retries: {label}")
+
+    def _run_optional_call(self, label: str, operation: Callable[[], Any]) -> Any:
+        try:
+            return self._run_call(label, operation)
+        except RuntimeError as exc:
+            cause = exc.__cause__
+            if _is_missing_security_data_error(cause):
+                logger.warning(
+                    "AKShare security has no supported data request=%s error_type=%s; skipping",
+                    label,
+                    type(cause).__name__,
+                )
+                return pd.DataFrame()
+            if isinstance(cause, TypeError) and _looks_like_signature_error(cause):
+                raise RuntimeError(
+                    f"AKShare SDK 接口签名不兼容 request={label}；请升级实际运行任务的 AKShare。"
+                ) from exc
+            raise
 
     def _wait_for_request_slot(self) -> None:
         if self._last_request_at <= 0:
@@ -747,6 +777,29 @@ def _configured_proxy(proxy: str):
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+
+
+def _is_retryable_akshare_error(exc: Exception) -> bool:
+    return not isinstance(exc, (AttributeError, IndexError, KeyError, TypeError, ValueError))
+
+
+def _looks_like_signature_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "unexpected keyword argument",
+            "required positional argument",
+            "positional arguments but",
+            "got multiple values for argument",
+        )
+    )
+
+
+def _is_missing_security_data_error(exc: Exception | None) -> bool:
+    if isinstance(exc, (IndexError, KeyError)):
+        return True
+    return isinstance(exc, TypeError) and not _looks_like_signature_error(exc)
 
 
 def _instrument_type(symbol: str, name: str, market_id: str) -> str:

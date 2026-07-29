@@ -240,6 +240,28 @@ class _FailingEastmoneyAkshare(_FakeAkshare):
         raise ConnectionError("Eastmoney unavailable")
 
 
+class _MissingFinancialDataAkshare(_FakeAkshare):
+    def stock_financial_us_report_em(self, **kwargs):
+        self.calls.append(("stock_financial_us_report_em", kwargs))
+        raise TypeError("'NoneType' object is not subscriptable")
+
+    def stock_financial_us_analysis_indicator_em(self, **kwargs):
+        self.calls.append(("stock_financial_us_analysis_indicator_em", kwargs))
+        raise TypeError("'NoneType' object is not subscriptable")
+
+
+class _IncompatibleFinancialAkshare(_FakeAkshare):
+    def stock_financial_us_report_em(self, **kwargs):
+        self.calls.append(("stock_financial_us_report_em", kwargs))
+        raise TypeError("got an unexpected keyword argument 'stock'")
+
+
+class _FailingValuationAkshare(_FakeAkshare):
+    def stock_us_valuation_baidu(self, **kwargs):
+        self.calls.append(("stock_us_valuation_baidu", kwargs))
+        raise ValueError("upstream returned non-JSON response")
+
+
 class AkshareUSProviderTest(unittest.TestCase):
     def setUp(self) -> None:
         self.ak = _FakeAkshare()
@@ -274,6 +296,43 @@ class AkshareUSProviderTest(unittest.TestCase):
         self.assertEqual(frame.iloc[0]["source"], "akshare:stock_us_spot")
         self.assertEqual(frame.iloc[0]["last"], 225.0)
         self.assertEqual([call[0] for call in akshare.calls[:2]], ["stock_us_spot_em", "stock_us_spot"])
+
+    def test_sina_spot_excludes_etfs_and_inactive_symbols_from_common_stock_pool(self) -> None:
+        akshare = _FailingEastmoneyAkshare()
+        akshare.stock_us_spot = lambda: pd.DataFrame(
+            [
+                {
+                    "name": "Apple, Inc.",
+                    "category": "Technology",
+                    "symbol": "AAPL",
+                    "price": 225.0,
+                },
+                {
+                    "name": "Alternative Access First Priority CLO Bond ETF",
+                    "category": "ETF",
+                    "symbol": "AAA",
+                    "price": 25.0,
+                },
+                {
+                    "name": "Inactive Example Corp.",
+                    "category": "Technology",
+                    "symbol": "OLD",
+                    "price": None,
+                },
+            ]
+        )
+        provider = AkshareUSProvider(
+            AkshareUSConfig(
+                request_interval_seconds=0,
+                retries=0,
+                common_stock_only=True,
+            ),
+            akshare_module=akshare,
+        )
+
+        frame = provider.fetch_us_spot(snapshot_date=date(2024, 1, 5))
+
+        self.assertEqual(frame["symbol"].tolist(), ["AAPL"])
 
     def test_non_price_task_does_not_download_spot_for_explicit_symbols(self) -> None:
         symbols = self.provider.resolve_us_symbols(
@@ -364,6 +423,20 @@ class AkshareUSProviderTest(unittest.TestCase):
         self.assertEqual(daily_call["symbol"], "AAPL")
         self.assertEqual(daily_call["adjust"], "")
 
+    def test_unmapped_symbols_are_kept_for_daily_sina_fallback(self) -> None:
+        symbols = self.provider.resolve_us_symbols(
+            ["AAPL", "AABA"],
+            require_em_code=True,
+        )
+
+        self.assertEqual(
+            symbols,
+            [
+                {"symbol": "AAPL", "em_code": "105.AAPL"},
+                {"symbol": "AABA", "em_code": ""},
+            ],
+        )
+
     def test_financial_dates_accept_yyyymmdd_integers(self) -> None:
         statement = self.provider.fetch_us_financial_statement(
             "AAPL",
@@ -376,6 +449,39 @@ class AkshareUSProviderTest(unittest.TestCase):
         self.assertEqual(indicator.iloc[0]["report_date"], date(2024, 12, 31))
         self.assertEqual(indicator.iloc[0]["notice_date"], date(2025, 1, 30))
         self.assertEqual(indicator.iloc[0]["basic_eps"], 2.5)
+
+    def test_missing_financial_data_is_skipped_without_retry(self) -> None:
+        akshare = _MissingFinancialDataAkshare()
+        provider = AkshareUSProvider(
+            AkshareUSConfig(request_interval_seconds=0, retries=2),
+            akshare_module=akshare,
+        )
+
+        statement = provider.fetch_us_financial_statement(
+            "AAA",
+            statement_type="资产负债表",
+            period_type="年报",
+        )
+        indicator = provider.fetch_us_financial_indicator("AAA", period_type="年报")
+
+        self.assertTrue(statement.empty)
+        self.assertTrue(indicator.empty)
+        call_names = [item[0] for item in akshare.calls]
+        self.assertEqual(call_names.count("stock_financial_us_report_em"), 1)
+        self.assertEqual(call_names.count("stock_financial_us_analysis_indicator_em"), 1)
+
+    def test_financial_signature_error_is_reported_as_sdk_incompatibility(self) -> None:
+        provider = AkshareUSProvider(
+            AkshareUSConfig(request_interval_seconds=0, retries=2),
+            akshare_module=_IncompatibleFinancialAkshare(),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "SDK 接口签名不兼容"):
+            provider.fetch_us_financial_statement(
+                "AAPL",
+                statement_type="资产负债表",
+                period_type="年报",
+            )
 
     def test_profile_minute_valuation_and_index_are_normalized(self) -> None:
         profile = self.provider.fetch_us_company_profile("AAPL")
@@ -490,6 +596,69 @@ class AkshareUSRunnerTest(unittest.TestCase):
         self.assertFalse(any(call[0] == "stock_us_spot_em" for call in provider._akshare_module.calls))
         self.assertTrue(any(call[0].endswith("ak_us_company_profile") for call in client.insert_calls))
         self.assertTrue(any(call[0].endswith("ak_sync_task_log") for call in client.insert_calls))
+
+    def test_minute_task_skips_symbols_missing_eastmoney_market_code(self) -> None:
+        provider = AkshareUSProvider(
+            AkshareUSConfig(request_interval_seconds=0, retries=0),
+            akshare_module=_FakeAkshare(),
+        )
+        client = _FakeClickHouseClient()
+        repository = AkshareUSRepository(client, database="akshare")
+        args = SyncArgs(
+            task="us_minute_kline",
+            codes_raw="AAPL,AABA",
+            begin_date="20240103",
+            end_date="20240103",
+            index_code="",
+            period="",
+            fields="",
+            limit=0,
+            force=True,
+            continue_on_error=False,
+            runtime_path=None,
+            database="akshare",
+            log_level="INFO",
+        )
+
+        inserted = run_sync_args(args, provider, repository)
+
+        self.assertEqual(inserted, 1)
+        minute_calls = [
+            item for item in provider._akshare_module.calls if item[0] == "stock_us_hist_min_em"
+        ]
+        self.assertEqual(len(minute_calls), 1)
+        self.assertEqual(minute_calls[0][1]["symbol"], "105.AAPL")
+
+    def test_per_symbol_task_stops_after_five_consecutive_upstream_failures(self) -> None:
+        akshare = _FailingValuationAkshare()
+        provider = AkshareUSProvider(
+            AkshareUSConfig(request_interval_seconds=0, retries=2),
+            akshare_module=akshare,
+        )
+        repository = AkshareUSRepository(_FakeClickHouseClient(), database="akshare")
+        args = SyncArgs(
+            task="us_valuation",
+            codes_raw="A,B,C,D,E,F",
+            begin_date="",
+            end_date="",
+            index_code="",
+            period="近一年",
+            fields="总市值",
+            limit=0,
+            force=True,
+            continue_on_error=True,
+            runtime_path=None,
+            database="akshare",
+            log_level="INFO",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "连续 5 个代码请求失败"):
+            run_sync_args(args, provider, repository)
+
+        valuation_calls = [
+            item for item in akshare.calls if item[0] == "stock_us_valuation_baidu"
+        ]
+        self.assertEqual(len(valuation_calls), 5)
 
     def test_load_execution_plan(self) -> None:
         content = textwrap.dedent(

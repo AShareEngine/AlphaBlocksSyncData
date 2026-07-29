@@ -1,6 +1,6 @@
 # AKShare 美股数据接入
 
-`providers/akshare/` 按 AKShare 1.18.80 文档中的公开接口补充美股数据，不需要 API Key。数据写入独立的
+`providers/akshare/` 按 AKShare 1.18.81 文档中的公开接口补充美股数据，不需要 API Key。数据写入独立的
 ClickHouse `akshare` 数据库，不会覆盖现有 `yfinance` 表。
 
 ## 数据任务和表
@@ -79,7 +79,13 @@ python3 scripts/run_provider_sync.py akshare.us_index_daily \
 股票池优先使用东方财富 `stock_us_spot_em`，失败时自动回退到新浪 `stock_us_spot`，再失败则使用
 新浪 `get_us_stock_name` 代码表。日线有东方财富市场代码时使用 `stock_us_hist`，否则自动回退到新浪
 `stock_us_daily`。分钟线目前只有东方财富接口，仍需要 `105.AAPL` 这种
-`市场编号.股票代码`；无法取得市场编号时应配置代理或显式传入代码。
+`市场编号.股票代码`；股票池中的退市、旧代码或其他无法映射的代码会被跳过，不再导致整个分钟线
+任务失败。
+
+财报和财务指标接口只支持东方财富有财务数据的公司证券。ETF、退市证券等接口返回空结果时会按
+“该代码无可用数据”跳过。逐代码请求如果连续 5 个代码都发生网络或解析错误，任务会提前熔断，
+避免上游整体不可用时继续请求数千个代码；是否继续执行后续任务仍由批处理的
+`continue_on_error` 配置决定。
 
 按计划运行：
 
@@ -98,6 +104,8 @@ python3 scripts/run_provider_sync.py --config providers/akshare/plans/enrichment
   AKShare 或调整适配器。
 - 分钟行情接口只提供上游当前保留的近期数据，不能作为完整历史分钟库。
 - 公司资料、财报、财务指标和估值都是逐证券请求，不适合无节制地对全市场高频执行。
+- 美股估值使用百度网页接口。出现 `JSONDecodeError` 通常代表上游返回了非 JSON 页面或触发访问
+  限制，并非 ClickHouse 错误；该类解析错误不会重复重试，连续失败时会触发逐代码熔断。
 - 该 provider 没有把 ETF 代表行业伪装成官方行业/概念分类。板块和概念仍保留现有 yfinance
   provider 的 ETF 口径；如需正式成分关系，应再接入有明确分类与成分定义的数据源。
 
