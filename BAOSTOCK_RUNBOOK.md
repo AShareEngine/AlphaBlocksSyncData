@@ -176,6 +176,19 @@ python3 scripts/run_provider_sync.py baostock.balance_data --codes 600000.SH --y
 python3 scripts/run_provider_sync.py baostock.cash_flow_data --codes 600000.SH --year 2023 --quarter 3
 ```
 
+季频财务历史回填（2010Q1 至最新已结束季度，包含历史退市股票）：
+
+```bash
+python3 scripts/run_provider_sync.py \
+  --config providers/baostock/plans/historical-financial-backfill.toml
+```
+
+该计划会展开 `profit_data`、`operation_data`、`growth_data`、`dupont_data`、
+`balance_data`、`cash_flow_data` 的全部季度，并按年度补齐 `dividend_data`。
+历史已结束期间启用 `resume`，任务跨天或中断后重新执行时，会按
+`task + code + year + quarter` 跳过任何日期已经成功的请求。当前仍处于披露期的
+年度/季度不启用永久跳过，重新执行计划可以刷新后来披露的数据。
+
 宏观数据：
 
 ```bash

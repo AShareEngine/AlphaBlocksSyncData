@@ -62,6 +62,7 @@ class BaoStockRepository:
         self.client = client
         self.database = str(database).strip() or "baostock"
         self.insert_batch_size = max(1, int(insert_batch_size))
+        self._historical_stock_codes_cache: dict[tuple[str, str, str, str], list[str]] = {}
 
     def ensure_tables(self) -> None:
         self.client.command(f"CREATE DATABASE IF NOT EXISTS {self.database}")
@@ -151,6 +152,18 @@ class BaoStockRepository:
         count = self.client.query_value(sql, {"task_name": task_name, "scope_key": scope_key, "run_date": run_date})
         return bool(count)
 
+    def has_successful_sync(self, task_name: str, scope_key: str) -> bool:
+        """Return whether this exact request scope succeeded on any prior run date."""
+        sql = f"""
+        SELECT count()
+        FROM {self._table_ref(BS_SYNC_TASK_LOG_TABLE)}
+        WHERE task_name = {{task_name:String}}
+          AND scope_key = {{scope_key:String}}
+          AND status = 'success'
+        """
+        count = self.client.query_value(sql, {"task_name": task_name, "scope_key": scope_key})
+        return bool(count)
+
     def has_task_data_for_request(self, task: str, request_meta: Mapping[str, Any]) -> bool:
         spec = BAOSTOCK_TASK_SPECS[task]
         clauses: list[str] = []
@@ -211,6 +224,10 @@ class BaoStockRepository:
         security_type: str = "EXTRA_STOCK_A",
     ) -> list[str]:
         """Load the AmazingData historical A-share universe for an interval."""
+        cache_key = (begin_date, end_date, source_table, security_type)
+        cached = self._historical_stock_codes_cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
         sql = f"""
         SELECT code
         FROM {source_table}
@@ -228,9 +245,11 @@ class BaoStockRepository:
                 "end_date": to_ch_date(end_date),
             },
         )
-        return normalize_baostock_code_list(
+        codes = normalize_baostock_code_list(
             [str(row[0]) for row in rows if row and row[0] is not None]
         )
+        self._historical_stock_codes_cache[cache_key] = list(codes)
+        return codes
 
     def load_daily_kline_codes(self, begin_date: str, end_date: str) -> list[str]:
         """Load codes that already have at least one daily row in the interval."""

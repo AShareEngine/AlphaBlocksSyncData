@@ -49,6 +49,7 @@ class SyncArgs:
     database: str
     log_level: str
     universe_mode: str = "current"
+    resume: bool = False
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,7 @@ def parse_args() -> SyncArgs:
     parser.add_argument("--limit", type=int, default=0, help="仅同步前 N 个 code，0 表示不限制")
     parser.add_argument("--force", action="store_true", help="忽略当天成功日志，强制重跑")
     parser.add_argument("--continue-on-error", action="store_true", help="单 code 失败后继续后续 code")
+    parser.add_argument("--resume", action="store_true", help="跳过任意日期已经成功的完整请求")
     parser.add_argument("--runtime-path", default=None, help="可选 runtime.local.yaml 路径")
     parser.add_argument("--database", default="baostock", help="ClickHouse 目标 database，默认 baostock")
     parser.add_argument("--log-level", default="INFO")
@@ -120,6 +122,7 @@ def parse_args() -> SyncArgs:
         database=str(args.database or "baostock").strip() or "baostock",
         log_level=str(args.log_level or "INFO").strip() or "INFO",
         universe_mode=_normalize_universe_mode(args.universe_mode),
+        resume=bool(args.resume),
     )
 
 
@@ -227,6 +230,7 @@ def run_registered_task(probe: Any) -> int:
         database=str(probe.database or "baostock"),
         log_level=str(probe.log_level or "INFO"),
         universe_mode=_normalize_universe_mode(getattr(probe, "input_universe_mode", None)),
+        resume=bool(getattr(probe, "resume", False)),
     )
     inserted = run_sync_args(args, probe.context.provider, probe.context.repository)
     probe.set_row_count(inserted)
@@ -289,7 +293,11 @@ def resolve_historical_code_list(
     repository: BaoStockRepository | None,
 ) -> list[str]:
     spec = BAOSTOCK_TASK_SPECS[args.task]
-    if not spec.uses_begin_end and _normalize_universe_mode(args.universe_mode) != "missing_historical":
+    if (
+        not spec.uses_begin_end
+        and not spec.uses_year
+        and _normalize_universe_mode(args.universe_mode) != "missing_historical"
+    ):
         raise ValueError(f"BaoStock 任务 {args.task} 不支持 historical 代码池：任务没有日期区间。")
     begin_day = _normalize_required_universe_day(args.begin_date, "begin_date")
     end_day = _normalize_universe_day(args.end_date) or default_request_end("day")
@@ -366,9 +374,13 @@ def run_single_task(args: SyncArgs, provider: BaoStockProvider, repository: BaoS
     scope_key = build_scope_key(args.task, request_meta)
     run_date = date.today()
     target_table = f"{args.database}.{BAOSTOCK_TASK_SPECS[args.task].table_name}"
-    if not args.force and repository.has_successful_sync_today(args.task, scope_key, run_date):
-        logger.info("skip task=%s scope=%s reason=already_success_today", args.task, scope_key)
-        return 0
+    if not args.force:
+        if args.resume and repository.has_successful_sync(args.task, scope_key):
+            logger.info("skip task=%s scope=%s reason=already_success_resume", args.task, scope_key)
+            return 0
+        if not args.resume and repository.has_successful_sync_today(args.task, scope_key, run_date):
+            logger.info("skip task=%s scope=%s reason=already_success_today", args.task, scope_key)
+            return 0
 
     started_at = datetime.now(timezone.utc).replace(tzinfo=None)
     try:
@@ -434,9 +446,19 @@ def run_code_task(args: SyncArgs, provider: BaoStockProvider, repository: BaoSto
             logger.info("skip task=%s progress=%s/%s code=%s reason=no_incremental_window", args.task, index, len(codes), code)
             continue
         scope_key = build_scope_key(args.task, request_meta)
-        if not args.force and repository.has_successful_sync_today(args.task, scope_key, run_date):
-            logger.info("skip task=%s progress=%s/%s code=%s reason=already_success_today", args.task, index, len(codes), code)
-            continue
+        if not args.force:
+            if args.resume and repository.has_successful_sync(args.task, scope_key):
+                logger.info(
+                    "skip task=%s progress=%s/%s code=%s reason=already_success_resume",
+                    args.task,
+                    index,
+                    len(codes),
+                    code,
+                )
+                continue
+            if not args.resume and repository.has_successful_sync_today(args.task, scope_key, run_date):
+                logger.info("skip task=%s progress=%s/%s code=%s reason=already_success_today", args.task, index, len(codes), code)
+                continue
 
         started_at = datetime.now(timezone.utc).replace(tzinfo=None)
         try:
@@ -571,7 +593,26 @@ CONFIG_TOP_LEVEL_KEYS = frozenset(
     {"source", "runtime_path", "log_level", "continue_on_error", "database", "defaults", "tasks"}
 )
 CONFIG_DEFAULT_KEYS = frozenset(
-    {"codes", "begin_date", "end_date", "day", "year", "quarter", "year_type", "adjustflag", "frequency", "universe_mode", "limit", "force", "continue_on_error"}
+    {
+        "codes",
+        "begin_date",
+        "end_date",
+        "day",
+        "year",
+        "quarter",
+        "begin_year",
+        "end_year",
+        "begin_quarter",
+        "end_quarter",
+        "year_type",
+        "adjustflag",
+        "frequency",
+        "universe_mode",
+        "limit",
+        "force",
+        "resume",
+        "continue_on_error",
+    }
 )
 CONFIG_TASK_KEYS = frozenset({"task", "enabled"} | CONFIG_DEFAULT_KEYS)
 
@@ -623,27 +664,30 @@ def load_execution_plan_from_toml(path: str, *, log_level_override: str | None =
         if task_name not in BAOSTOCK_TASK_CHOICES:
             raise ValueError(f"tasks[{index}].task 非法: {task_name!r}")
 
-        task_specs.append(
-            SyncArgs(
-                task=task_name,
-                codes_raw=_normalize_config_codes(merged.get("codes"), field_name=f"tasks[{index}].codes"),
-                begin_date=str(merged.get("begin_date") or "").strip(),
-                end_date=str(merged.get("end_date") or "").strip(),
-                day=str(merged.get("day") or "").strip(),
-                year=_as_optional_int(merged.get("year"), field_name=f"tasks[{index}].year"),
-                quarter=_as_optional_int(merged.get("quarter"), field_name=f"tasks[{index}].quarter"),
-                year_type=str(merged.get("year_type") or "").strip(),
-                adjustflag=str(merged.get("adjustflag") or "3").strip() or "3",
-                frequency=str(merged.get("frequency") or "d").strip() or "d",
-                limit=_as_non_negative_int(merged.get("limit", 0), field_name=f"tasks[{index}].limit"),
-                force=_as_bool(merged.get("force", False), field_name=f"tasks[{index}].force"),
-                continue_on_error=_as_bool(merged.get("continue_on_error", False), field_name=f"tasks[{index}].continue_on_error"),
-                runtime_path=str(data.get("runtime_path") or "").strip() or None,
-                database=str(data.get("database") or "baostock").strip() or "baostock",
-                log_level=str(log_level_override or data.get("log_level") or "INFO").strip() or "INFO",
-                universe_mode=_normalize_universe_mode(merged.get("universe_mode", "current")),
+        periods = _expand_config_periods(task_name, merged, task_index=index)
+        for year, quarter in periods:
+            task_specs.append(
+                SyncArgs(
+                    task=task_name,
+                    codes_raw=_normalize_config_codes(merged.get("codes"), field_name=f"tasks[{index}].codes"),
+                    begin_date=str(merged.get("begin_date") or "").strip(),
+                    end_date=str(merged.get("end_date") or "").strip(),
+                    day=str(merged.get("day") or "").strip(),
+                    year=year,
+                    quarter=quarter,
+                    year_type=str(merged.get("year_type") or "").strip(),
+                    adjustflag=str(merged.get("adjustflag") or "3").strip() or "3",
+                    frequency=str(merged.get("frequency") or "d").strip() or "d",
+                    limit=_as_non_negative_int(merged.get("limit", 0), field_name=f"tasks[{index}].limit"),
+                    force=_as_bool(merged.get("force", False), field_name=f"tasks[{index}].force"),
+                    continue_on_error=_as_bool(merged.get("continue_on_error", False), field_name=f"tasks[{index}].continue_on_error"),
+                    runtime_path=str(data.get("runtime_path") or "").strip() or None,
+                    database=str(data.get("database") or "baostock").strip() or "baostock",
+                    log_level=str(log_level_override or data.get("log_level") or "INFO").strip() or "INFO",
+                    universe_mode=_normalize_universe_mode(merged.get("universe_mode", "current")),
+                    resume=_as_bool(merged.get("resume", False), field_name=f"tasks[{index}].resume"),
+                )
             )
-        )
 
     if not task_specs:
         raise ValueError("配置文件中的 [[tasks]] 全部被禁用，无法执行。")
@@ -666,6 +710,59 @@ def _normalize_config_codes(value: Any, field_name: str) -> str:
         codes = [str(item).strip() for item in value if str(item).strip()]
         return ",".join(codes)
     raise ValueError(f"{field_name} 必须是字符串或字符串数组。")
+
+
+def _expand_config_periods(
+    task_name: str,
+    values: dict[str, Any],
+    *,
+    task_index: int,
+) -> list[tuple[int | None, int | None]]:
+    prefix = f"tasks[{task_index}]"
+    range_keys = ("begin_year", "end_year", "begin_quarter", "end_quarter")
+    has_range = any(values.get(key) not in (None, "") for key in range_keys)
+    if not has_range:
+        year = _as_optional_int(values.get("year"), field_name=f"{prefix}.year")
+        quarter = _as_optional_int(values.get("quarter"), field_name=f"{prefix}.quarter")
+        if quarter is not None and quarter not in (1, 2, 3, 4):
+            raise ValueError(f"{prefix}.quarter 必须是 1、2、3、4。")
+        return [(year, quarter)]
+
+    if values.get("year") not in (None, "") or values.get("quarter") not in (None, ""):
+        raise ValueError(f"{prefix} 不能同时配置 year/quarter 和 begin/end 年季度范围。")
+
+    spec = BAOSTOCK_TASK_SPECS[task_name]
+    if not spec.uses_year:
+        raise ValueError(f"{prefix} 任务 {task_name} 不支持年度范围。")
+
+    begin_year = _as_optional_int(values.get("begin_year"), field_name=f"{prefix}.begin_year")
+    end_year = _as_optional_int(values.get("end_year"), field_name=f"{prefix}.end_year")
+    if begin_year is None or end_year is None:
+        raise ValueError(f"{prefix} 年度范围必须同时配置 begin_year 和 end_year。")
+    if begin_year > end_year:
+        raise ValueError(f"{prefix} 年度范围非法 begin_year={begin_year} end_year={end_year}。")
+
+    if not spec.uses_quarter:
+        if values.get("begin_quarter") not in (None, "") or values.get("end_quarter") not in (None, ""):
+            raise ValueError(f"{prefix} 任务 {task_name} 不支持季度范围。")
+        return [(year, None) for year in range(begin_year, end_year + 1)]
+
+    begin_quarter = _as_optional_int(values.get("begin_quarter"), field_name=f"{prefix}.begin_quarter") or 1
+    end_quarter = _as_optional_int(values.get("end_quarter"), field_name=f"{prefix}.end_quarter") or 4
+    if begin_quarter not in (1, 2, 3, 4) or end_quarter not in (1, 2, 3, 4):
+        raise ValueError(f"{prefix} 季度范围必须是 1、2、3、4。")
+    if (begin_year, begin_quarter) > (end_year, end_quarter):
+        raise ValueError(
+            f"{prefix} 季度范围非法 begin={begin_year}Q{begin_quarter} "
+            f"end={end_year}Q{end_quarter}。"
+        )
+
+    periods: list[tuple[int | None, int | None]] = []
+    for year in range(begin_year, end_year + 1):
+        first_quarter = begin_quarter if year == begin_year else 1
+        last_quarter = end_quarter if year == end_year else 4
+        periods.extend((year, quarter) for quarter in range(first_quarter, last_quarter + 1))
+    return periods
 
 
 def _as_optional_int(value: Any, field_name: str) -> int | None:

@@ -1,0 +1,108 @@
+source = "baostock"
+database = "baostock"
+log_level = "INFO"
+continue_on_error = true
+
+# 使用 2010-01-01 至执行当天的历史 A 股代码并集，包含已经退市的股票。
+# resume=true 会跨自然日跳过相同 code/year/quarter 已成功的请求，适合长时间后台回填。
+[defaults]
+begin_date = 20100101
+universe_mode = "historical"
+continue_on_error = true
+resume = true
+force = false
+limit = 0
+
+# 分红数据：2010-2025 已完整结束，允许断点续跑。
+[[tasks]]
+task = "dividend_data"
+begin_year = 2010
+end_year = 2025
+year_type = "report"
+
+# 2026 年仍在持续更新，不做永久断点跳过；重新执行配置时会再次刷新。
+[[tasks]]
+task = "dividend_data"
+year = 2026
+year_type = "report"
+resume = false
+
+# 六张季频财务表：历史完整季度回填到 2026Q1。
+[[tasks]]
+task = "profit_data"
+begin_year = 2010
+begin_quarter = 1
+end_year = 2026
+end_quarter = 1
+
+[[tasks]]
+task = "operation_data"
+begin_year = 2010
+begin_quarter = 1
+end_year = 2026
+end_quarter = 1
+
+[[tasks]]
+task = "growth_data"
+begin_year = 2010
+begin_quarter = 1
+end_year = 2026
+end_quarter = 1
+
+[[tasks]]
+task = "dupont_data"
+begin_year = 2010
+begin_quarter = 1
+end_year = 2026
+end_quarter = 1
+
+[[tasks]]
+task = "balance_data"
+begin_year = 2010
+begin_quarter = 1
+end_year = 2026
+end_quarter = 1
+
+[[tasks]]
+task = "cash_flow_data"
+begin_year = 2010
+begin_quarter = 1
+end_year = 2026
+end_quarter = 1
+
+# 2026Q2 已结束但财报仍在披露期。先同步当前可得数据，并允许以后重新执行刷新。
+[[tasks]]
+task = "profit_data"
+year = 2026
+quarter = 2
+resume = false
+
+[[tasks]]
+task = "operation_data"
+year = 2026
+quarter = 2
+resume = false
+
+[[tasks]]
+task = "growth_data"
+year = 2026
+quarter = 2
+resume = false
+
+[[tasks]]
+task = "dupont_data"
+year = 2026
+quarter = 2
+resume = false
+
+[[tasks]]
+task = "balance_data"
+year = 2026
+quarter = 2
+resume = false
+
+[[tasks]]
+task = "cash_flow_data"
+year = 2026
+quarter = 2
+resume = false
