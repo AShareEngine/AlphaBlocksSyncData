@@ -684,7 +684,11 @@ class InfoData:
             date_field="report_date",
             code_list=normalized_codes,
         )
-        sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
+        sync_start = self._resolve_historical_revision_sync_start_date(
+            latest_date=latest_date,
+            requested_begin_date=begin,
+            force=force,
+        )
         return self._run_sync_job(
             task_name="get_balance_sheet",
             scope_key=scope_key,
@@ -716,7 +720,11 @@ class InfoData:
             date_field="report_date",
             code_list=normalized_codes,
         )
-        sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
+        sync_start = self._resolve_historical_revision_sync_start_date(
+            latest_date=latest_date,
+            requested_begin_date=begin,
+            force=force,
+        )
         return self._run_sync_job(
             task_name="get_cash_flow",
             scope_key=scope_key,
@@ -1053,11 +1061,7 @@ class InfoData:
             date_field="trade_date",
             code_list=normalized_codes,
         )
-        sync_start = self._resolve_historical_revision_sync_start_date(
-            latest_date=latest_date,
-            requested_begin_date=begin,
-            force=force,
-        )
+        sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
         if self._skip_if_empty_incremental_window(
             task_name="get_treasury_yield",
             scope_key=scope_key,
@@ -1275,11 +1279,7 @@ class InfoData:
             date_field="trade_date",
             code_list=normalized_codes,
         )
-        sync_start = self._resolve_historical_revision_sync_start_date(
-            latest_date=latest_date,
-            requested_begin_date=begin,
-            force=force,
-        )
+        sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
         if self._skip_if_empty_incremental_window(
             task_name="get_block_trading",
             scope_key=scope_key,
@@ -1443,7 +1443,11 @@ class InfoData:
             date_field="holder_enddate",
             code_list=normalized_codes,
         )
-        sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
+        sync_start = self._resolve_historical_revision_sync_start_date(
+            latest_date=latest_date,
+            requested_begin_date=begin,
+            force=force,
+        )
         return self._run_sync_job(
             task_name="get_share_holder",
             scope_key=scope_key,
@@ -1475,7 +1479,11 @@ class InfoData:
             date_field="holder_enddate",
             code_list=normalized_codes,
         )
-        sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
+        sync_start = self._resolve_historical_revision_sync_start_date(
+            latest_date=latest_date,
+            requested_begin_date=begin,
+            force=force,
+        )
         return self._run_sync_job(
             task_name="get_holder_num",
             scope_key=scope_key,
@@ -1539,7 +1547,11 @@ class InfoData:
             date_field="ann_date",
             code_list=normalized_codes,
         )
-        sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
+        sync_start = self._resolve_force_aware_sync_start_date(
+            latest_date=latest_date,
+            requested_begin_date=begin,
+            force=force,
+        )
         return self._run_sync_job(
             task_name="get_equity_pledge_freeze",
             scope_key=scope_key,
@@ -1571,7 +1583,11 @@ class InfoData:
             date_field="list_date",
             code_list=normalized_codes,
         )
-        sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
+        sync_start = self._resolve_historical_revision_sync_start_date(
+            latest_date=latest_date,
+            requested_begin_date=begin,
+            force=force,
+        )
         return self._run_sync_job(
             task_name="get_equity_restricted",
             scope_key=scope_key,

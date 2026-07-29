@@ -155,6 +155,7 @@ class _FakeClickHouseClient:
     def __init__(self) -> None:
         self.commands: list[str] = []
         self.insert_calls: list[tuple[str, list[str], list[tuple]]] = []
+        self.query_rows_calls: list[str] = []
         self.query_value_result = None
 
     def command(self, sql: str, parameters=None):
@@ -167,6 +168,7 @@ class _FakeClickHouseClient:
         return self.query_value_result
 
     def query_rows(self, sql: str, parameters=None):
+        self.query_rows_calls.append(sql)
         return []
 
 
@@ -209,6 +211,8 @@ class YFinanceProviderTest(unittest.TestCase):
                 "IBM|International Business Machines Corporation Common Stock|N|IBM|N|100|N|IBM",
                 "BRK.B|Berkshire Hathaway Inc. Class B Common Stock|N|BRK.B|N|100|N|BRK.B",
                 "BAC^A|Bank of America Preferred Stock|N|BAC^A|N|100|N|BAC^A",
+                "AHLpE|Aspen Insurance Depositary Shares representing Preference Shares|N|AHLpE|N|100|N|AHLpE",
+                "ATHpA|Athene Depositary Shares representing Preferred Stock|N|ATHpA|N|100|N|ATHpA",
                 "SPY|SPDR S&P 500 ETF Trust|P|SPY|Y|100|N|SPY",
                 "File Creation Time: 0728202618:00|||||||",
             )
