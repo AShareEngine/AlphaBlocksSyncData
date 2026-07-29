@@ -234,6 +234,34 @@ class YFinanceRepository:
         """
         return [str(row[0]).strip() for row in self.client.query_rows(sql) if row and str(row[0]).strip()]
 
+    def load_symbol_master(
+        self,
+        *,
+        limit: int = 0,
+        require_industry: bool = False,
+    ) -> pd.DataFrame:
+        columns = TASK_COLUMNS["symbol_master"]
+        limit_sql = f"LIMIT {int(limit)}" if limit > 0 else ""
+        industry_filter = (
+            "sector != '' OR industry_group != '' OR industry != ''"
+        )
+        latest_filter = f"WHERE {industry_filter}" if require_industry else ""
+        row_filter = f"AND ({industry_filter})" if require_industry else ""
+        sql = f"""
+        SELECT {", ".join(columns)}
+        FROM {self._table_ref(YFINANCE_TASK_SPECS['symbol_master'].table_name)} FINAL
+        WHERE snapshot_date = (
+            SELECT max(snapshot_date)
+            FROM {self._table_ref(YFINANCE_TASK_SPECS['symbol_master'].table_name)}
+            {latest_filter}
+        )
+        {row_filter}
+        ORDER BY symbol
+        {limit_sql}
+        """
+        rows = self.client.query_rows(sql)
+        return pd.DataFrame(rows, columns=list(columns))
+
     def load_latest_cursor(self, task: str, *, symbol: str | None = None) -> str | None:
         spec = YFINANCE_TASK_SPECS[task]
         if not spec.cursor_field:

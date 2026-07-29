@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import textwrap
 import unittest
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -69,6 +71,29 @@ class _FakeFinanceDatabase:
                     },
                 ]
             ).set_index("symbol")
+
+
+class _FailingFinanceDatabase:
+    select_calls = 0
+
+    class Equities:
+        def select(self):
+            _FailingFinanceDatabase.select_calls += 1
+            raise TimeoutError("raw.githubusercontent.com timed out")
+
+
+class _ProxyAwareFinanceDatabase:
+    proxy_snapshots: list[dict[str, str | None]] = []
+
+    class Equities:
+        def select(self):
+            _ProxyAwareFinanceDatabase.proxy_snapshots.append(
+                {
+                    "HTTP_PROXY": os.environ.get("HTTP_PROXY"),
+                    "HTTPS_PROXY": os.environ.get("HTTPS_PROXY"),
+                }
+            )
+            return _FakeFinanceDatabase.Equities().select()
 
 
 class _FakeFundsData:
@@ -206,6 +231,73 @@ class YFinanceProviderTest(unittest.TestCase):
         self.assertEqual(frame.loc[frame["symbol"] == "AAME", "industry"].iloc[0], "Insurance")
         self.assertEqual(frame.loc[frame["symbol"] == "BRK-B", "currency"].iloc[0], "USD")
         self.assertTrue((frame["source"] == "nasdaq_trader+financedatabase").all())
+
+    def test_finance_database_download_uses_runtime_proxy_and_restores_environment(self) -> None:
+        _ProxyAwareFinanceDatabase.proxy_snapshots = []
+        provider = YFinanceProvider(
+            YFinanceConfig(
+                proxy="http://127.0.0.1:7890",
+                active_symbols_only=False,
+            ),
+            finance_database_module=_ProxyAwareFinanceDatabase,
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "HTTP_PROXY": "http://old-http.example",
+                "HTTPS_PROXY": "http://old-https.example",
+            },
+            clear=False,
+        ):
+            frame = provider.fetch_symbol_master(snapshot_date=date(2026, 7, 28))
+            self.assertEqual(os.environ["HTTP_PROXY"], "http://old-http.example")
+            self.assertEqual(os.environ["HTTPS_PROXY"], "http://old-https.example")
+
+        self.assertFalse(frame.empty)
+        self.assertEqual(
+            _ProxyAwareFinanceDatabase.proxy_snapshots,
+            [
+                {
+                    "HTTP_PROXY": "http://127.0.0.1:7890",
+                    "HTTPS_PROXY": "http://127.0.0.1:7890",
+                }
+            ],
+        )
+
+    def test_symbol_master_falls_back_to_nasdaq_directory_when_github_is_unavailable(self) -> None:
+        _FailingFinanceDatabase.select_calls = 0
+        texts = {
+            "nasdaqlisted.txt": "\n".join(
+                (
+                    "Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares",
+                    "AAPL|Apple Inc. - Common Stock|Q|N|N|100|N|N",
+                    "File Creation Time: 0728202618:00|||||||",
+                )
+            ),
+            "otherlisted.txt": "\n".join(
+                (
+                    "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol",
+                    "IBM|International Business Machines Corporation Common Stock|N|IBM|N|100|N|IBM",
+                    "File Creation Time: 0728202618:00|||||||",
+                )
+            ),
+        }
+        provider = YFinanceProvider(
+            YFinanceConfig(active_symbols_only=True),
+            finance_database_module=_FailingFinanceDatabase,
+            url_text_loader=lambda url: next(
+                value for suffix, value in texts.items() if url.endswith(suffix)
+            ),
+        )
+
+        frame = provider.fetch_symbol_master(snapshot_date=date(2026, 7, 28))
+        industry = provider.fetch_industry_membership(symbol_master=frame)
+
+        self.assertEqual(frame["symbol"].tolist(), ["AAPL", "IBM"])
+        self.assertTrue((frame["source"] == "nasdaq_trader").all())
+        self.assertTrue(industry.empty)
+        self.assertEqual(_FailingFinanceDatabase.select_calls, 1)
 
     def test_daily_download_normalizes_multi_index_and_inclusive_end(self) -> None:
         frame = self.provider.fetch_daily(
@@ -345,6 +437,81 @@ class YFinanceRunnerTest(unittest.TestCase):
         cursor_call = next(call for call in client.insert_calls if call[0].endswith("yf_symbol_cursor"))
         self.assertEqual(cursor_call[2][0][1], "AAPL")
         self.assertEqual(cursor_call[2][0][2], date(2024, 1, 3))
+
+    def test_daily_task_reuses_stored_symbol_universe_without_finance_database(self) -> None:
+        _FailingFinanceDatabase.select_calls = 0
+        provider = YFinanceProvider(
+            YFinanceConfig(batch_size=10, request_interval_seconds=0),
+            yfinance_module=_FakeYFinance(),
+            finance_database_module=_FailingFinanceDatabase,
+        )
+        repository = YFinanceRepository(_FakeClickHouseClient(), database="yfinance")
+        args = SyncArgs(
+            task="daily_kline",
+            codes_raw="",
+            begin_date="20240102",
+            end_date="20240110",
+            limit=0,
+            force=True,
+            continue_on_error=False,
+            runtime_path=None,
+            database="yfinance",
+            log_level="INFO",
+        )
+
+        with patch.object(repository, "load_symbols", return_value=["AAPL"]):
+            inserted = run_sync_args(args, provider, repository)
+
+        self.assertEqual(inserted, 2)
+        self.assertEqual(_FailingFinanceDatabase.select_calls, 0)
+
+    def test_industry_task_reuses_stored_symbol_master_without_finance_database(self) -> None:
+        _FailingFinanceDatabase.select_calls = 0
+        provider = YFinanceProvider(
+            YFinanceConfig(request_interval_seconds=0),
+            finance_database_module=_FailingFinanceDatabase,
+        )
+        client = _FakeClickHouseClient()
+        repository = YFinanceRepository(client, database="yfinance")
+        stored_master = pd.DataFrame(
+            [
+                {
+                    "snapshot_date": date(2026, 7, 28),
+                    "symbol": "AAPL",
+                    "sector": "Technology",
+                    "industry_group": "Technology Hardware",
+                    "industry": "Consumer Electronics",
+                    "exchange": "NMS",
+                    "source": "nasdaq_trader+financedatabase",
+                }
+            ]
+        )
+        args = SyncArgs(
+            task="industry_membership",
+            codes_raw="",
+            begin_date="",
+            end_date="",
+            limit=0,
+            force=True,
+            continue_on_error=False,
+            runtime_path=None,
+            database="yfinance",
+            log_level="INFO",
+        )
+
+        with patch.object(
+            repository,
+            "load_symbol_master",
+            return_value=stored_master,
+        ) as load_symbol_master:
+            inserted = run_sync_args(args, provider, repository)
+
+        self.assertEqual(inserted, 1)
+        load_symbol_master.assert_called_once_with(limit=0, require_industry=True)
+        self.assertEqual(_FailingFinanceDatabase.select_calls, 0)
+        self.assertTrue(
+            any(call[0].endswith("yf_industry_membership") for call in client.insert_calls)
+        )
 
     def test_load_execution_plan(self) -> None:
         content = textwrap.dedent(

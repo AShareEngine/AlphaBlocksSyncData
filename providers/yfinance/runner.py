@@ -217,7 +217,21 @@ def _execute_task(
     if args.task == "symbol_master":
         return repository.save_frame("symbol_master", provider.fetch_symbol_master(limit=args.limit))
     if args.task == "industry_membership":
-        master = provider.fetch_symbol_master(limit=args.limit)
+        master = repository.load_symbol_master(
+            limit=args.limit,
+            require_industry=True,
+        )
+        if master.empty:
+            logger.info(
+                "No stored yfinance symbol master is available; downloading FinanceDatabase metadata."
+            )
+            master = provider.fetch_symbol_master(limit=args.limit)
+            repository.save_frame("symbol_master", master)
+        else:
+            logger.info(
+                "Using stored yfinance symbol master for industry membership rows=%s",
+                len(master),
+            )
         return repository.save_frame(
             "industry_membership",
             provider.fetch_industry_membership(symbol_master=master),
@@ -258,16 +272,15 @@ def resolve_symbol_list(
 ) -> list[str]:
     if args.codes_raw.strip():
         symbols = normalize_us_symbol_list(args.codes_raw.split(","))
-    elif provider.config.active_symbols_only:
-        master = provider.fetch_symbol_master(limit=args.limit)
-        repository.save_frame("symbol_master", master)
-        symbols = normalize_us_symbol_list(master["symbol"].tolist()) if not master.empty else []
     else:
         symbols = repository.load_symbols(limit=args.limit)
         if not symbols:
+            logger.info("No stored yfinance symbol universe is available; refreshing symbol master.")
             master = provider.fetch_symbol_master(limit=args.limit)
             repository.save_frame("symbol_master", master)
             symbols = normalize_us_symbol_list(master["symbol"].tolist()) if not master.empty else []
+        else:
+            logger.info("Using stored yfinance symbol universe rows=%s", len(symbols))
     if args.limit > 0:
         symbols = symbols[: args.limit]
     return symbols

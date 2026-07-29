@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import logging
+import os
 import random
 import re
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from io import StringIO
@@ -169,9 +171,11 @@ class YFinanceProvider:
         self._request_lock = threading.Lock()
         self._last_request_at = 0.0
         self._active_symbol_directory_cache: pd.DataFrame | None = None
+        self._finance_database_equities_cache: pd.DataFrame | None = None
 
     def close(self) -> None:
-        return None
+        self._active_symbol_directory_cache = None
+        self._finance_database_equities_cache = None
 
     def fetch_symbol_master(
         self,
@@ -179,31 +183,32 @@ class YFinanceProvider:
         limit: int = 0,
         snapshot_date: date | None = None,
     ) -> pd.DataFrame:
-        raw = self._finance_database.Equities().select()
-        frame = _as_dataframe(raw)
-        if frame.empty:
-            return _empty_frame((*SYMBOL_MASTER_COLUMNS, "snapshot_date", "source"))
-
-        frame = _normalize_columns(frame)
-        if "symbol" not in frame.columns:
-            first_column = str(frame.columns[0]) if len(frame.columns) else ""
-            if first_column in {"index", "ticker", "code"}:
-                frame = frame.rename(columns={first_column: "symbol"})
-        if "symbol" not in frame.columns:
-            raise ValueError("FinanceDatabase equities 数据缺少 symbol 字段。")
-
-        frame["symbol"] = frame["symbol"].map(normalize_us_symbol)
-        frame = frame[frame["symbol"] != ""].copy()
-        frame = _ensure_columns(frame, SYMBOL_MASTER_COLUMNS)
-        frame = frame.loc[:, list(SYMBOL_MASTER_COLUMNS)]
         source = "financedatabase"
+        try:
+            frame = self._load_finance_database_equities()
+        except Exception as exc:
+            if not self.config.active_symbols_only:
+                raise
+            logger.warning(
+                "FinanceDatabase equities unavailable; using Nasdaq Trader directory "
+                "without sector/industry metadata: %s",
+                exc,
+            )
+            frame = _empty_frame(SYMBOL_MASTER_COLUMNS)
+            source = "nasdaq_trader"
+
         if self.config.active_symbols_only:
+            if frame.empty:
+                source = "nasdaq_trader"
             frame = _merge_active_symbol_directory(
                 self._load_active_symbol_directory(),
                 frame,
             )
-            source = "nasdaq_trader+financedatabase"
+            if source == "financedatabase":
+                source = "nasdaq_trader+financedatabase"
         else:
+            if frame.empty:
+                return _empty_frame((*SYMBOL_MASTER_COLUMNS, "snapshot_date", "source"))
             frame = self._filter_us_listings(frame)
             frame = frame.drop_duplicates(subset=["symbol"], keep="first").sort_values("symbol")
         if limit > 0:
@@ -235,8 +240,46 @@ class YFinanceProvider:
             return _empty_frame(columns)
         result = _ensure_columns(master.copy(), columns)
         result = result.loc[:, list(columns)]
+        classification = (
+            result["sector"].fillna("").astype(str).str.strip()
+            + result["industry_group"].fillna("").astype(str).str.strip()
+            + result["industry"].fillna("").astype(str).str.strip()
+        )
+        result = result[classification != ""].copy()
+        if result.empty:
+            logger.warning(
+                "No sector/industry metadata is available; industry membership will be empty."
+            )
+            return _empty_frame(columns)
         result["source"] = "financedatabase"
         return result.reset_index(drop=True)
+
+    def _load_finance_database_equities(self) -> pd.DataFrame:
+        if self._finance_database_equities_cache is not None:
+            return self._finance_database_equities_cache.copy()
+
+        with _configured_http_proxy(self.config.proxy):
+            raw = self._finance_database.Equities().select()
+        frame = _as_dataframe(raw)
+        if frame.empty:
+            normalized = _empty_frame(SYMBOL_MASTER_COLUMNS)
+            self._finance_database_equities_cache = normalized
+            return normalized.copy()
+
+        frame = _normalize_columns(frame)
+        if "symbol" not in frame.columns:
+            first_column = str(frame.columns[0]) if len(frame.columns) else ""
+            if first_column in {"index", "ticker", "code"}:
+                frame = frame.rename(columns={first_column: "symbol"})
+        if "symbol" not in frame.columns:
+            raise ValueError("FinanceDatabase equities 数据缺少 symbol 字段。")
+
+        frame["symbol"] = frame["symbol"].map(normalize_us_symbol)
+        frame = frame[frame["symbol"] != ""].copy()
+        frame = _ensure_columns(frame, SYMBOL_MASTER_COLUMNS)
+        normalized = frame.loc[:, list(SYMBOL_MASTER_COLUMNS)].reset_index(drop=True)
+        self._finance_database_equities_cache = normalized
+        return normalized.copy()
 
     def fetch_daily(
         self,
@@ -611,6 +654,27 @@ def _is_rate_limit_error(exc: Exception) -> bool:
             "status code 429",
         )
     )
+
+
+@contextmanager
+def _configured_http_proxy(proxy: str):
+    value = str(proxy or "").strip()
+    if not value:
+        yield
+        return
+
+    keys = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+    previous = {key: os.environ.get(key) for key in keys}
+    try:
+        for key in keys:
+            os.environ[key] = value
+        yield
+    finally:
+        for key, old_value in previous.items():
+            if old_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old_value
 
 
 def _parse_nasdaq_listed(text: str) -> pd.DataFrame:

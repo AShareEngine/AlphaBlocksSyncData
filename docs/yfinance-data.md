@@ -50,13 +50,24 @@ sync:
     include_otc: false
 ```
 
-`proxy` 会写入 yfinance 的全局网络配置，支持普通 HTTP/HTTPS 代理地址；留空表示直连。代理必须能从实际运行 PM2 任务的服务器访问，本机的 `127.0.0.1` 代理不会自动转发到远程服务器。
+`proxy` 会同时用于 Yahoo Finance、FinanceDatabase 的 GitHub 文件和 Nasdaq Trader 证券目录，支持
+普通 HTTP/HTTPS 代理地址；留空表示直连。代理必须能从实际运行 PM2 任务的服务器访问，本机的
+`127.0.0.1` 代理不会自动转发到远程服务器。
 
 Provider 会串行化 Yahoo 请求，每次调用至少间隔 `request_interval_seconds`。遇到 HTTP 429 或 `YFRateLimitError` 时，最多额外重试 `rate_limit_retries` 次，按 `rate_limit_backoff_seconds` 指数退避，并受最大退避时间和随机抖动限制。`network_retries` 是 yfinance 自身针对瞬时网络错误的重试次数。共享代理出口仍可能被 Yahoo 限制，建议保持 `threads: false`。
 
 `active_symbols_only: true` 会使用 Nasdaq Trader 当日证券目录筛选当前正常上市的普通证券，排除 ETF、测试证券、异常上市状态、权证、Rights、Units、优先股和交易所上市债券。目录下载同样使用 `proxy`，获取失败时会停止生成股票池，避免退回 FinanceDatabase 的历史全集后污染日线任务。
 
 FinanceDatabase 会保留退市代码供历史研究，因此不建议关闭 `active_symbols_only`。关闭时只按精确的 NASDAQ、NYSE 和 NYSE American 市场名称过滤；`include_otc: true` 仅在关闭当前证券目录过滤时生效。
+
+日线和公司行动任务优先复用 ClickHouse 最新的 `yf_symbol_master`，不会在每次运行时重新下载
+FinanceDatabase。行业任务优先复用最近一个包含 Sector / Industry 的主表快照。只有主表为空或显式运行
+`yfinance.symbol_master` 时才刷新远程股票主数据。
+
+如果 FinanceDatabase 的 GitHub 文件不可达，但 Nasdaq Trader 可访问，`symbol_master` 会退回当前
+上市普通证券目录，因此日线仍可执行；该备用目录不含 Sector / Industry 元数据，此时
+`industry_membership` 会写入 0 行。网络恢复或配置代理后重新运行 `yfinance.symbol_master`，再运行
+`yfinance.industry_membership` 即可补齐行业数据。
 
 ## 运行
 
