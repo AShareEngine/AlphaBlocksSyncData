@@ -253,6 +253,8 @@ def resolve_code_list(
 
     if args.codes_raw.strip():
         codes = normalize_baostock_code_list([part.strip() for part in args.codes_raw.split(",") if part.strip()])
+    elif _normalize_universe_mode(args.universe_mode) == "missing_historical":
+        codes = resolve_historical_code_list(provider, args, repository)
     elif spec.supports_bulk_without_code:
         codes = []
     elif spec.auto_code_universe:
@@ -287,7 +289,7 @@ def resolve_historical_code_list(
     repository: BaoStockRepository | None,
 ) -> list[str]:
     spec = BAOSTOCK_TASK_SPECS[args.task]
-    if not spec.uses_begin_end:
+    if not spec.uses_begin_end and _normalize_universe_mode(args.universe_mode) != "missing_historical":
         raise ValueError(f"BaoStock 任务 {args.task} 不支持 historical 代码池：任务没有日期区间。")
     begin_day = _normalize_required_universe_day(args.begin_date, "begin_date")
     end_day = _normalize_universe_day(args.end_date) or default_request_end("day")

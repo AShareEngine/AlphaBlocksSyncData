@@ -1,0 +1,111 @@
+# AmazingData 历史退市股票全表一次性回补
+#
+# 规则：
+# - 只同步目标表中完全没有任何记录的历史 A 股。
+# - begin_date 固定为 20100101。
+# - end_date 留空，运行时自动使用最新交易日。
+# - 事件型接口合法返回 0 行也属正常；本计划只建议执行一次。
+# - ad_code_info 是最新快照，不纳入历史回补。
+
+source = "amazingdata"
+log_level = "INFO"
+continue_on_error = true
+
+[defaults]
+begin_date = 20100101
+limit = 0
+force = true
+resume = false
+universe_mode = "missing_historical"
+
+# 核心行情与状态
+[[tasks]]
+task = "daily_kline"
+enabled = true
+
+[[tasks]]
+task = "history_stock_status"
+enabled = true
+
+# 基础资料与因子
+[[tasks]]
+task = "stock_basic"
+enabled = true
+
+[[tasks]]
+task = "adj_factor"
+enabled = true
+
+[[tasks]]
+task = "backward_factor"
+enabled = true
+
+# 财务三表
+[[tasks]]
+task = "income"
+enabled = true
+
+[[tasks]]
+task = "balance_sheet"
+enabled = true
+
+[[tasks]]
+task = "cash_flow"
+enabled = true
+
+# 股本与股东
+[[tasks]]
+task = "equity_structure"
+enabled = true
+
+[[tasks]]
+task = "share_holder"
+enabled = true
+
+[[tasks]]
+task = "holder_num"
+enabled = true
+
+# 业绩与公司行动
+[[tasks]]
+task = "profit_express"
+enabled = true
+
+[[tasks]]
+task = "profit_notice"
+enabled = true
+
+[[tasks]]
+task = "dividend"
+enabled = true
+
+[[tasks]]
+task = "right_issue"
+enabled = true
+
+# 股权事件
+[[tasks]]
+task = "equity_pledge_freeze"
+enabled = true
+
+[[tasks]]
+task = "equity_restricted"
+enabled = true
+
+# 交易事件
+[[tasks]]
+task = "block_trading"
+enabled = true
+
+[[tasks]]
+task = "long_hu_bang"
+enabled = true
+
+[[tasks]]
+task = "margin_detail"
+enabled = true
+
+# 历史快照；当前表为空，放在最后执行
+[[tasks]]
+task = "market_snapshot"
+enabled = true

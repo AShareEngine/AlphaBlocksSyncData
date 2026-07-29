@@ -1,0 +1,37 @@
+# BaoStock 历史退市股票全表一次性回补
+#
+# 仅包含能够按代码或日期区间直接回补的任务。
+# begin_date 固定为 20100101；end_date 留空，运行时自动使用当天。
+# 年/季度参数型财务接口不在本计划中，由 AmazingData 财务三表覆盖。
+
+source = "baostock"
+log_level = "INFO"
+continue_on_error = true
+database = "baostock"
+
+[defaults]
+begin_date = 20100101
+limit = 0
+force = true
+continue_on_error = true
+universe_mode = "missing_historical"
+
+[[tasks]]
+task = "daily_kline"
+enabled = true
+
+[[tasks]]
+task = "stock_basic"
+enabled = true
+
+[[tasks]]
+task = "adjust_factor"
+enabled = true
+
+[[tasks]]
+task = "performance_express_report"
+enabled = true
+
+[[tasks]]
+task = "forecast_report"
+enabled = true
