@@ -17,6 +17,11 @@
 | `yfinance.concept_daily` | `yf_concept_daily` | AI、半导体、网络安全、清洁能源、生物科技代表 ETF 日线 |
 | `yfinance.concept_membership` | `yf_concept_membership` | 代表 ETF 披露的 Top Holdings |
 
+这些业务表不保存 `source` 和 `fetched_at`：表所在的 `yfinance` 数据库已经能明确数据来源，
+而增量进度由业务日期、`yf_symbol_cursor` 和 `yf_sync_checkpoint` 管理。旧版本表会在 Provider
+初始化时自动删除 `source`；曾用 `fetched_at` 作为表引擎版本列的表会自动复制业务字段并换表，
+原有业务数据会保留。大表首次迁移需要临时额外磁盘空间，迁移期间不要中断进程。
+
 板块基准使用 `XLC/XLY/XLP/XLE/XLF/XLV/XLI/XLB/XLRE/XLK/XLU`。概念使用：
 
 - 人工智能：`AIQ`，成分参考 `AIQ/BOTZ/ROBO`

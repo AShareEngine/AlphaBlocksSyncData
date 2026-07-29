@@ -172,6 +172,17 @@ class _FakeClickHouseClient:
         return []
 
 
+class _LegacyYFinanceSchemaClickHouseClient(_FakeClickHouseClient):
+    def query_rows(self, sql: str, parameters=None):
+        self.query_rows_calls.append(sql)
+        table = str((parameters or {}).get("table") or "")
+        if table == "yf_symbol_master":
+            return [("source",)]
+        if table == "yf_daily_kline":
+            return [("source",), ("fetched_at",)]
+        return []
+
+
 class YFinanceProviderTest(unittest.TestCase):
     def setUp(self) -> None:
         self.yf = _FakeYFinance()
@@ -190,7 +201,7 @@ class YFinanceProviderTest(unittest.TestCase):
 
         self.assertEqual(frame["symbol"].tolist(), ["AAPL", "IBM"])
         self.assertEqual(frame.loc[frame["symbol"] == "AAPL", "name"].iloc[0], "Apple Inc.")
-        self.assertTrue((frame["source"] == "financedatabase").all())
+        self.assertTrue({"source", "fetched_at"}.isdisjoint(frame.columns))
 
     def test_active_directory_excludes_non_common_and_adds_current_symbols(self) -> None:
         nasdaq_text = "\n".join(
@@ -234,7 +245,7 @@ class YFinanceProviderTest(unittest.TestCase):
         self.assertEqual(frame["symbol"].tolist(), ["AAME", "AAPL", "BRK-B", "IBM"])
         self.assertEqual(frame.loc[frame["symbol"] == "AAME", "industry"].iloc[0], "Insurance")
         self.assertEqual(frame.loc[frame["symbol"] == "BRK-B", "currency"].iloc[0], "USD")
-        self.assertTrue((frame["source"] == "nasdaq_trader+financedatabase").all())
+        self.assertTrue({"source", "fetched_at"}.isdisjoint(frame.columns))
 
     def test_finance_database_download_uses_runtime_proxy_and_restores_environment(self) -> None:
         _ProxyAwareFinanceDatabase.proxy_snapshots = []
@@ -299,7 +310,7 @@ class YFinanceProviderTest(unittest.TestCase):
         industry = provider.fetch_industry_membership(symbol_master=frame)
 
         self.assertEqual(frame["symbol"].tolist(), ["AAPL", "IBM"])
-        self.assertTrue((frame["source"] == "nasdaq_trader").all())
+        self.assertTrue({"source", "fetched_at"}.isdisjoint(frame.columns))
         self.assertTrue(industry.empty)
         self.assertEqual(_FailingFinanceDatabase.select_calls, 1)
 
@@ -315,6 +326,7 @@ class YFinanceProviderTest(unittest.TestCase):
         self.assertEqual(frame["trade_date"].min(), date(2024, 1, 2))
         self.assertEqual(self.yf.download_calls[0]["end"], "2024-01-04")
         self.assertFalse(self.yf.download_calls[0]["auto_adjust"])
+        self.assertTrue({"source", "fetched_at"}.isdisjoint(frame.columns))
 
     def test_corporate_actions_only_keeps_non_zero_events(self) -> None:
         frame = self.provider.fetch_corporate_actions(
@@ -327,6 +339,7 @@ class YFinanceProviderTest(unittest.TestCase):
         self.assertEqual(frame.iloc[0]["dividend"], 0.25)
         self.assertEqual(frame.iloc[0]["event_date"], date(2024, 1, 3))
         self.assertEqual(frame.attrs["coverage_by_symbol"]["AAPL"], date(2024, 1, 3))
+        self.assertTrue({"source", "fetched_at"}.isdisjoint(frame.columns))
 
     def test_concept_membership_is_labeled_top_holdings(self) -> None:
         frame = self.provider.fetch_concept_membership(
@@ -337,6 +350,7 @@ class YFinanceProviderTest(unittest.TestCase):
         self.assertEqual(set(frame["symbol"]), {"NVDA", "MSFT"})
         self.assertEqual(set(frame["membership_scope"]), {"top_holdings"})
         self.assertEqual(set(frame["etf_symbol"]), {"AIQ", "BOTZ", "ROBO"})
+        self.assertTrue({"source", "fetched_at"}.isdisjoint(frame.columns))
 
     def test_proxy_config_and_rate_limit_retry_are_applied(self) -> None:
         self.yf.download_failures = 1
@@ -384,8 +398,6 @@ class YFinanceRepositoryTest(unittest.TestCase):
                     "dividends": 0.0,
                     "stock_splits": 0.0,
                     "capital_gains": 0.0,
-                    "source": "yfinance",
-                    "fetched_at": pd.Timestamp("2024-01-03T00:00:00"),
                 }
             ]
         )
@@ -396,6 +408,7 @@ class YFinanceRepositoryTest(unittest.TestCase):
         table, columns, rows = client.insert_calls[0]
         self.assertEqual(table, "yfinance.yf_daily_kline")
         self.assertEqual(dict(zip(columns, rows[0]))["symbol"], "AAPL")
+        self.assertTrue({"source", "fetched_at"}.isdisjoint(columns))
 
     def test_ensure_tables_creates_all_task_tables(self) -> None:
         client = _FakeClickHouseClient()
@@ -407,6 +420,38 @@ class YFinanceRepositoryTest(unittest.TestCase):
         self.assertIn("yf_symbol_master", ddl)
         self.assertIn("yf_daily_kline", ddl)
         self.assertIn("yf_concept_membership", ddl)
+        self.assertNotIn("source String", ddl)
+        self.assertNotIn("fetched_at", ddl)
+
+    def test_ensure_tables_migrates_legacy_metadata_columns(self) -> None:
+        client = _LegacyYFinanceSchemaClickHouseClient()
+        repository = YFinanceRepository(client, database="yfinance")
+
+        repository.ensure_tables()
+
+        commands = "\n".join(client.commands)
+        self.assertIn(
+            "ALTER TABLE yfinance.yf_symbol_master DROP COLUMN IF EXISTS source",
+            commands,
+        )
+        self.assertIn(
+            "CREATE TABLE IF NOT EXISTS yfinance.yf_daily_kline__without_metadata_v1",
+            commands,
+        )
+        copy_sql = next(
+            command
+            for command in client.commands
+            if command.startswith(
+                "INSERT INTO yfinance.yf_daily_kline__without_metadata_v1"
+            )
+        )
+        self.assertNotIn("source", copy_sql)
+        self.assertNotIn("fetched_at", copy_sql)
+        self.assertIn(
+            "EXCHANGE TABLES yfinance.yf_daily_kline "
+            "AND yfinance.yf_daily_kline__without_metadata_v1",
+            commands,
+        )
 
     def test_saved_symbol_universe_filters_non_common_security_names(self) -> None:
         client = _FakeClickHouseClient()
@@ -497,7 +542,6 @@ class YFinanceRunnerTest(unittest.TestCase):
                     "industry_group": "Technology Hardware",
                     "industry": "Consumer Electronics",
                     "exchange": "NMS",
-                    "source": "nasdaq_trader+financedatabase",
                 }
             ]
         )

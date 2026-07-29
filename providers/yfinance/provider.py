@@ -12,7 +12,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional, Sequence
@@ -103,8 +103,6 @@ PRICE_COLUMNS = (
     "dividends",
     "stock_splits",
     "capital_gains",
-    "source",
-    "fetched_at",
 )
 
 
@@ -183,7 +181,6 @@ class YFinanceProvider:
         limit: int = 0,
         snapshot_date: date | None = None,
     ) -> pd.DataFrame:
-        source = "financedatabase"
         try:
             frame = self._load_finance_database_equities()
         except Exception as exc:
@@ -195,26 +192,20 @@ class YFinanceProvider:
                 exc,
             )
             frame = _empty_frame(SYMBOL_MASTER_COLUMNS)
-            source = "nasdaq_trader"
 
         if self.config.active_symbols_only:
-            if frame.empty:
-                source = "nasdaq_trader"
             frame = _merge_active_symbol_directory(
                 self._load_active_symbol_directory(),
                 frame,
             )
-            if source == "financedatabase":
-                source = "nasdaq_trader+financedatabase"
         else:
             if frame.empty:
-                return _empty_frame((*SYMBOL_MASTER_COLUMNS, "snapshot_date", "source"))
+                return _empty_frame((*SYMBOL_MASTER_COLUMNS, "snapshot_date"))
             frame = self._filter_us_listings(frame)
             frame = frame.drop_duplicates(subset=["symbol"], keep="first").sort_values("symbol")
         if limit > 0:
             frame = frame.head(limit)
         frame["snapshot_date"] = snapshot_date or date.today()
-        frame["source"] = source
         return frame.reset_index(drop=True)
 
     def fetch_industry_membership(
@@ -234,7 +225,6 @@ class YFinanceProvider:
             "industry_group",
             "industry",
             "exchange",
-            "source",
         )
         if master.empty:
             return _empty_frame(columns)
@@ -251,7 +241,6 @@ class YFinanceProvider:
                 "No sector/industry metadata is available; industry membership will be empty."
             )
             return _empty_frame(columns)
-        result["source"] = "financedatabase"
         return result.reset_index(drop=True)
 
     def _load_finance_database_equities(self) -> pd.DataFrame:
@@ -339,8 +328,6 @@ class YFinanceProvider:
             "dividend",
             "stock_split",
             "capital_gain",
-            "source",
-            "fetched_at",
         )
         if prices.empty:
             return _empty_frame(columns)
@@ -392,8 +379,6 @@ class YFinanceProvider:
             "close",
             "adj_close",
             "volume",
-            "source",
-            "fetched_at",
         )
         if mapping.empty:
             return _empty_frame(columns)
@@ -429,10 +414,7 @@ class YFinanceProvider:
             "holding_name",
             "weight",
             "membership_scope",
-            "source",
-            "fetched_at",
         )
-        fetched_at = _utcnow()
         snapshot = snapshot_date or date.today()
         rows: list[dict[str, Any]] = []
         for definition in definitions:
@@ -460,8 +442,6 @@ class YFinanceProvider:
                             "holding_name": str(item.get("holding_name") or ""),
                             "weight": _optional_float(item.get("weight")),
                             "membership_scope": "top_holdings",
-                            "source": "yfinance",
-                            "fetched_at": fetched_at,
                         }
                     )
         if not rows:
@@ -919,8 +899,6 @@ def _standardize_price_frame(frame: pd.DataFrame, symbol: str) -> pd.DataFrame:
         if column not in result.columns:
             result[column] = 0.0 if column in {"dividends", "stock_splits", "capital_gains"} else None
         result[column] = pd.to_numeric(result[column], errors="coerce")
-    result["source"] = "yfinance"
-    result["fetched_at"] = _utcnow()
     result = result[result["trade_date"].notna() & result["close"].notna()]
     return _ensure_columns(result, PRICE_COLUMNS).loc[:, list(PRICE_COLUMNS)]
 
@@ -980,10 +958,6 @@ def _coverage_by_symbol(
         if isinstance(maximum, date):
             coverage[normalize_us_symbol(symbol)] = maximum
     return coverage
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 __all__ = [

@@ -53,7 +53,6 @@ TASK_COLUMNS: dict[str, tuple[str, ...]] = {
         "figi",
         "composite_figi",
         "shareclass_figi",
-        "source",
     ),
     "daily_kline": (
         "symbol",
@@ -67,8 +66,6 @@ TASK_COLUMNS: dict[str, tuple[str, ...]] = {
         "dividends",
         "stock_splits",
         "capital_gains",
-        "source",
-        "fetched_at",
     ),
     "corporate_actions": (
         "symbol",
@@ -76,8 +73,6 @@ TASK_COLUMNS: dict[str, tuple[str, ...]] = {
         "dividend",
         "stock_split",
         "capital_gain",
-        "source",
-        "fetched_at",
     ),
     "industry_membership": (
         "snapshot_date",
@@ -86,7 +81,6 @@ TASK_COLUMNS: dict[str, tuple[str, ...]] = {
         "industry_group",
         "industry",
         "exchange",
-        "source",
     ),
     "sector_daily": (
         "group_code",
@@ -99,8 +93,6 @@ TASK_COLUMNS: dict[str, tuple[str, ...]] = {
         "close",
         "adj_close",
         "volume",
-        "source",
-        "fetched_at",
     ),
     "concept_daily": (
         "group_code",
@@ -113,8 +105,6 @@ TASK_COLUMNS: dict[str, tuple[str, ...]] = {
         "close",
         "adj_close",
         "volume",
-        "source",
-        "fetched_at",
     ),
     "concept_membership": (
         "snapshot_date",
@@ -125,8 +115,6 @@ TASK_COLUMNS: dict[str, tuple[str, ...]] = {
         "holding_name",
         "weight",
         "membership_scope",
-        "source",
-        "fetched_at",
     ),
 }
 
@@ -152,7 +140,6 @@ STRING_COLUMNS = frozenset(
         "figi",
         "composite_figi",
         "shareclass_figi",
-        "source",
         "group_code",
         "group_name",
         "benchmark_symbol",
@@ -209,6 +196,44 @@ class YFinanceRepository:
         self.client.command(self._create_symbol_cursor_ddl())
         for task in YFINANCE_TASK_SPECS:
             self.client.command(self._create_task_table_ddl(task))
+            self._migrate_removed_metadata_columns(task)
+
+    def _migrate_removed_metadata_columns(self, task: str) -> None:
+        table_name = YFINANCE_TASK_SPECS[task].table_name
+        rows = self.client.query_rows(
+            """
+            SELECT name
+            FROM system.columns
+            WHERE database = {database:String}
+              AND table = {table:String}
+              AND name IN ('source', 'fetched_at')
+            """,
+            {"database": self.database, "table": table_name},
+        )
+        existing = {str(row[0]) for row in rows if row}
+        if not existing:
+            return
+
+        table = self._table_ref(table_name)
+        if "fetched_at" not in existing:
+            self.client.command(f"ALTER TABLE {table} DROP COLUMN IF EXISTS source")
+            return
+
+        migration_name = f"{table_name}__without_metadata_v1"
+        migration_table = self._table_ref(migration_name)
+        columns = TASK_COLUMNS[task]
+        column_sql = ", ".join(columns)
+
+        self.client.command(f"DROP TABLE IF EXISTS {migration_table}")
+        self.client.command(self._create_task_table_ddl(task, table_name=migration_name))
+        self.client.command(
+            f"INSERT INTO {migration_table} ({column_sql}) "
+            f"SELECT {column_sql} FROM {table}"
+        )
+        self.client.command(
+            f"EXCHANGE TABLES {table} AND {migration_table}"
+        )
+        self.client.command(f"DROP TABLE IF EXISTS {migration_table}")
 
     def save_frame(self, task: str, frame: pd.DataFrame) -> int:
         if task not in TASK_COLUMNS:
@@ -459,8 +484,13 @@ class YFinanceRepository:
         ORDER BY (task_name, symbol)
         """
 
-    def _create_task_table_ddl(self, task: str) -> str:
-        table = self._table_ref(YFINANCE_TASK_SPECS[task].table_name)
+    def _create_task_table_ddl(
+        self,
+        task: str,
+        *,
+        table_name: str | None = None,
+    ) -> str:
+        table = self._table_ref(table_name or YFINANCE_TASK_SPECS[task].table_name)
         if task == "symbol_master":
             return f"""
             CREATE TABLE IF NOT EXISTS {table}
@@ -486,7 +516,6 @@ class YFinanceRepository:
                 figi String,
                 composite_figi String,
                 shareclass_figi String,
-                source String,
                 ingested_at DateTime64(3) DEFAULT now64(3)
             )
             ENGINE = ReplacingMergeTree(ingested_at)
@@ -507,11 +536,9 @@ class YFinanceRepository:
                 volume Nullable(Float64),
                 dividends Nullable(Float64),
                 stock_splits Nullable(Float64),
-                capital_gains Nullable(Float64),
-                source String,
-                fetched_at DateTime64(3)
+                capital_gains Nullable(Float64)
             )
-            ENGINE = ReplacingMergeTree(fetched_at)
+            ENGINE = ReplacingMergeTree
             PARTITION BY toYYYYMM(trade_date)
             ORDER BY (symbol, trade_date)
             """
@@ -523,11 +550,9 @@ class YFinanceRepository:
                 event_date Date,
                 dividend Nullable(Float64),
                 stock_split Nullable(Float64),
-                capital_gain Nullable(Float64),
-                source String,
-                fetched_at DateTime64(3)
+                capital_gain Nullable(Float64)
             )
-            ENGINE = ReplacingMergeTree(fetched_at)
+            ENGINE = ReplacingMergeTree
             PARTITION BY toYYYYMM(event_date)
             ORDER BY (symbol, event_date)
             """
@@ -541,7 +566,6 @@ class YFinanceRepository:
                 industry_group String,
                 industry String,
                 exchange String,
-                source String,
                 ingested_at DateTime64(3) DEFAULT now64(3)
             )
             ENGINE = ReplacingMergeTree(ingested_at)
@@ -561,11 +585,9 @@ class YFinanceRepository:
                 low Nullable(Float64),
                 close Nullable(Float64),
                 adj_close Nullable(Float64),
-                volume Nullable(Float64),
-                source String,
-                fetched_at DateTime64(3)
+                volume Nullable(Float64)
             )
-            ENGINE = ReplacingMergeTree(fetched_at)
+            ENGINE = ReplacingMergeTree
             PARTITION BY toYYYYMM(trade_date)
             ORDER BY (group_code, benchmark_symbol, trade_date)
             """
@@ -580,11 +602,9 @@ class YFinanceRepository:
                 symbol String,
                 holding_name String,
                 weight Nullable(Float64),
-                membership_scope String,
-                source String,
-                fetched_at DateTime64(3)
+                membership_scope String
             )
-            ENGINE = ReplacingMergeTree(fetched_at)
+            ENGINE = ReplacingMergeTree
             PARTITION BY toYYYYMM(snapshot_date)
             ORDER BY (snapshot_date, concept_code, etf_symbol, symbol)
             """
