@@ -21,6 +21,15 @@ YFINANCE_SYNC_TASK_LOG_TABLE = "yf_sync_task_log"
 YFINANCE_SYNC_CHECKPOINT_TABLE = "yf_sync_checkpoint"
 YFINANCE_SYMBOL_CURSOR_TABLE = "yf_symbol_cursor"
 
+COMMON_SECURITY_NAME_SQL = """
+positionCaseInsensitiveUTF8(name, 'preference') = 0
+AND positionCaseInsensitiveUTF8(name, 'preferred') = 0
+AND positionCaseInsensitiveUTF8(name, 'warrant') = 0
+AND positionCaseInsensitiveUTF8(name, ' rights') = 0
+AND positionCaseInsensitiveUTF8(name, ' units') = 0
+AND positionCaseInsensitiveUTF8(name, 'debenture') = 0
+"""
+
 TASK_COLUMNS: dict[str, tuple[str, ...]] = {
     "symbol_master": (
         "snapshot_date",
@@ -229,6 +238,7 @@ class YFinanceRepository:
             SELECT max(snapshot_date)
             FROM {self._table_ref(YFINANCE_TASK_SPECS['symbol_master'].table_name)}
         )
+          AND {COMMON_SECURITY_NAME_SQL}
         ORDER BY symbol
         {limit_sql}
         """
@@ -256,6 +266,7 @@ class YFinanceRepository:
             {latest_filter}
         )
         {row_filter}
+        AND {COMMON_SECURITY_NAME_SQL}
         ORDER BY symbol
         {limit_sql}
         """
