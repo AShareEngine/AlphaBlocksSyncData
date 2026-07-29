@@ -75,13 +75,19 @@ class _FakeBaoStockProvider:
 
 
 class _FakeHistoricalRepository:
-    def __init__(self, codes: list[str]) -> None:
+    def __init__(self, codes: list[str], existing_codes: list[str] | None = None) -> None:
         self.codes = codes
+        self.existing_codes = existing_codes or []
         self.calls: list[tuple[str, str]] = []
+        self.existing_calls: list[tuple[str, str]] = []
 
     def load_historical_stock_codes(self, begin_date: str, end_date: str) -> list[str]:
         self.calls.append((begin_date, end_date))
         return list(self.codes)
+
+    def load_daily_kline_codes(self, begin_date: str, end_date: str) -> list[str]:
+        self.existing_calls.append((begin_date, end_date))
+        return list(self.existing_codes)
 
 
 class _FakeRunRepository:
@@ -403,6 +409,66 @@ class BaoStockIncrementalHelperTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "拒绝降级为当前股票池"):
             resolve_code_list(provider, args, _FakeHistoricalRepository([]))
 
+    def test_missing_historical_universe_only_returns_codes_without_daily_rows(self) -> None:
+        args = SyncArgs(
+            task="daily_kline",
+            codes_raw="",
+            begin_date="20100101",
+            end_date="20241231",
+            day="",
+            year=None,
+            quarter=None,
+            year_type="",
+            adjustflag="3",
+            frequency="d",
+            limit=0,
+            force=True,
+            continue_on_error=True,
+            runtime_path=None,
+            database="baostock",
+            log_level="INFO",
+            universe_mode="missing_historical",
+        )
+        provider = _FakeBaoStockProvider(codes_by_day={"20241231": ["510300.SH"]})
+        repository = _FakeHistoricalRepository(
+            ["000005.SZ", "000023.SZ", "600000.SH"],
+            existing_codes=["600000.SH"],
+        )
+
+        codes = resolve_code_list(provider, args, repository)
+
+        self.assertEqual(codes, ["000005.SZ", "000023.SZ"])
+        self.assertEqual(repository.calls, [("20100101", "20241231")])
+        self.assertEqual(repository.existing_calls, [("20100101", "20241231")])
+        self.assertEqual(provider.fetch_latest_all_stock_calls, [])
+
+    def test_missing_historical_universe_applies_limit_after_subtraction(self) -> None:
+        args = SyncArgs(
+            task="daily_kline",
+            codes_raw="",
+            begin_date="20100101",
+            end_date="20241231",
+            day="",
+            year=None,
+            quarter=None,
+            year_type="",
+            adjustflag="3",
+            frequency="d",
+            limit=1,
+            force=True,
+            continue_on_error=True,
+            runtime_path=None,
+            database="baostock",
+            log_level="INFO",
+            universe_mode="missing_historical",
+        )
+        repository = _FakeHistoricalRepository(["000023.SZ", "000005.SZ"])
+
+        self.assertEqual(
+            resolve_code_list(_FakeBaoStockProvider(), args, repository),
+            ["000005.SZ"],
+        )
+
     def test_resolve_all_stock_request_meta_falls_back_to_latest_populated_universe_day(self) -> None:
         args = SyncArgs(
             task="all_stock",
@@ -470,6 +536,15 @@ class BaoStockRepositoryTest(unittest.TestCase):
         repository = BaoStockRepository(client, database="baostock")
 
         codes = repository.load_historical_stock_codes("20200101", "20241231")
+
+        self.assertEqual(codes, ["000005.SZ", "600000.SH"])
+
+    def test_load_daily_kline_codes_returns_normalized_existing_codes(self) -> None:
+        client = _FakeClickHouseClient()
+        client.query_rows = lambda sql, parameters=None: [("sz.000005",), ("600000.SH",)]
+        repository = BaoStockRepository(client, database="baostock")
+
+        codes = repository.load_daily_kline_codes("20100101", "20241231")
 
         self.assertEqual(codes, ["000005.SZ", "600000.SH"])
 

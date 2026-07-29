@@ -225,7 +225,7 @@ class RunTaskRequest(BaseModel):
     resume: bool = False
     adjustflag: Optional[str] = None
     frequency: Optional[str] = None
-    universe_mode: Optional[Literal["current", "historical"]] = None
+    universe_mode: Optional[Literal["current", "historical", "missing_historical"]] = None
     continue_on_error: bool = False
     log_level: Optional[str] = None
     runtime_path: Optional[str] = None

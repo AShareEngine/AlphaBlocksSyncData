@@ -151,13 +151,14 @@ error_msg=网络接收错误。
 已增加显式参数：
 
 ```text
-universe_mode = current | historical
+universe_mode = current | historical | missing_historical
 ```
 
 当前默认值：
 
 - 日常计划：`current`
-- 历史回补计划：`historical`
+- 完整历史重建：`historical`
+- 仅回补整个区间完全缺失的股票：`missing_historical`
 - 显式传入 `--codes` 时忽略 `universe_mode`，始终使用用户代码。
 
 统一 CLI、服务任务探针、API、任务批次和 TOML 计划均已传递该参数。
@@ -258,6 +259,7 @@ UNION
 8. 合并结果去重并稳定排序。
 9. `limit` 在最终代码池上应用。
 10. 获取历史股票池失败时应明确失败，不能静默降级成当前股票池，否则会重新制造幸存者偏差。
+11. `missing_historical` 只返回区间内完全没有日线记录的历史股票，不重跑已有股票。
 
 ### `stock_basic`
 
@@ -315,9 +317,9 @@ ORDER BY code;
 
 ```bash
 python3 scripts/run_provider_sync.py baostock.daily_kline \
-  --begin-date 20200101 \
+  --begin-date 20100101 \
   --end-date 20241231 \
-  --universe-mode historical \
+  --universe-mode missing_historical \
   --force \
   --continue-on-error
 ```

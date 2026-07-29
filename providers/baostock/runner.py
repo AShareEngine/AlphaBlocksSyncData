@@ -88,9 +88,12 @@ def parse_args() -> SyncArgs:
     parser.add_argument("--frequency", default="d", help="K 线周期，当前默认 d")
     parser.add_argument(
         "--universe-mode",
-        choices=("current", "historical"),
+        choices=("current", "historical", "missing_historical"),
         default="current",
-        help="自动代码池模式：current=结束日附近证券，historical=与请求区间相交的完整历史股票池",
+        help=(
+            "自动代码池模式：current=结束日附近证券，historical=完整历史股票池，"
+            "missing_historical=区间内完全没有日线记录的历史股票"
+        ),
     )
     parser.add_argument("--limit", type=int, default=0, help="仅同步前 N 个 code，0 表示不限制")
     parser.add_argument("--force", action="store_true", help="忽略当天成功日志，强制重跑")
@@ -192,6 +195,9 @@ def run_sync_args(args: SyncArgs, provider: BaoStockProvider, repository: BaoSto
     codes = resolve_code_list(provider, args, repository)
     if codes:
         return run_code_task(args, provider, repository, codes)
+    if _normalize_universe_mode(args.universe_mode) == "missing_historical" and not args.codes_raw.strip():
+        logger.info("skip task=%s reason=no_missing_historical_codes", args.task)
+        return 0
     if spec.uses_code and not (spec.supports_bulk_without_code and not args.codes_raw.strip()):
         if args.codes_raw.strip():
             raise ValueError(f"BaoStock 任务 {args.task} 未解析出有效股票代码，请检查 codes 参数。")
@@ -250,7 +256,7 @@ def resolve_code_list(
     elif spec.supports_bulk_without_code:
         codes = []
     elif spec.auto_code_universe:
-        if _normalize_universe_mode(args.universe_mode) == "historical":
+        if _normalize_universe_mode(args.universe_mode) in {"historical", "missing_historical"}:
             codes = resolve_historical_code_list(provider, args, repository)
         else:
             codes = resolve_current_code_list(provider, args)
@@ -296,6 +302,19 @@ def resolve_historical_code_list(
             "starlight.ad_hist_code_daily 在请求区间内没有 EXTRA_STOCK_A 历史代码，"
             "拒绝降级为当前股票池；请先同步 amazingdata.hist_code_list。"
         )
+    if _normalize_universe_mode(args.universe_mode) == "missing_historical":
+        existing_codes = repository.load_daily_kline_codes(begin_day, end_day)
+        codes = sorted(set(historical_codes) - set(existing_codes))
+        logger.info(
+            "BaoStock missing historical universe begin=%s end=%s historical=%s existing=%s missing=%s",
+            begin_day,
+            end_day,
+            len(historical_codes),
+            len(existing_codes),
+            len(codes),
+        )
+        return codes
+
     current_codes = resolve_current_code_list(provider, args)
     codes = sorted(set(current_codes) | set(historical_codes))
     if not codes:
@@ -305,8 +324,11 @@ def resolve_historical_code_list(
 
 def _normalize_universe_mode(value: Any) -> str:
     mode = str(value or "current").strip().lower() or "current"
-    if mode not in {"current", "historical"}:
-        raise ValueError(f"universe_mode 必须是 current 或 historical，当前值: {value!r}")
+    if mode not in {"current", "historical", "missing_historical"}:
+        raise ValueError(
+            "universe_mode 必须是 current、historical 或 missing_historical，"
+            f"当前值: {value!r}"
+        )
     return mode
 
 

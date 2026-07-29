@@ -69,7 +69,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", action="store_true", help="Resume from successful checkpoints")
     parser.add_argument("--adjustflag", default="3")
     parser.add_argument("--frequency", default="d")
-    parser.add_argument("--universe-mode", choices=("current", "historical"), default="current")
+    parser.add_argument(
+        "--universe-mode",
+        choices=("current", "historical", "missing_historical"),
+        default="current",
+    )
     parser.add_argument("--continue-on-error", action="store_true", help="Continue after a per-item failure")
     parser.add_argument("--log-level", default=None)
     args = parser.parse_args()

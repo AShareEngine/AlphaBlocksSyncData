@@ -1,6 +1,8 @@
 # BaoStock 历史股票池日线回补配置
 #
-# 使用与请求区间有上市时间交集的完整历史股票池，包含区间内已退市股票。
+# 只回补请求区间内完全没有 BaoStock 日线记录的历史 A 股。
+# 已经存在任意日线记录的代码不会进入任务；本计划不修复单只股票内部的日期缺口。
+# 运行前应确认 starlight.ad_hist_code_daily 已回补到 2010，否则无法发现 2013 年前已退市的股票。
 # 建议先通过 --codes 小样本探针确认 BaoStock 源站可用，再运行本计划。
 
 source = "baostock"
@@ -16,6 +18,6 @@ continue_on_error = true
 [[tasks]]
 task = "daily_kline"
 enabled = true
-begin_date = 20200101
+begin_date = 20100101
 end_date = 20241231
-universe_mode = "historical"
+universe_mode = "missing_historical"

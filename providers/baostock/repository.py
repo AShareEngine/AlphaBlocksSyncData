@@ -232,6 +232,28 @@ class BaoStockRepository:
             [str(row[0]) for row in rows if row and row[0] is not None]
         )
 
+    def load_daily_kline_codes(self, begin_date: str, end_date: str) -> list[str]:
+        """Load codes that already have at least one daily row in the interval."""
+        table = self._table_ref(BAOSTOCK_TASK_SPECS["daily_kline"].table_name)
+        sql = f"""
+        SELECT code
+        FROM {table}
+        WHERE date >= {{begin_date:String}}
+          AND date <= {{end_date:String}}
+        GROUP BY code
+        ORDER BY code
+        """
+        rows = self.client.query_rows(
+            sql,
+            {
+                "begin_date": to_ch_date(begin_date).isoformat(),
+                "end_date": to_ch_date(end_date).isoformat(),
+            },
+        )
+        return normalize_baostock_code_list(
+            [str(row[0]) for row in rows if row and row[0] is not None]
+        )
+
     def _insert_rows_in_batches(
         self,
         table: str,
