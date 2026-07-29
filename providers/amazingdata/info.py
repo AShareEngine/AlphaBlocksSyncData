@@ -110,6 +110,8 @@ from sync_data_system.providers.amazingdata.info_repository import InfoDataRepos
 
 logger = logging.getLogger(__name__)
 
+FINANCIAL_STATEMENT_LOOKBACK_DAYS = 400
+
 
 class InfoDataSyncProvider(Protocol):
     """InfoData 远端同步协议."""
@@ -682,7 +684,11 @@ class InfoData:
             date_field="report_date",
             code_list=normalized_codes,
         )
-        sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
+        sync_start = self._resolve_financial_statement_sync_start_date(
+            latest_date=latest_date,
+            requested_begin_date=begin,
+            force=force,
+        )
         return self._run_sync_job(
             task_name="get_balance_sheet",
             scope_key=scope_key,
@@ -714,7 +720,11 @@ class InfoData:
             date_field="report_date",
             code_list=normalized_codes,
         )
-        sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
+        sync_start = self._resolve_financial_statement_sync_start_date(
+            latest_date=latest_date,
+            requested_begin_date=begin,
+            force=force,
+        )
         return self._run_sync_job(
             task_name="get_cash_flow",
             scope_key=scope_key,
@@ -746,7 +756,11 @@ class InfoData:
             date_field="report_date",
             code_list=normalized_codes,
         )
-        sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
+        sync_start = self._resolve_financial_statement_sync_start_date(
+            latest_date=latest_date,
+            requested_begin_date=begin,
+            force=force,
+        )
         return self._run_sync_job(
             task_name="get_income",
             scope_key=scope_key,
@@ -2476,6 +2490,23 @@ class InfoData:
         if requested_begin_date is None:
             return next_date
         return max(next_date, requested_begin_date)
+
+    @staticmethod
+    def _resolve_financial_statement_sync_start_date(
+        latest_date: Optional[date],
+        requested_begin_date: Optional[date],
+        force: bool,
+    ) -> Optional[date]:
+        if force or latest_date is None:
+            return requested_begin_date
+
+        # Adjusted comparative statements are often published about one year
+        # after their reporting period. Re-fetch a bounded overlap so those
+        # late revisions are discovered during ordinary incremental runs.
+        overlap_start = latest_date - timedelta(days=FINANCIAL_STATEMENT_LOOKBACK_DAYS)
+        if requested_begin_date is None:
+            return overlap_start
+        return max(overlap_start, requested_begin_date)
 
     @staticmethod
     def _validate_optional_date_range(begin_date: Optional[date], end_date: Optional[date]) -> None:

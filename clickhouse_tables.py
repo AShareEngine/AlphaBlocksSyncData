@@ -422,46 +422,45 @@ ORDER BY (old_code, new_code)
 """
 
 
-CREATE_AD_BALANCE_SHEET_TABLE = f"""
-CREATE TABLE IF NOT EXISTS {AD_BALANCE_SHEET_TABLE}
+def _create_financial_statement_table(table_name: str) -> str:
+    """Create a PIT-safe financial statement table.
+
+    AmazingData can return multiple statement/report types and multiple
+    announcements for the same security and reporting period.  Those rows are
+    all business-significant, so the ReplacingMergeTree identity must preserve
+    the type and announcement dimensions instead of collapsing everything to
+    ``market_code + report_date``.
+    """
+
+    return f"""
+CREATE TABLE IF NOT EXISTS {table_name}
 (
     market_code String,
     report_date Nullable(Date),
     report_date_raw Nullable(String),
-    payload_json String
+    payload_json String,
+    statement_type Nullable(String),
+    report_type Nullable(String),
+    reporting_period Nullable(Date),
+    ann_date Nullable(Date),
+    actual_ann_date Nullable(Date)
 )
 ENGINE = ReplacingMergeTree
-PARTITION BY toYYYYMM(ifNull(report_date, toDate('1970-01-01')))
-ORDER BY (market_code, ifNull(report_date, toDate('1970-01-01')))
+PARTITION BY toYYYYMM(ifNull(reporting_period, ifNull(report_date, toDate('1970-01-01'))))
+ORDER BY (
+    market_code,
+    ifNull(reporting_period, ifNull(report_date, toDate('1970-01-01'))),
+    ifNull(statement_type, ''),
+    ifNull(report_type, ''),
+    ifNull(ann_date, toDate('1970-01-01')),
+    ifNull(actual_ann_date, toDate('1970-01-01'))
+)
 """
 
 
-CREATE_AD_CASH_FLOW_TABLE = f"""
-CREATE TABLE IF NOT EXISTS {AD_CASH_FLOW_TABLE}
-(
-    market_code String,
-    report_date Nullable(Date),
-    report_date_raw Nullable(String),
-    payload_json String
-)
-ENGINE = ReplacingMergeTree
-PARTITION BY toYYYYMM(ifNull(report_date, toDate('1970-01-01')))
-ORDER BY (market_code, ifNull(report_date, toDate('1970-01-01')))
-"""
-
-
-CREATE_AD_INCOME_TABLE = f"""
-CREATE TABLE IF NOT EXISTS {AD_INCOME_TABLE}
-(
-    market_code String,
-    report_date Nullable(Date),
-    report_date_raw Nullable(String),
-    payload_json String
-)
-ENGINE = ReplacingMergeTree
-PARTITION BY toYYYYMM(ifNull(report_date, toDate('1970-01-01')))
-ORDER BY (market_code, ifNull(report_date, toDate('1970-01-01')))
-"""
+CREATE_AD_BALANCE_SHEET_TABLE = _create_financial_statement_table(AD_BALANCE_SHEET_TABLE)
+CREATE_AD_CASH_FLOW_TABLE = _create_financial_statement_table(AD_CASH_FLOW_TABLE)
+CREATE_AD_INCOME_TABLE = _create_financial_statement_table(AD_INCOME_TABLE)
 
 
 CREATE_AD_PROFIT_EXPRESS_TABLE = f"""

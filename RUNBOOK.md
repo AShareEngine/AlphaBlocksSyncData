@@ -410,14 +410,17 @@ python3 scripts/run_provider_sync.py --config run_sync.baostock.full.toml >> log
 
 - 先获取 A 股代码池
 - 按单只股票逐个同步
-- 当前以 `market_code + report_date + payload_json` 形式入库
+- 三大财务报表会保留 `statement_type`、`report_type`、`reporting_period`、
+  `ann_date` 和 `actual_ann_date`，同一报告期的原始报表、调整报表及不同公告版本不会互相覆盖
 - 数据分别落到：
   - `ad_balance_sheet`
   - `ad_cash_flow`
   - `ad_income`
   - `ad_profit_express`
   - `ad_profit_notice`
-- 优先按业务表已有最大日期做增量
+- `balance_sheet`、`cash_flow`、`income` 普通增量同步会回看 400 天，以捕获次年发布的上年同期调整报表
+- `balance_sheet`、`cash_flow`、`income` 使用 `--force` 时会从指定的 `begin_date` 重新拉取
+- 其他任务优先按业务表已有最大日期做增量
 
 ### share_holder / holder_num / equity_structure
 
