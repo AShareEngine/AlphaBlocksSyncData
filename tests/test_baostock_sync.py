@@ -12,7 +12,15 @@ except Exception:  # pragma: no cover
 
 from sync_data_system.providers.baostock.provider import normalize_baostock_code, normalize_baostock_code_list, to_baostock_code
 from sync_data_system.providers.baostock.repository import BaoStockRepository
-from sync_data_system.providers.baostock.runner import SyncArgs, resolve_all_stock_request_meta, resolve_code_list, resolve_effective_request_meta, run_code_task, run_sync_args
+from sync_data_system.providers.baostock.runner import (
+    SyncArgs,
+    load_execution_plan_from_toml,
+    resolve_all_stock_request_meta,
+    resolve_code_list,
+    resolve_effective_request_meta,
+    run_code_task,
+    run_sync_args,
+)
 from sync_data_system.providers.baostock.specs import BAOSTOCK_TASK_SPECS, camel_to_snake, table_columns_for_spec
 from sync_data_system.sync_core.incremental import advance_cursor_value, normalize_request_value
 
@@ -95,10 +103,12 @@ class _FakeHistoricalRepository:
 
 
 class _FakeRunRepository:
-    def __init__(self, latest_cursor: str | None = None) -> None:
+    def __init__(self, latest_cursor: str | None = None, has_successful_sync: bool = False) -> None:
         self.latest_cursor = latest_cursor
+        self.has_successful_sync_result = has_successful_sync
         self.saved_request_meta: list[dict] = []
         self.fetch_logs: list[object] = []
+        self.successful_sync_calls: list[tuple[str, str]] = []
 
     def load_latest_cursor(self, task: str, *, code: str | None = None):
         return self.latest_cursor
@@ -108,6 +118,10 @@ class _FakeRunRepository:
 
     def has_successful_sync_today(self, task_name: str, scope_key: str, run_date) -> bool:
         return False
+
+    def has_successful_sync(self, task_name: str, scope_key: str) -> bool:
+        self.successful_sync_calls.append((task_name, scope_key))
+        return self.has_successful_sync_result
 
     def save_task_frame(self, task: str, frame, *, request_meta):
         self.saved_request_meta.append(dict(request_meta))
@@ -388,6 +402,34 @@ class BaoStockIncrementalHelperTest(unittest.TestCase):
 
         self.assertEqual(resolve_code_list(provider, args, repository), ["000005.SZ", "000023.SZ"])
 
+    def test_quarterly_finance_historical_universe_is_supported(self) -> None:
+        args = SyncArgs(
+            task="growth_data",
+            codes_raw="",
+            begin_date="20100101",
+            end_date="20260729",
+            day="",
+            year=2024,
+            quarter=4,
+            year_type="",
+            adjustflag="3",
+            frequency="d",
+            limit=0,
+            force=False,
+            continue_on_error=True,
+            runtime_path=None,
+            database="baostock",
+            log_level="INFO",
+            universe_mode="historical",
+        )
+        provider = _FakeBaoStockProvider(codes_by_day={"20260729": ["600000.SH"]})
+        repository = _FakeHistoricalRepository(["000005.SZ", "600000.SH"])
+
+        codes = resolve_code_list(provider, args, repository)
+
+        self.assertEqual(codes, ["000005.SZ", "600000.SH"])
+        self.assertEqual(repository.calls, [("20100101", "20260729")])
+
     def test_historical_universe_refuses_empty_history(self) -> None:
         args = SyncArgs(
             task="daily_kline",
@@ -649,6 +691,23 @@ class BaoStockRepositoryTest(unittest.TestCase):
 
 @unittest.skipIf(pd is None, "pandas is required")
 class BaoStockRunnerExecutionTest(unittest.TestCase):
+    def test_historical_financial_plan_expands_all_years_and_quarters(self) -> None:
+        plan = load_execution_plan_from_toml(
+            "providers/baostock/plans/historical-financial-backfill.toml"
+        )
+
+        self.assertEqual(len(plan.tasks), 413)
+        growth_tasks = [task for task in plan.tasks if task.task == "growth_data"]
+        self.assertEqual(len(growth_tasks), 66)
+        self.assertEqual(
+            (growth_tasks[0].year, growth_tasks[0].quarter, growth_tasks[0].resume),
+            (2010, 1, True),
+        )
+        self.assertEqual(
+            (growth_tasks[-1].year, growth_tasks[-1].quarter, growth_tasks[-1].resume),
+            (2026, 2, False),
+        )
+
     def test_stock_basic_without_codes_uses_one_bulk_request(self) -> None:
         args = SyncArgs(
             task="stock_basic",
@@ -740,6 +799,44 @@ class BaoStockRunnerExecutionTest(unittest.TestCase):
         self.assertEqual(provider.fetch_calls[0]["start_date"], "20240111")
         self.assertEqual(provider.fetch_calls[0]["end_date"], "20240131")
         self.assertEqual(repository.saved_request_meta[0]["start_date"], "20240111")
+
+    def test_run_code_task_resume_skips_success_from_prior_date(self) -> None:
+        args = SyncArgs(
+            task="growth_data",
+            codes_raw="600000.SH",
+            begin_date="20100101",
+            end_date="",
+            day="",
+            year=2024,
+            quarter=4,
+            year_type="",
+            adjustflag="3",
+            frequency="d",
+            limit=0,
+            force=False,
+            continue_on_error=True,
+            runtime_path=None,
+            database="baostock",
+            log_level="INFO",
+            universe_mode="historical",
+            resume=True,
+        )
+        provider = _FakeRunProvider(pd.DataFrame())
+        repository = _FakeRunRepository(has_successful_sync=True)
+
+        inserted = run_code_task(args, provider, repository, ["600000.SH"])
+
+        self.assertEqual(inserted, 0)
+        self.assertEqual(provider.fetch_calls, [])
+        self.assertEqual(
+            repository.successful_sync_calls,
+            [
+                (
+                    "growth_data",
+                    "task=growth_data|code=600000.SH|begin=20100101|year=2024|quarter=4",
+                )
+            ],
+        )
 
 
 if __name__ == "__main__":

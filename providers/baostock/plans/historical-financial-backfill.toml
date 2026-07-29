@@ -13,6 +13,87 @@ resume = true
 force = false
 limit = 0
 
+# 六张季频财务表：历史完整季度回填到 2026Q1。
+# growth_data 放在最前面，便于优先修复当前空表。
+[[tasks]]
+task = "growth_data"
+begin_year = 2010
+begin_quarter = 1
+end_year = 2026
+end_quarter = 1
+
+# 2026Q2 已结束但财报仍在披露期。先同步当前可得数据，并允许以后重新执行刷新。
+[[tasks]]
+task = "growth_data"
+year = 2026
+quarter = 2
+resume = false
+
+[[tasks]]
+task = "profit_data"
+begin_year = 2010
+begin_quarter = 1
+end_year = 2026
+end_quarter = 1
+
+[[tasks]]
+task = "profit_data"
+year = 2026
+quarter = 2
+resume = false
+
+[[tasks]]
+task = "operation_data"
+begin_year = 2010
+begin_quarter = 1
+end_year = 2026
+end_quarter = 1
+
+[[tasks]]
+task = "operation_data"
+year = 2026
+quarter = 2
+resume = false
+
+[[tasks]]
+task = "dupont_data"
+begin_year = 2010
+begin_quarter = 1
+end_year = 2026
+end_quarter = 1
+
+[[tasks]]
+task = "dupont_data"
+year = 2026
+quarter = 2
+resume = false
+
+[[tasks]]
+task = "balance_data"
+begin_year = 2010
+begin_quarter = 1
+end_year = 2026
+end_quarter = 1
+
+[[tasks]]
+task = "balance_data"
+year = 2026
+quarter = 2
+resume = false
+
+[[tasks]]
+task = "cash_flow_data"
+begin_year = 2010
+begin_quarter = 1
+end_year = 2026
+end_quarter = 1
+
+[[tasks]]
+task = "cash_flow_data"
+year = 2026
+quarter = 2
+resume = false
+
 # 分红数据：2010-2025 已完整结束，允许断点续跑。
 [[tasks]]
 task = "dividend_data"
@@ -25,84 +106,4 @@ year_type = "report"
 task = "dividend_data"
 year = 2026
 year_type = "report"
-resume = false
-
-# 六张季频财务表：历史完整季度回填到 2026Q1。
-[[tasks]]
-task = "profit_data"
-begin_year = 2010
-begin_quarter = 1
-end_year = 2026
-end_quarter = 1
-
-[[tasks]]
-task = "operation_data"
-begin_year = 2010
-begin_quarter = 1
-end_year = 2026
-end_quarter = 1
-
-[[tasks]]
-task = "growth_data"
-begin_year = 2010
-begin_quarter = 1
-end_year = 2026
-end_quarter = 1
-
-[[tasks]]
-task = "dupont_data"
-begin_year = 2010
-begin_quarter = 1
-end_year = 2026
-end_quarter = 1
-
-[[tasks]]
-task = "balance_data"
-begin_year = 2010
-begin_quarter = 1
-end_year = 2026
-end_quarter = 1
-
-[[tasks]]
-task = "cash_flow_data"
-begin_year = 2010
-begin_quarter = 1
-end_year = 2026
-end_quarter = 1
-
-# 2026Q2 已结束但财报仍在披露期。先同步当前可得数据，并允许以后重新执行刷新。
-[[tasks]]
-task = "profit_data"
-year = 2026
-quarter = 2
-resume = false
-
-[[tasks]]
-task = "operation_data"
-year = 2026
-quarter = 2
-resume = false
-
-[[tasks]]
-task = "growth_data"
-year = 2026
-quarter = 2
-resume = false
-
-[[tasks]]
-task = "dupont_data"
-year = 2026
-quarter = 2
-resume = false
-
-[[tasks]]
-task = "balance_data"
-year = 2026
-quarter = 2
-resume = false
-
-[[tasks]]
-task = "cash_flow_data"
-year = 2026
-quarter = 2
 resume = false
