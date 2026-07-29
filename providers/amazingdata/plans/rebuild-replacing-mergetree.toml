@@ -1,0 +1,59 @@
+# Rebuild AmazingData tables whose old ReplacingMergeTree keys collapsed
+# distinct report versions or same-date business events.
+#
+# Run this plan only after deploying the matching DDL changes and dropping the
+# ten affected tables listed in RUNBOOK.md.
+
+source = "amazingdata"
+log_level = "INFO"
+continue_on_error = true
+
+[defaults]
+begin_date = 20100101
+limit = 0
+force = true
+resume = false
+universe_mode = "missing_historical"
+
+[[tasks]]
+task = "balance_sheet"
+enabled = true
+
+[[tasks]]
+task = "cash_flow"
+enabled = true
+
+[[tasks]]
+task = "income"
+enabled = true
+
+[[tasks]]
+task = "profit_express"
+enabled = true
+
+[[tasks]]
+task = "profit_notice"
+enabled = true
+
+[[tasks]]
+task = "share_holder"
+enabled = true
+
+[[tasks]]
+task = "holder_num"
+enabled = true
+
+[[tasks]]
+task = "equity_pledge_freeze"
+enabled = true
+
+[[tasks]]
+task = "equity_restricted"
+enabled = true
+
+# ad_hist_code_daily currently tracks the A-share universe. ETF fund-share
+# rebuilds therefore use the current ETF universe instead.
+[[tasks]]
+task = "fund_share"
+enabled = true
+universe_mode = "current"

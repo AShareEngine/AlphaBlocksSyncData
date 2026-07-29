@@ -418,9 +418,29 @@ python3 scripts/run_provider_sync.py --config run_sync.baostock.full.toml >> log
   - `ad_income`
   - `ad_profit_express`
   - `ad_profit_notice`
-- `balance_sheet`、`cash_flow`、`income` 普通增量同步会回看 400 天，以捕获次年发布的上年同期调整报表
-- `balance_sheet`、`cash_flow`、`income` 使用 `--force` 时会从指定的 `begin_date` 重新拉取
-- 其他任务优先按业务表已有最大日期做增量
+- 五类报告任务普通增量同步都会回看 400 天，以捕获调整报表、业绩快报修订和业绩预告修订
+- 五类报告任务使用 `--force` 时都会从指定的 `begin_date` 重新拉取
+- `profit_express` 以报告期、公告日期和实际公告日期区分版本
+- `profit_notice` 还会按预告类型、报告类型和预告序号区分同一报告期的多条记录
+
+### ReplacingMergeTree 多版本表重建
+
+旧排序键可能合并不同业务记录的表共有 10 张：
+
+- `ad_balance_sheet`
+- `ad_cash_flow`
+- `ad_income`
+- `ad_profit_express`
+- `ad_profit_notice`
+- `ad_fund_share`
+- `ad_share_holder`
+- `ad_holder_num`
+- `ad_equity_pledge_freeze`
+- `ad_equity_restricted`
+
+部署新版代码并删除这些旧表后，可以运行
+`providers/amazingdata/plans/rebuild-replacing-mergetree.toml` 一次性重建和回填。
+其他 `ReplacingMergeTree` 表属于证券时点快照、行情、因子、权重或已经包含完整事件维度，不需要重建。
 
 ### share_holder / holder_num / equity_structure
 
@@ -430,7 +450,9 @@ python3 scripts/run_provider_sync.py --config run_sync.baostock.full.toml >> log
   - `ad_share_holder`
   - `ad_holder_num`
   - `ad_equity_structure`
-- 优先按业务表已有最大日期做增量
+- `share_holder` 会按截止日期、公告日期、股东类型和名次保留完整版本
+- `holder_num` 会按截止日期和公告日期保留修订版本
+- `share_holder`、`holder_num` 普通增量同步回看 400 天；`--force` 从指定的 `begin_date` 开始
 
 ### equity_pledge_freeze / equity_restricted
 
@@ -439,7 +461,9 @@ python3 scripts/run_provider_sync.py --config run_sync.baostock.full.toml >> log
 - 数据分别落到：
   - `ad_equity_pledge_freeze`
   - `ad_equity_restricted`
-- 优先按业务表已有最大日期做增量
+- `equity_pledge_freeze` 会区分持有人、质押起始日、冻结机构、股份类别和冻结类型
+- `equity_restricted` 会区分同日不同解禁股份类型
+- `equity_restricted` 普通增量同步回看 400 天；两项任务的 `--force` 都会从指定的 `begin_date` 开始
 
 ### dividend / right_issue
 
@@ -458,6 +482,7 @@ python3 scripts/run_provider_sync.py --config run_sync.baostock.full.toml >> log
   - `ad_fund_share`
   - `ad_fund_iopv`
 - `etf_pcf` 当前会同时同步主表和 constituent 明细
+- `fund_share` 会区分合并口径、单体口径和变动原因，并在增量同步时回看 400 天
 
 ### kzz_*
 

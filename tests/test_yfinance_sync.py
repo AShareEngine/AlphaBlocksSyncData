@@ -408,6 +408,17 @@ class YFinanceRepositoryTest(unittest.TestCase):
         self.assertIn("yf_daily_kline", ddl)
         self.assertIn("yf_concept_membership", ddl)
 
+    def test_saved_symbol_universe_filters_non_common_security_names(self) -> None:
+        client = _FakeClickHouseClient()
+        repository = YFinanceRepository(client, database="yfinance")
+
+        repository.load_symbols()
+
+        sql = client.query_rows_calls[-1].lower()
+        self.assertIn("positioncaseinsensitiveutf8(name, 'preference')", sql)
+        self.assertIn("positioncaseinsensitiveutf8(name, 'preferred')", sql)
+        self.assertIn("positioncaseinsensitiveutf8(name, 'warrant')", sql)
+
 
 class YFinanceRunnerTest(unittest.TestCase):
     def test_daily_task_writes_data_cursor_and_sync_log(self) -> None:

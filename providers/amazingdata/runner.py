@@ -2081,6 +2081,9 @@ def resolve_missing_historical_code_list(
     limit: int,
 ) -> list[str]:
     target_table = TASK_TARGET_TABLE_MAP[task]
+    security_type = resolve_task_security_type(task)
+    if task in {"daily_kline", "minute_kline"}:
+        security_type = DEFAULT_SYNC_SECURITY_TYPE
     client = context.base_data.repository.client
     columns = {
         str(row[0])
@@ -2106,7 +2109,7 @@ def resolve_missing_historical_code_list(
     (
         SELECT DISTINCT code
         FROM starlight.ad_hist_code_daily
-        WHERE security_type = 'EXTRA_STOCK_A'
+        WHERE security_type = {{security_type:String}}
           AND trade_date >= {{begin_date:Date}}
           AND trade_date <= {{end_date:Date}}
     ),
@@ -2123,6 +2126,7 @@ def resolve_missing_historical_code_list(
     rows = client.query_rows(
         sql,
         {
+            "security_type": security_type,
             "begin_date": to_ch_date(begin_date),
             "end_date": to_ch_date(end_date),
         },
@@ -2131,9 +2135,10 @@ def resolve_missing_historical_code_list(
     if limit > 0:
         codes = codes[:limit]
     logger.info(
-        "missing historical universe task=%s target=starlight.%s begin=%s end=%s missing=%s",
+        "missing historical universe task=%s target=starlight.%s security_type=%s begin=%s end=%s missing=%s",
         task,
         target_table,
+        security_type,
         begin_date,
         end_date,
         len(codes),

@@ -56,7 +56,11 @@ sync:
 
 Provider 会串行化 Yahoo 请求，每次调用至少间隔 `request_interval_seconds`。遇到 HTTP 429 或 `YFRateLimitError` 时，最多额外重试 `rate_limit_retries` 次，按 `rate_limit_backoff_seconds` 指数退避，并受最大退避时间和随机抖动限制。`network_retries` 是 yfinance 自身针对瞬时网络错误的重试次数。共享代理出口仍可能被 Yahoo 限制，建议保持 `threads: false`。
 
-`active_symbols_only: true` 会使用 Nasdaq Trader 当日证券目录筛选当前正常上市的普通证券，排除 ETF、测试证券、异常上市状态、权证、Rights、Units、优先股和交易所上市债券。目录下载同样使用 `proxy`，获取失败时会停止生成股票池，避免退回 FinanceDatabase 的历史全集后污染日线任务。
+`active_symbols_only: true` 会使用 Nasdaq Trader 当日证券目录筛选当前正常上市的普通证券，排除
+ETF、测试证券、异常上市状态、权证、Rights、Units，以及名称使用 `Preferred` 或英式
+`Preference Shares` 的优先股。读取已有 `yf_symbol_master` 时也会再次执行这层过滤，兼容修复前已经
+写入的旧快照。目录下载同样使用 `proxy`，获取失败时会停止生成股票池，避免退回 FinanceDatabase
+的历史全集后污染日线任务。
 
 FinanceDatabase 会保留退市代码供历史研究，因此不建议关闭 `active_symbols_only`。关闭时只按精确的 NASDAQ、NYSE 和 NYSE American 市场名称过滤；`include_otc: true` 仅在关闭当前证券目录过滤时生效。
 
