@@ -1,0 +1,20 @@
+# BaoStock 历史缺失参考数据定向回补
+#
+# 只同步目标表中完全没有任何记录的历史 A 股。
+# begin_date 固定为 20100101；end_date 留空，运行时自动使用当天。
+
+source = "baostock"
+log_level = "INFO"
+continue_on_error = true
+database = "baostock"
+
+[defaults]
+begin_date = 20100101
+limit = 0
+force = true
+continue_on_error = true
+universe_mode = "missing_historical"
+
+[[tasks]]
+task = "adjust_factor"
+enabled = true

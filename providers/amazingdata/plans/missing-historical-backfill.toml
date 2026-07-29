@@ -1,0 +1,39 @@
+# AmazingData 历史缺失股票定向回补
+#
+# 只同步目标表中完全没有任何记录的历史 A 股。
+# begin_date 固定为 20100101；end_date 留空，运行时自动使用最新交易日。
+
+source = "amazingdata"
+log_level = "INFO"
+continue_on_error = true
+
+[defaults]
+begin_date = 20100101
+limit = 0
+force = true
+resume = false
+universe_mode = "missing_historical"
+
+[[tasks]]
+task = "income"
+enabled = true
+
+[[tasks]]
+task = "balance_sheet"
+enabled = true
+
+[[tasks]]
+task = "cash_flow"
+enabled = true
+
+[[tasks]]
+task = "equity_structure"
+enabled = true
+
+[[tasks]]
+task = "history_stock_status"
+enabled = true
+
+[[tasks]]
+task = "stock_basic"
+enabled = true

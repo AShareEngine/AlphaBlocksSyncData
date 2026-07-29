@@ -7,7 +7,7 @@ default_database = "starlight"
 plans_path = "plans"
 dependencies = ["pandas", "clickhouse-connect"]
 import_modules = ["AmazingData"]
-plan_fields = ["codes", "begin_date", "end_date", "limit", "force", "resume"]
+plan_fields = ["codes", "begin_date", "end_date", "limit", "force", "resume", "universe_mode"]
 
 [entrypoints]
 provider = "provider:AmazingDataSDKProvider"
@@ -40,13 +40,13 @@ request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "
 name = "stock_basic"
 target = "ad_stock_basic"
 supports_incremental = false
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "history_stock_status"
 target = "ad_history_stock_status"
 supports_incremental = false
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "adj_factor"
@@ -64,19 +64,19 @@ request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "
 name = "balance_sheet"
 target = "ad_balance_sheet"
 supports_incremental = false
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "cash_flow"
 target = "ad_cash_flow"
 supports_incremental = false
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "income"
 target = "ad_income"
 supports_incremental = false
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "profit_express"
@@ -106,7 +106,7 @@ request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "
 name = "equity_structure"
 target = "ad_equity_structure"
 supports_incremental = false
-request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "resume", "log_level"]
+request_fields = ["name", "codes", "begin_date", "end_date", "universe_mode", "limit", "force", "resume", "log_level"]
 
 [[tasks]]
 name = "equity_pledge_freeze"

@@ -40,7 +40,6 @@ AlphaBlocks 对 2020-05-06 的数据覆盖审计结果：
   - `000150.SZ`
 - 上述样本在以下表的目标日期附近均没有数据：
   - `baostock.bs_daily_kline`
-  - `baostock.stock_daily_real`
   - `starlight.ad_market_kline_daily`
   - `starlight.ad_history_stock_status`
   - `ab_factor.stock_daily_factor_source`
@@ -331,17 +330,19 @@ python3 scripts/run_provider_sync.py baostock.daily_kline \
 
 ## 数据回补后的下游操作
 
-1. 重建或重新同步依赖 `baostock.bs_daily_kline` 的宽表：
-   - `baostock.stock_daily_real`
-   - 相关行情、状态、估值因子表。
-2. AlphaBlocks 侧失效以下实体资产/查询缓存：
+1. 补齐持久原始表：
+   - `baostock.bs_daily_kline`
+   - `starlight.ad_market_kline_daily`
+   - `starlight.ad_history_stock_status`
+2. 验证依赖这些原始表的 `ab_factor.stock_daily_factor_source` 视图。
+3. AlphaBlocks 侧失效以下实体资产/查询缓存：
    - `market.daily_bars`
    - `market.current_state`
    - `valuation.daily_snapshot`
-3. 先重新运行 2020Q2 输入对齐探针。
-4. 只有在股票池数量、中位数阈值和选股结果接近 JoinQuant 后，再运行完整 2020–2024 回测。
+4. 先重新运行 2020Q2 输入对齐探针。
+5. 只有在股票池数量、中位数阈值和选股结果接近 JoinQuant 后，再运行完整 2020–2024 回测。
 
-不要只重新同步 `stock_daily_real`。如果 `bs_daily_kline` 没有退市证券的原始行，宽表重建无法凭空补出数据。
+`stock_daily_real` 不属于本次回补与验收范围。不能通过重建其他派生表来绕过原始表的数据缺口。
 
 ## AlphaBlocks 侧复验基线
 

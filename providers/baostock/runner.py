@@ -303,7 +303,7 @@ def resolve_historical_code_list(
             "拒绝降级为当前股票池；请先同步 amazingdata.hist_code_list。"
         )
     if _normalize_universe_mode(args.universe_mode) == "missing_historical":
-        existing_codes = repository.load_daily_kline_codes(begin_day, end_day)
+        existing_codes = repository.load_task_codes(args.task, begin_day, end_day)
         codes = sorted(set(historical_codes) - set(existing_codes))
         logger.info(
             "BaoStock missing historical universe begin=%s end=%s historical=%s existing=%s missing=%s",

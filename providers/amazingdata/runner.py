@@ -230,6 +230,7 @@ TASK_CONFIG_KEYS = frozenset(
         "limit",
         "force",
         "resume",
+        "universe_mode",
     }
 )
 DEFAULT_CONFIG_KEYS = frozenset(
@@ -240,6 +241,7 @@ DEFAULT_CONFIG_KEYS = frozenset(
         "limit",
         "force",
         "resume",
+        "universe_mode",
     }
 )
 
@@ -253,6 +255,7 @@ class TaskRunSpec:
     limit: int = 0
     force: bool = False
     resume: bool = False
+    universe_mode: str = "current"
 
 
 @dataclass(frozen=True)
@@ -350,6 +353,7 @@ def build_execution_plan(args: argparse.Namespace) -> ExecutionPlan:
                 limit=args.limit,
                 force=args.force,
                 resume=args.resume,
+                universe_mode="current",
             ),
         ),
     )
@@ -413,6 +417,10 @@ def load_execution_plan_from_toml(path: str) -> ExecutionPlan:
                 limit=_as_non_negative_int(merged.get("limit", 0), field_name=f"tasks[{index}].limit"),
                 force=_as_bool(merged.get("force", False), field_name=f"tasks[{index}].force"),
                 resume=_as_bool(merged.get("resume", False), field_name=f"tasks[{index}].resume"),
+                universe_mode=_normalize_universe_mode(
+                    merged.get("universe_mode", "current"),
+                    field_name=f"tasks[{index}].universe_mode",
+                ),
             )
         )
 
@@ -465,6 +473,13 @@ def _as_bool(value: Any, field_name: str) -> bool:
     if isinstance(value, bool):
         return value
     raise ValueError(f"{field_name} 必须是布尔值。")
+
+
+def _normalize_universe_mode(value: Any, *, field_name: str = "universe_mode") -> str:
+    mode = str(value or "current").strip().lower() or "current"
+    if mode not in {"current", "missing_historical"}:
+        raise ValueError(f"{field_name} 必须是 current 或 missing_historical，当前值: {value!r}")
+    return mode
 
 
 def main() -> int:
@@ -608,6 +623,9 @@ def run_registered_task(probe: Any) -> int:
         limit=probe.limit,
         force=probe.force,
         resume=probe.resume,
+        universe_mode=_normalize_universe_mode(
+            getattr(probe, "input_universe_mode", None),
+        ),
     )
     inserted = execute_task_spec(probe.context, task_spec)
     probe.set_row_count(inserted)
@@ -634,7 +652,15 @@ def execute_task_spec(context: SyncExecutionContext, task_spec: TaskRunSpec) -> 
     display_end_date = "N/A" if ignores_date_range else end_date
     code_list: list[str] = []
     if task_requires_code_list(task_spec.task):
-        if task_spec.task == "backward_factor":
+        if task_spec.universe_mode == "missing_historical" and not task_spec.codes_raw.strip():
+            code_list = resolve_missing_historical_code_list(
+                context=context,
+                task=task_spec.task,
+                begin_date=begin_date,
+                end_date=end_date,
+                limit=task_spec.limit,
+            )
+        elif task_spec.task == "backward_factor":
             code_list = resolve_backward_factor_code_list(
                 base_data=context.base_data,
                 raw_codes=task_spec.codes_raw,
@@ -2044,6 +2070,75 @@ def is_option_task(task: str) -> bool:
 
 def task_requires_code_list(task: str) -> bool:
     return task not in {"bj_code_mapping", "industry_base_info", "margin_summary", "hist_code_list"}
+
+
+def resolve_missing_historical_code_list(
+    *,
+    context: SyncExecutionContext,
+    task: str,
+    begin_date: int,
+    end_date: int,
+    limit: int,
+) -> list[str]:
+    target_table = TASK_TARGET_TABLE_MAP[task]
+    client = context.base_data.repository.client
+    columns = {
+        str(row[0])
+        for row in client.query_rows(
+            """
+            SELECT name
+            FROM system.columns
+            WHERE database = 'starlight'
+              AND table = {table:String}
+            """,
+            {"table": target_table},
+        )
+    }
+    if "code" in columns:
+        code_column = "code"
+    elif "market_code" in columns:
+        code_column = "market_code"
+    else:
+        raise ValueError(f"目标表 starlight.{target_table} 没有 code/market_code 字段。")
+
+    sql = f"""
+    WITH historical AS
+    (
+        SELECT DISTINCT code
+        FROM starlight.ad_hist_code_daily
+        WHERE security_type = 'EXTRA_STOCK_A'
+          AND trade_date >= {{begin_date:Date}}
+          AND trade_date <= {{end_date:Date}}
+    ),
+    existing AS
+    (
+        SELECT DISTINCT {code_column} AS code
+        FROM starlight.{target_table}
+    )
+    SELECT historical.code
+    FROM historical
+    LEFT ANTI JOIN existing USING code
+    ORDER BY historical.code
+    """
+    rows = client.query_rows(
+        sql,
+        {
+            "begin_date": to_ch_date(begin_date),
+            "end_date": to_ch_date(end_date),
+        },
+    )
+    codes = normalize_code_list([str(row[0]) for row in rows if row and row[0] is not None])
+    if limit > 0:
+        codes = codes[:limit]
+    logger.info(
+        "missing historical universe task=%s target=starlight.%s begin=%s end=%s missing=%s",
+        task,
+        target_table,
+        begin_date,
+        end_date,
+        len(codes),
+    )
+    return codes
 
 
 def resolve_task_run_mode(task: str) -> str:

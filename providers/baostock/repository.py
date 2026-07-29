@@ -254,6 +254,21 @@ class BaoStockRepository:
             [str(row[0]) for row in rows if row and row[0] is not None]
         )
 
+    def load_task_codes(self, task: str, begin_date: str, end_date: str) -> list[str]:
+        """Load codes already present in a BaoStock target table."""
+        if task == "daily_kline":
+            return self.load_daily_kline_codes(begin_date, end_date)
+        spec = BAOSTOCK_TASK_SPECS[task]
+        if not spec.has_code_field:
+            return []
+        table = self._table_ref(spec.table_name)
+        rows = self.client.query_rows(
+            f"SELECT code FROM {table} GROUP BY code ORDER BY code"
+        )
+        return normalize_baostock_code_list(
+            [str(row[0]) for row in rows if row and row[0] is not None]
+        )
+
     def _insert_rows_in_batches(
         self,
         table: str,

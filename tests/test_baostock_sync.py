@@ -89,6 +89,10 @@ class _FakeHistoricalRepository:
         self.existing_calls.append((begin_date, end_date))
         return list(self.existing_codes)
 
+    def load_task_codes(self, task: str, begin_date: str, end_date: str) -> list[str]:
+        self.existing_calls.append((begin_date, end_date))
+        return list(self.existing_codes)
+
 
 class _FakeRunRepository:
     def __init__(self, latest_cursor: str | None = None) -> None:
