@@ -37,6 +37,9 @@ python3 scripts/run_provider_sync.py baostock.<task> [options]
 - `--universe-mode historical` 从 `starlight.ad_hist_code_daily` 读取请求区间内
   `security_type='EXTRA_STOCK_A'` 的历史股票代码，并与结束日附近的 BaoStock
   当前证券列表取并集，适合包含退市股票的历史回补。
+- 对 `dividend_data` 和六张年/季频财务表，代码池会额外按
+  `baostock.bs_stock_basic.type='1'` 限定为股票；这些任务不会把指数、ETF、
+  可转债等 `query_all_stock` 证券拿去请求财务接口。日线任务仍保留全市场并集。
 - `--universe-mode missing_historical` 仅保留请求区间内在 `bs_daily_kline`
   完全没有任何记录的历史 A 股。它不会重跑已有股票，也不检查已有股票内部的日期缺口。
 - 若请求从 2010 年开始，应先确认 `ad_hist_code_daily` 也覆盖到 2010；否则可以从

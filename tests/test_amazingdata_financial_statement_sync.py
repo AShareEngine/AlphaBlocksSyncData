@@ -13,7 +13,7 @@ from sync_data_system.clickhouse_tables import (
 )
 from sync_data_system.data_models import BalanceSheetRow, CashFlowRow, IncomeRow
 from sync_data_system.providers.amazingdata.info import (
-    FINANCIAL_STATEMENT_LOOKBACK_DAYS,
+    HISTORICAL_REVISION_LOOKBACK_DAYS,
     InfoData,
 )
 
@@ -131,7 +131,7 @@ class AmazingDataFinancialStatementSyncTest(unittest.TestCase):
         self.assertEqual(inserted, 1)
         self.assertEqual(
             provider.calls[0][2],
-            latest_date - timedelta(days=FINANCIAL_STATEMENT_LOOKBACK_DAYS),
+            latest_date - timedelta(days=HISTORICAL_REVISION_LOOKBACK_DAYS),
         )
         self.assertEqual(provider.calls[0][3], date(2026, 12, 31))
 

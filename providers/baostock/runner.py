@@ -262,8 +262,11 @@ def resolve_code_list(
     elif spec.supports_bulk_without_code:
         codes = []
     elif spec.auto_code_universe:
-        if _normalize_universe_mode(args.universe_mode) in {"historical", "missing_historical"}:
+        universe_mode = _normalize_universe_mode(args.universe_mode)
+        if universe_mode in {"historical", "missing_historical"}:
             codes = resolve_historical_code_list(provider, args, repository)
+        elif spec.uses_year:
+            codes = resolve_current_stock_code_list(args, repository)
         else:
             codes = resolve_current_code_list(provider, args)
     else:
@@ -283,6 +286,23 @@ def resolve_current_code_list(provider: BaoStockProvider, args: SyncArgs) -> lis
             args.task,
             snapshot_day,
             resolved_day,
+        )
+    return normalize_baostock_code_list(codes)
+
+
+def resolve_current_stock_code_list(
+    args: SyncArgs,
+    repository: BaoStockRepository | None,
+) -> list[str]:
+    """Resolve stock-only codes for year/quarter financial APIs."""
+    if repository is None:
+        raise ValueError(f"BaoStock 任务 {args.task} 的股票代码池需要 Repository 读取 bs_stock_basic。")
+    snapshot_day = _normalize_universe_day(args.day or args.end_date) or default_request_end("day")
+    codes = repository.load_stock_basic_codes(snapshot_day, snapshot_day)
+    if not codes:
+        raise ValueError(
+            "baostock.bs_stock_basic 没有可用的 type='1' 股票代码，"
+            "请先同步 baostock.stock_basic；拒绝使用包含指数/ETF 的 all_stock 代码池。"
         )
     return normalize_baostock_code_list(codes)
 
@@ -323,6 +343,23 @@ def resolve_historical_code_list(
             len(existing_codes),
             len(codes),
         )
+        return codes
+
+    if spec.uses_year:
+        stock_basic_codes = repository.load_stock_basic_codes(begin_day, end_day)
+        codes = sorted(set(stock_basic_codes) | set(historical_codes))
+        logger.info(
+            "BaoStock historical stock-only universe task=%s begin=%s end=%s "
+            "amazingdata_stocks=%s baostock_stocks=%s merged=%s",
+            args.task,
+            begin_day,
+            end_day,
+            len(historical_codes),
+            len(stock_basic_codes),
+            len(codes),
+        )
+        if not codes:
+            raise ValueError("BaoStock historical 股票代码池为空，拒绝继续同步。")
         return codes
 
     current_codes = resolve_current_code_list(provider, args)

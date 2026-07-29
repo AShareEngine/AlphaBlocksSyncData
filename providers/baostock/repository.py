@@ -251,6 +251,31 @@ class BaoStockRepository:
         self._historical_stock_codes_cache[cache_key] = list(codes)
         return codes
 
+    def load_stock_basic_codes(self, begin_date: str, end_date: str) -> list[str]:
+        """Load stock-only codes whose listing interval overlaps the requested interval."""
+        begin_day = to_ch_date(begin_date).isoformat()
+        end_day = to_ch_date(end_date).isoformat()
+        table = self._table_ref(BAOSTOCK_TASK_SPECS["stock_basic"].table_name)
+        sql = f"""
+        SELECT code
+        FROM {table}
+        WHERE type = '1'
+          AND (ipo_date = '' OR ipo_date <= {{end_date:String}})
+          AND (out_date = '' OR out_date >= {{begin_date:String}})
+        GROUP BY code
+        ORDER BY code
+        """
+        rows = self.client.query_rows(
+            sql,
+            {
+                "begin_date": begin_day,
+                "end_date": end_day,
+            },
+        )
+        return normalize_baostock_code_list(
+            [str(row[0]) for row in rows if row and row[0] is not None]
+        )
+
     def load_daily_kline_codes(self, begin_date: str, end_date: str) -> list[str]:
         """Load codes that already have at least one daily row in the interval."""
         table = self._table_ref(BAOSTOCK_TASK_SPECS["daily_kline"].table_name)

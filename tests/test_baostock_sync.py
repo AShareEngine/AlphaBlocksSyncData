@@ -83,11 +83,18 @@ class _FakeBaoStockProvider:
 
 
 class _FakeHistoricalRepository:
-    def __init__(self, codes: list[str], existing_codes: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        codes: list[str],
+        existing_codes: list[str] | None = None,
+        stock_basic_codes: list[str] | None = None,
+    ) -> None:
         self.codes = codes
         self.existing_codes = existing_codes or []
+        self.stock_basic_codes = stock_basic_codes or []
         self.calls: list[tuple[str, str]] = []
         self.existing_calls: list[tuple[str, str]] = []
+        self.stock_basic_calls: list[tuple[str, str]] = []
 
     def load_historical_stock_codes(self, begin_date: str, end_date: str) -> list[str]:
         self.calls.append((begin_date, end_date))
@@ -100,6 +107,10 @@ class _FakeHistoricalRepository:
     def load_task_codes(self, task: str, begin_date: str, end_date: str) -> list[str]:
         self.existing_calls.append((begin_date, end_date))
         return list(self.existing_codes)
+
+    def load_stock_basic_codes(self, begin_date: str, end_date: str) -> list[str]:
+        self.stock_basic_calls.append((begin_date, end_date))
+        return list(self.stock_basic_codes)
 
 
 class _FakeRunRepository:
@@ -422,13 +433,54 @@ class BaoStockIncrementalHelperTest(unittest.TestCase):
             log_level="INFO",
             universe_mode="historical",
         )
-        provider = _FakeBaoStockProvider(codes_by_day={"20260729": ["600000.SH"]})
-        repository = _FakeHistoricalRepository(["000005.SZ", "600000.SH"])
+        provider = _FakeBaoStockProvider(
+            codes_by_day={"20260729": ["000300.SH", "510300.SH", "600000.SH"]}
+        )
+        repository = _FakeHistoricalRepository(
+            ["000005.SZ", "600000.SH"],
+            stock_basic_codes=["001234.SZ", "600000.SH"],
+        )
 
         codes = resolve_code_list(provider, args, repository)
 
-        self.assertEqual(codes, ["000005.SZ", "600000.SH"])
+        self.assertEqual(codes, ["000005.SZ", "001234.SZ", "600000.SH"])
         self.assertEqual(repository.calls, [("20100101", "20260729")])
+        self.assertEqual(repository.stock_basic_calls, [("20100101", "20260729")])
+        self.assertEqual(provider.fetch_latest_all_stock_calls, [])
+
+    def test_quarterly_finance_current_universe_uses_stock_basic_not_all_stock(self) -> None:
+        args = SyncArgs(
+            task="growth_data",
+            codes_raw="",
+            begin_date="",
+            end_date="20260729",
+            day="",
+            year=2026,
+            quarter=2,
+            year_type="",
+            adjustflag="3",
+            frequency="d",
+            limit=0,
+            force=False,
+            continue_on_error=True,
+            runtime_path=None,
+            database="baostock",
+            log_level="INFO",
+            universe_mode="current",
+        )
+        provider = _FakeBaoStockProvider(
+            codes_by_day={"20260729": ["000300.SH", "510300.SH", "600000.SH"]}
+        )
+        repository = _FakeHistoricalRepository(
+            [],
+            stock_basic_codes=["000001.SZ", "600000.SH"],
+        )
+
+        codes = resolve_code_list(provider, args, repository)
+
+        self.assertEqual(codes, ["000001.SZ", "600000.SH"])
+        self.assertEqual(repository.stock_basic_calls, [("20260729", "20260729")])
+        self.assertEqual(provider.fetch_latest_all_stock_calls, [])
 
     def test_historical_universe_refuses_empty_history(self) -> None:
         args = SyncArgs(
@@ -593,6 +645,27 @@ class BaoStockRepositoryTest(unittest.TestCase):
         codes = repository.load_daily_kline_codes("20100101", "20241231")
 
         self.assertEqual(codes, ["000005.SZ", "600000.SH"])
+
+    def test_load_stock_basic_codes_filters_type_one_and_listing_interval(self) -> None:
+        client = _FakeClickHouseClient()
+        captured: dict[str, object] = {}
+
+        def query_rows(sql, parameters=None):
+            captured["sql"] = sql
+            captured["parameters"] = parameters
+            return [("sz.000005",), ("600000.SH",)]
+
+        client.query_rows = query_rows
+        repository = BaoStockRepository(client, database="baostock")
+
+        codes = repository.load_stock_basic_codes("20100101", "20260729")
+
+        self.assertEqual(codes, ["000005.SZ", "600000.SH"])
+        self.assertIn("type = '1'", str(captured["sql"]))
+        self.assertEqual(
+            captured["parameters"],
+            {"begin_date": "2010-01-01", "end_date": "2026-07-29"},
+        )
 
     def test_save_task_frame_normalizes_code_column(self) -> None:
         client = _FakeClickHouseClient()

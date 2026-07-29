@@ -469,11 +469,19 @@ CREATE TABLE IF NOT EXISTS {AD_PROFIT_EXPRESS_TABLE}
     market_code String,
     report_date Nullable(Date),
     report_date_raw Nullable(String),
-    payload_json String
+    payload_json String,
+    reporting_period Nullable(Date),
+    ann_date Nullable(Date),
+    actual_ann_date Nullable(Date)
 )
 ENGINE = ReplacingMergeTree
-PARTITION BY toYYYYMM(ifNull(report_date, toDate('1970-01-01')))
-ORDER BY (market_code, ifNull(report_date, toDate('1970-01-01')))
+PARTITION BY toYYYYMM(ifNull(reporting_period, ifNull(report_date, toDate('1970-01-01'))))
+ORDER BY (
+    market_code,
+    ifNull(reporting_period, ifNull(report_date, toDate('1970-01-01'))),
+    ifNull(ann_date, toDate('1970-01-01')),
+    ifNull(actual_ann_date, toDate('1970-01-01'))
+)
 """
 
 
@@ -483,11 +491,25 @@ CREATE TABLE IF NOT EXISTS {AD_PROFIT_NOTICE_TABLE}
     market_code String,
     report_date Nullable(Date),
     report_date_raw Nullable(String),
-    payload_json String
+    payload_json String,
+    p_typecode Nullable(String),
+    reporting_period Nullable(Date),
+    ann_date Nullable(Date),
+    first_ann_date Nullable(Date),
+    p_number Nullable(Float64),
+    report_type Nullable(String)
 )
 ENGINE = ReplacingMergeTree
-PARTITION BY toYYYYMM(ifNull(report_date, toDate('1970-01-01')))
-ORDER BY (market_code, ifNull(report_date, toDate('1970-01-01')))
+PARTITION BY toYYYYMM(ifNull(reporting_period, ifNull(report_date, toDate('1970-01-01'))))
+ORDER BY (
+    market_code,
+    ifNull(reporting_period, ifNull(report_date, toDate('1970-01-01'))),
+    ifNull(ann_date, toDate('1970-01-01')),
+    ifNull(first_ann_date, toDate('1970-01-01')),
+    ifNull(p_typecode, ''),
+    ifNull(report_type, ''),
+    ifNull(p_number, -1)
+)
 """
 
 
@@ -508,7 +530,9 @@ PARTITION BY toYYYYMM(ifNull(change_date, toDate('1970-01-01')))
 ORDER BY (
     market_code,
     ifNull(change_date, toDate('1970-01-01')),
-    ifNull(ann_date, toDate('1970-01-01'))
+    ifNull(ann_date, toDate('1970-01-01')),
+    ifNull(is_consolidated_data, -1),
+    ifNull(change_reason, '')
 )
 """
 
@@ -978,6 +1002,8 @@ PARTITION BY toYYYYMM(ifNull(holder_enddate, toDate('1970-01-01')))
 ORDER BY (
     market_code,
     ifNull(holder_enddate, toDate('1970-01-01')),
+    ifNull(ann_date, toDate('1970-01-01')),
+    ifNull(holder_type, -1),
     ifNull(qty_num, -1)
 )
 """
@@ -994,7 +1020,11 @@ CREATE TABLE IF NOT EXISTS {AD_HOLDER_NUM_TABLE}
 )
 ENGINE = ReplacingMergeTree
 PARTITION BY toYYYYMM(ifNull(holder_enddate, toDate('1970-01-01')))
-ORDER BY (market_code, ifNull(holder_enddate, toDate('1970-01-01')))
+ORDER BY (
+    market_code,
+    ifNull(holder_enddate, toDate('1970-01-01')),
+    ifNull(ann_dt, toDate('1970-01-01'))
+)
 """
 
 
@@ -1093,7 +1123,13 @@ PARTITION BY toYYYYMM(ifNull(ann_date, toDate('1970-01-01')))
 ORDER BY (
     market_code,
     ifNull(ann_date, toDate('1970-01-01')),
-    ifNull(holder_name, '')
+    ifNull(holder_name, ''),
+    ifNull(holder_type_code, -1),
+    ifNull(begin_date, toDate('1970-01-01')),
+    ifNull(frozen_institution, ''),
+    ifNull(shr_category_code, -1),
+    ifNull(freeze_type, -1),
+    ifNull(is_equity_pledge_repo, -1)
 )
 """
 
@@ -1112,7 +1148,12 @@ CREATE TABLE IF NOT EXISTS {AD_EQUITY_RESTRICTED_TABLE}
 )
 ENGINE = ReplacingMergeTree
 PARTITION BY toYYYYMM(ifNull(list_date, toDate('1970-01-01')))
-ORDER BY (market_code, ifNull(list_date, toDate('1970-01-01')))
+ORDER BY (
+    market_code,
+    ifNull(list_date, toDate('1970-01-01')),
+    ifNull(share_lst_type_name, ''),
+    ifNull(share_lst_is_ann, -1)
+)
 """
 
 
