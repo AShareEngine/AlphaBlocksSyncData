@@ -597,9 +597,16 @@ def _sync_config_response(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _job_response(job) -> dict[str, Any]:
+    try:
+        queue_position = JOB_MANAGER.queue_position(job.job_id)
+        provider_runs = JOB_MANAGER.provider_queue_positions(job.job_id)
+    except KeyError:
+        queue_position = None
+        provider_runs = []
     return {
         **job.__dict__,
-        "queue_position": JOB_MANAGER.queue_position(job.job_id),
+        "queue_position": queue_position,
+        "provider_runs": provider_runs,
     }
 
 

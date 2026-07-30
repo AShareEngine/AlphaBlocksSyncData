@@ -29,6 +29,9 @@ runtime_state:
   database: alphablocks
 
 sync:
+  scheduler:
+    # 不同供应商可并发；同一供应商内始终串行。
+    max_parallel_providers: 3
   akshare:
     proxy: ''
     request_interval_seconds: 1.0

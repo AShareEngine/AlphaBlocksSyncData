@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Background job manager for provider sync jobs."""
+"""Background job manager with global per-provider FIFO lanes."""
 
 from __future__ import annotations
 
@@ -10,14 +10,28 @@ import subprocess
 import sys
 import threading
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from sync_data_system.config_paths import resolve_runtime_config_path
 from sync_data_system.core.providers import load_provider_registry
+from sync_data_system.runtime_config import load_runtime_config
 from sync_data_system.service.log_redaction import redact_sensitive_text
 from sync_data_system.service.task_registry import TASK_REGISTRY
+
+
+DEFAULT_MAX_PARALLEL_PROVIDERS = 3
+ACTIVE_STATUSES = {"queued", "running", "cancelling"}
+PROCESS_ACTIVE_STATUSES = {"running", "cancelling"}
+TERMINAL_STATUSES = {
+    "success",
+    "partial_success",
+    "failed",
+    "cancelled",
+    "interrupted",
+}
 
 
 def utc_now_iso() -> str:
@@ -52,10 +66,18 @@ class JobRecord:
     config_name: Optional[str] = None
     task_results_path: Optional[str] = None
     trigger: Optional[str] = None
+    parent_job_id: Optional[str] = None
+    child_job_ids: list[str] = field(default_factory=list)
 
 
 class SyncJobManager:
-    def __init__(self, project_root: Path, state_dir: Optional[Path] = None) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        state_dir: Optional[Path] = None,
+        *,
+        max_parallel_providers: Optional[int] = None,
+    ) -> None:
         self.project_root = Path(project_root).resolve()
         self.state_dir = (state_dir or (self.project_root / ".service_state")).resolve()
         self.jobs_dir = self.state_dir / "jobs"
@@ -63,9 +85,13 @@ class SyncJobManager:
         self.queue_path = self.state_dir / "job_queue.json"
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.max_parallel_providers = self._resolve_max_parallel_providers(
+            max_parallel_providers
+        )
         self._lock = threading.RLock()
         self._jobs: dict[str, JobRecord] = {}
         self._processes: dict[str, subprocess.Popen] = {}
+        # Only executable jobs live in this queue. Parent jobs aggregate child state.
         self._queue: list[str] = []
         self._load_existing_jobs()
         self._load_queue()
@@ -77,13 +103,22 @@ class SyncJobManager:
         status: Optional[str] = None,
         task: Optional[str] = None,
         kind: Optional[str] = None,
+        include_children: bool = False,
     ) -> list[JobRecord]:
         with self._lock:
-            jobs = list(self._jobs.values())
-        for job in jobs:
-            self._refresh_job(job.job_id)
+            job_ids = [
+                job.job_id
+                for job in self._jobs.values()
+                if include_children or not job.parent_job_id
+            ]
+        for job_id in job_ids:
+            self._refresh_job(job_id)
         with self._lock:
-            items = list(self._jobs.values())
+            items = [
+                job
+                for job in self._jobs.values()
+                if include_children or not job.parent_job_id
+            ]
         if status:
             items = [job for job in items if job.status == status]
         if task:
@@ -99,13 +134,27 @@ class SyncJobManager:
                 raise KeyError(f"job not found: {job_id}")
             return self._jobs[job_id]
 
+    def get_child_jobs(self, job_id: str) -> list[JobRecord]:
+        self._refresh_job(job_id)
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise KeyError(f"job not found: {job_id}")
+            return [
+                self._jobs[child_id]
+                for child_id in job.child_job_ids
+                if child_id in self._jobs
+            ]
+
     def get_running_jobs(self) -> list[JobRecord]:
-        jobs = self.list_jobs()
-        return [job for job in jobs if job.status in {"running", "cancelling"}]
+        return [
+            job
+            for job in self.list_jobs()
+            if job.status in {"running", "cancelling"}
+        ]
 
     def get_active_jobs(self, *, config_id: Optional[str] = None) -> list[JobRecord]:
-        jobs = self.list_jobs()
-        items = [job for job in jobs if job.status in {"queued", "running", "cancelling"}]
+        items = [job for job in self.list_jobs() if job.status in ACTIVE_STATUSES]
         if config_id:
             items = [job for job in items if job.config_id == config_id]
         return items
@@ -114,30 +163,55 @@ class SyncJobManager:
         items = self.get_active_jobs(config_id=config_id)
         return sorted(items, key=lambda item: item.created_at)[0] if items else None
 
-    def queue_position(self, job_id: str) -> Optional[int]:
+    def provider_queue_positions(self, job_id: str) -> list[dict[str, Any]]:
         with self._lock:
-            try:
-                return self._queue.index(job_id) + 1
-            except ValueError:
-                return None
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise KeyError(f"job not found: {job_id}")
+            child_ids = job.child_job_ids or [job.job_id]
+            positions: list[dict[str, Any]] = []
+            for child_id in child_ids:
+                child = self._jobs.get(child_id)
+                if child is None:
+                    continue
+                positions.append(
+                    {
+                        "job_id": child.job_id,
+                        "provider": child.source,
+                        "status": child.status,
+                        "queue_position": self._provider_queue_position_locked(child),
+                        "started_at": child.started_at,
+                        "finished_at": child.finished_at,
+                        "return_code": child.return_code,
+                        "error": child.error,
+                    }
+                )
+            return positions
 
-    def cancel_pending_jobs(self, *, config_id: str, trigger: Optional[str] = None) -> list[JobRecord]:
-        cancelled: list[JobRecord] = []
+    def queue_position(self, job_id: str) -> Optional[int]:
+        positions = [
+            item["queue_position"]
+            for item in self.provider_queue_positions(job_id)
+            if item["queue_position"] is not None
+        ]
+        return min(positions) if positions else None
+
+    def cancel_pending_jobs(
+        self,
+        *,
+        config_id: str,
+        trigger: Optional[str] = None,
+    ) -> list[JobRecord]:
         with self._lock:
-            for job_id in list(self._queue):
-                job = self._jobs.get(job_id)
-                if job is None or job.status != "queued" or job.config_id != config_id:
-                    continue
-                if trigger and job.trigger != trigger:
-                    continue
-                self._queue.remove(job_id)
-                job.status = "cancelled"
-                job.finished_at = utc_now_iso()
-                job.updated_at = job.finished_at
-                job.error = "cancelled before execution"
-                self._save_job(job)
-                cancelled.append(job)
-            self._save_queue()
+            job_ids = [
+                job.job_id
+                for job in self._jobs.values()
+                if not job.parent_job_id
+                and job.status == "queued"
+                and job.config_id == config_id
+                and (not trigger or job.trigger == trigger)
+            ]
+        cancelled = [self.cancel_job(job_id) for job_id in job_ids]
         return cancelled
 
     def create_task_batch_job(
@@ -161,155 +235,106 @@ class SyncJobManager:
             active = self.find_active_config_job(clean_config_id)
             if active is not None:
                 raise RuntimeError(
-                    f"sync config already queued or running config_id={clean_config_id} job_id={active.job_id}"
+                    "sync config already queued or running "
+                    f"config_id={clean_config_id} job_id={active.job_id}"
                 )
 
-        job_id = uuid.uuid4().hex[:12]
-        log_path = self.logs_dir / f"{job_id}.log"
-        payload_path = self.jobs_dir / f"{job_id}.batch.json"
-        results_path = self.jobs_dir / f"{job_id}.results.json"
+        parent_id = uuid.uuid4().hex[:12]
+        now = utc_now_iso()
+        parent_log_path = self.logs_dir / f"{parent_id}.log"
+        parent_results_path = self.jobs_dir / f"{parent_id}.results.json"
+        parent_payload_path = self.jobs_dir / f"{parent_id}.batch.json"
+        task_ids = [
+            str(task.get("id") or f"{parent_id}_task_{index}")
+            for index, task in enumerate(tasks, start=1)
+        ]
         snapshot = {
-            "job_id": job_id,
+            "job_id": parent_id,
             "name": clean_name,
             "config_id": clean_config_id,
             "continue_on_error": bool(continue_on_error),
             "log_level": str(log_level or "INFO").strip() or "INFO",
             "runtime_path": runtime_path,
             "tasks": tasks,
+            "task_ids": task_ids,
         }
-        payload_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
-        command = [
-            self._python_executable(),
-            str(self.project_root / "scripts" / "run_task_batch.py"),
-            "--payload",
-            str(payload_path),
-            "--results",
-            str(results_path),
-            "--log-path",
-            str(log_path),
-        ]
-        return self._start_job(
-            kind="sync_config" if clean_config_id else "task_batch",
-            command=command,
-            config_path=None,
-            task=None,
-            request_payload=snapshot,
-            job_id=job_id,
-            log_path=log_path,
-            config_id=clean_config_id,
-            config_name=clean_name,
-            task_results_path=str(results_path),
-            trigger=str(trigger or "manual").strip() or "manual",
+        parent_payload_path.write_text(
+            json.dumps(snapshot, ensure_ascii=False, indent=2),
+            encoding="utf-8",
         )
 
-    def cancel_job(self, job_id: str) -> JobRecord:
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if job is None:
-                raise KeyError(f"job not found: {job_id}")
-            if job.status == "queued":
-                if job_id in self._queue:
-                    self._queue.remove(job_id)
-                job.status = "cancelled"
-                job.finished_at = utc_now_iso()
-                job.updated_at = job.finished_at
-                job.error = "cancelled before execution"
-                self._save_job(job)
-                self._save_queue()
-                return job
-            process = self._processes.get(job_id)
-            if process is None:
-                return job
-            if job.status == "running":
-                job.status = "cancelling"
-                job.updated_at = utc_now_iso()
-                self._save_job(job)
-            process.terminate()
-        return self.get_job(job_id)
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for index, task in enumerate(tasks):
+            if not task.get("enabled", True):
+                continue
+            provider = self._task_provider(task)
+            executable_task = dict(task)
+            executable_task["id"] = task_ids[index]
+            executable_task["provider"] = provider
+            grouped.setdefault(provider, []).append(executable_task)
 
-    def read_job_log(self, job_id: str, tail_lines: int = 200) -> str:
-        job = self.get_job(job_id)
-        path = Path(job.log_path)
-        if not path.exists():
-            return ""
-        text = redact_sensitive_text(path.read_text(encoding="utf-8", errors="ignore"))
-        lines = text.splitlines()
-        if tail_lines <= 0:
-            return text
-        return "\n".join(lines[-tail_lines:])
-
-    def read_task_results(self, job_id: str) -> dict[str, Any]:
-        job = self.get_job(job_id)
-        path = Path(job.task_results_path) if job.task_results_path else None
-        if path is None or not path.exists():
-            return {"job_id": job_id, "status": job.status, "tasks": []}
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {"job_id": job_id, "status": job.status, "tasks": []}
-        return payload if isinstance(payload, dict) else {"job_id": job_id, "status": job.status, "tasks": []}
-
-    def list_tasks(self) -> list[str]:
-        return sorted(task.name for task in TASK_REGISTRY.list_tasks())
-
-    def list_registered_tasks(self) -> list[dict[str, str | None]]:
-        return TASK_REGISTRY.list_task_metadata()
-
-    def list_providers(self) -> list[dict[str, Any]]:
-        return load_provider_registry(self.project_root).to_metadata()
-
-    def _start_job(
-        self,
-        *,
-        kind: str,
-        command: list[str],
-        config_path: Optional[str],
-        task: Optional[str],
-        source: Optional[str] = None,
-        target: Optional[str] = None,
-        request_payload: Optional[dict[str, Any]] = None,
-        job_id: Optional[str] = None,
-        log_path: Optional[Path] = None,
-        config_id: Optional[str] = None,
-        config_name: Optional[str] = None,
-        task_results_path: Optional[str] = None,
-        trigger: Optional[str] = None,
-    ) -> JobRecord:
-        job_id = job_id or uuid.uuid4().hex[:12]
-        log_path = log_path or (self.logs_dir / f"{job_id}.log")
-        now = utc_now_iso()
-        job = JobRecord(
-            job_id=job_id,
-            kind=kind,
+        parent = JobRecord(
+            job_id=parent_id,
+            kind="sync_config" if clean_config_id else "task_batch",
             status="queued",
             created_at=now,
             started_at=None,
             finished_at=None,
             cwd=str(self.project_root),
-            command=command,
-            log_path=str(log_path),
-            config_path=config_path,
-            task=task,
-            source=source,
-            target=target,
-            pid=None,
-            return_code=None,
-            error=None,
-            request_payload=request_payload,
+            command=[],
+            log_path=str(parent_log_path),
+            request_payload=snapshot,
             updated_at=now,
-            config_id=config_id,
-            config_name=config_name,
-            task_results_path=task_results_path,
+            config_id=clean_config_id,
+            config_name=clean_name,
+            task_results_path=str(parent_results_path),
             trigger=str(trigger or "manual").strip() or "manual",
         )
+        children: list[JobRecord] = []
+        for provider, provider_tasks in grouped.items():
+            child = self._build_batch_child(
+                parent=parent,
+                provider=provider,
+                tasks=provider_tasks,
+                continue_on_error=continue_on_error,
+                log_level=log_level,
+                runtime_path=runtime_path,
+            )
+            children.append(child)
+        parent.child_job_ids = [child.job_id for child in children]
+
         with self._lock:
-            self._jobs[job_id] = job
-            self._queue.append(job_id)
-            self._save_job(job)
+            if clean_config_id:
+                duplicate = next(
+                    (
+                        job
+                        for job in self._jobs.values()
+                        if not job.parent_job_id
+                        and job.config_id == clean_config_id
+                        and job.status in ACTIVE_STATUSES
+                    ),
+                    None,
+                )
+                if duplicate is not None:
+                    raise RuntimeError(
+                        "sync config already queued or running "
+                        f"config_id={clean_config_id} job_id={duplicate.job_id}"
+                    )
+            self._jobs[parent.job_id] = parent
+            for child in children:
+                self._jobs[child.job_id] = child
+                self._queue.append(child.job_id)
+                self._save_job(child)
+            self._append_scheduler_log_locked(
+                parent,
+                "status=queued "
+                f"providers={','.join(grouped)} max_parallel={self.max_parallel_providers}",
+            )
+            self._save_job(parent)
             self._save_queue()
+            self._write_parent_results_locked(parent)
         self._dispatch_next()
-        with self._lock:
-            return self._jobs[job_id]
+        return self.get_job(parent.job_id)
 
     def create_registered_task_job(
         self,
@@ -347,19 +372,62 @@ class SyncJobManager:
         runtime_path: Optional[str] = None,
     ) -> JobRecord:
         definition = TASK_REGISTRY.get_task(task)
-        job_id = uuid.uuid4().hex[:12]
-        log_path = self.logs_dir / f"{job_id}.log"
+        code_items = [str(item).strip() for item in (codes or []) if str(item).strip()]
+        request_payload = {
+            "name": task,
+            "codes": code_items,
+            "day": day,
+            "begin_date": begin_date,
+            "end_date": end_date,
+            "year": year,
+            "quarter": quarter,
+            "year_type": year_type,
+            "market": market,
+            "index_code": index_code,
+            "table_names": table_names,
+            "sector_name": sector_name,
+            "code_market": code_market,
+            "period": period,
+            "fields": fields,
+            "params": dict(params or {}),
+            "adjust_type": adjust_type,
+            "qmt_adjust_type": qmt_adjust_type,
+            "fill_data": fill_data,
+            "count": count,
+            "incrementally": incrementally,
+            "complete": complete,
+            "limit": limit,
+            "force": force,
+            "resume": resume,
+            "adjustflag": adjustflag,
+            "frequency": frequency,
+            "universe_mode": universe_mode,
+            "continue_on_error": continue_on_error,
+            "log_level": log_level,
+            "runtime_path": runtime_path,
+        }
+        duplicate = self._find_active_registered_duplicate(
+            task=task,
+            source=definition.source,
+            request_payload=request_payload,
+        )
+        if duplicate is not None:
+            return duplicate
+
+        parent_id = uuid.uuid4().hex[:12]
+        child_id = uuid.uuid4().hex[:12]
+        now = utc_now_iso()
+        child_log_path = self.logs_dir / f"{child_id}.{definition.source}.log"
         command = [
             self._python_executable(),
             str(self.project_root / "scripts" / "run_provider_sync.py"),
             "--job-id",
-            job_id,
+            child_id,
             "--task",
             task,
             "--log-path",
-            str(log_path),
+            str(child_log_path),
         ]
-        code_items = [str(item).strip() for item in (codes or []) if str(item).strip()]
         if runtime_path:
             command.extend(["--runtime-path", runtime_path])
         if code_items:
@@ -421,68 +489,259 @@ class SyncJobManager:
             command.append("--continue-on-error")
         if log_level:
             command.extend(["--log-level", str(log_level)])
-        return self._start_job(
+
+        parent = JobRecord(
+            job_id=parent_id,
             kind="registered_task",
+            status="queued",
+            created_at=now,
+            started_at=None,
+            finished_at=None,
+            cwd=str(self.project_root),
             command=command,
-            config_path=None,
+            log_path=str(self.logs_dir / f"{parent_id}.log"),
             task=task,
             source=definition.source,
             target=definition.target,
-            request_payload={
-                "name": task,
-                "codes": code_items,
-                "day": day,
-                "begin_date": begin_date,
-                "end_date": end_date,
-                "year": year,
-                "quarter": quarter,
-                "year_type": year_type,
-                "market": market,
-                "index_code": index_code,
-                "table_names": table_names,
-                "sector_name": sector_name,
-                "code_market": code_market,
-                "period": period,
-                "fields": fields,
-                "params": dict(params or {}),
-                "adjust_type": adjust_type,
-                "qmt_adjust_type": qmt_adjust_type,
-                "fill_data": fill_data,
-                "count": count,
-                "incrementally": incrementally,
-                "complete": complete,
-                "limit": limit,
-                "force": force,
-                "resume": resume,
-                "adjustflag": adjustflag,
-                "frequency": frequency,
-                "universe_mode": universe_mode,
-                "continue_on_error": continue_on_error,
-                "log_level": log_level,
-                "runtime_path": runtime_path,
-            },
+            request_payload=request_payload,
+            updated_at=now,
             trigger="manual",
+            child_job_ids=[child_id],
+        )
+        child = JobRecord(
+            job_id=child_id,
+            kind="provider_task",
+            status="queued",
+            created_at=now,
+            started_at=None,
+            finished_at=None,
+            cwd=str(self.project_root),
+            command=command,
+            log_path=str(child_log_path),
+            task=task,
+            source=definition.source,
+            target=definition.target,
+            request_payload=request_payload,
+            updated_at=now,
+            trigger="manual",
+            parent_job_id=parent_id,
+        )
+        with self._lock:
+            duplicate = next(
+                (
+                    job
+                    for job in self._jobs.values()
+                    if not job.parent_job_id
+                    and job.kind == "registered_task"
+                    and job.status in ACTIVE_STATUSES
+                    and job.task == task
+                    and job.source == definition.source
+                    and job.request_payload == request_payload
+                ),
+                None,
+            )
+            if duplicate is not None:
+                return duplicate
+            self._jobs[parent_id] = parent
+            self._jobs[child_id] = child
+            self._queue.append(child_id)
+            self._append_scheduler_log_locked(
+                parent,
+                f"status=queued provider={definition.source} task={task}",
+            )
+            self._save_job(parent)
+            self._save_job(child)
+            self._save_queue()
+        self._dispatch_next()
+        return self.get_job(parent_id)
+
+    def cancel_job(self, job_id: str) -> JobRecord:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise KeyError(f"job not found: {job_id}")
+            targets = [
+                self._jobs[child_id]
+                for child_id in job.child_job_ids
+                if child_id in self._jobs
+            ]
+            if not targets:
+                targets = [job]
+            for target in targets:
+                self._cancel_executable_locked(target)
+            if job.child_job_ids:
+                if any(target.status == "cancelling" for target in targets):
+                    job.status = "cancelling"
+                    job.updated_at = utc_now_iso()
+                    self._save_job(job)
+                else:
+                    self._refresh_parent_locked(job)
+                self._append_scheduler_log_locked(job, "status=cancellation_requested")
+            elif job.parent_job_id:
+                parent = self._jobs.get(job.parent_job_id)
+                if parent is not None:
+                    self._refresh_parent_locked(parent)
+            self._save_queue()
+        self._dispatch_next()
+        return self.get_job(job_id)
+
+    def read_job_log(self, job_id: str, tail_lines: int = 200) -> str:
+        job = self.get_job(job_id)
+        entries: list[str] = []
+        path = Path(job.log_path)
+        if path.exists():
+            text = redact_sensitive_text(
+                path.read_text(encoding="utf-8", errors="ignore")
+            )
+            label = "scheduler" if job.child_job_ids else (job.source or "job")
+            entries.extend(f"[{label}] {line}" for line in text.splitlines())
+        for child in self.get_child_jobs(job_id) if job.child_job_ids else []:
+            child_path = Path(child.log_path)
+            if not child_path.exists():
+                continue
+            text = redact_sensitive_text(
+                child_path.read_text(encoding="utf-8", errors="ignore")
+            )
+            label = f"provider={child.source or 'unknown'} job={child.job_id}"
+            entries.extend(f"[{label}] {line}" for line in text.splitlines())
+        if tail_lines <= 0:
+            return "\n".join(entries)
+        return "\n".join(entries[-tail_lines:])
+
+    def read_task_results(self, job_id: str) -> dict[str, Any]:
+        job = self.get_job(job_id)
+        with self._lock:
+            if job.child_job_ids and job.task_results_path:
+                return self._aggregate_parent_results_locked(job)
+        path = Path(job.task_results_path) if job.task_results_path else None
+        if path is None or not path.exists():
+            return {"job_id": job_id, "status": job.status, "tasks": []}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {"job_id": job_id, "status": job.status, "tasks": []}
+        if isinstance(payload, dict):
+            return payload
+        return {"job_id": job_id, "status": job.status, "tasks": []}
+
+    def list_tasks(self) -> list[str]:
+        return sorted(task.name for task in TASK_REGISTRY.list_tasks())
+
+    def list_registered_tasks(self) -> list[dict[str, str | None]]:
+        return TASK_REGISTRY.list_task_metadata()
+
+    def list_providers(self) -> list[dict[str, Any]]:
+        return load_provider_registry(self.project_root).to_metadata()
+
+    def _build_batch_child(
+        self,
+        *,
+        parent: JobRecord,
+        provider: str,
+        tasks: list[dict[str, Any]],
+        continue_on_error: bool,
+        log_level: str,
+        runtime_path: Optional[str],
+    ) -> JobRecord:
+        child_id = uuid.uuid4().hex[:12]
+        log_path = self.logs_dir / f"{child_id}.{provider}.log"
+        payload_path = self.jobs_dir / f"{child_id}.batch.json"
+        results_path = self.jobs_dir / f"{child_id}.results.json"
+        snapshot = {
+            "job_id": child_id,
+            "parent_job_id": parent.job_id,
+            "name": parent.config_name,
+            "config_id": parent.config_id,
+            "provider": provider,
+            "continue_on_error": bool(continue_on_error),
+            "log_level": str(log_level or "INFO").strip() or "INFO",
+            "runtime_path": runtime_path,
+            "tasks": tasks,
+        }
+        payload_path.write_text(
+            json.dumps(snapshot, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        command = [
+            self._python_executable(),
+            str(self.project_root / "scripts" / "run_task_batch.py"),
+            "--payload",
+            str(payload_path),
+            "--results",
+            str(results_path),
+            "--log-path",
+            str(log_path),
+        ]
+        return JobRecord(
+            job_id=child_id,
+            kind="provider_batch",
+            status="queued",
+            created_at=parent.created_at,
+            started_at=None,
+            finished_at=None,
+            cwd=str(self.project_root),
+            command=command,
+            log_path=str(log_path),
+            source=provider,
+            request_payload=snapshot,
+            updated_at=parent.created_at,
+            config_id=parent.config_id,
+            config_name=parent.config_name,
+            task_results_path=str(results_path),
+            trigger=parent.trigger,
+            parent_job_id=parent.job_id,
         )
 
-    def _watch_process(self, job_id: str, process: subprocess.Popen, log_fp) -> None:
+    def _find_active_registered_duplicate(
+        self,
+        *,
+        task: str,
+        source: str,
+        request_payload: dict[str, Any],
+    ) -> Optional[JobRecord]:
+        with self._lock:
+            candidates = [
+                job
+                for job in self._jobs.values()
+                if not job.parent_job_id
+                and job.kind == "registered_task"
+                and job.status in ACTIVE_STATUSES
+                and job.task == task
+                and job.source == source
+                and job.request_payload == request_payload
+            ]
+        return sorted(candidates, key=lambda item: item.created_at)[0] if candidates else None
+
+    def _watch_process(
+        self,
+        job_id: str,
+        process: subprocess.Popen,
+        log_fp,
+    ) -> None:
         return_code = process.wait()
         log_fp.close()
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
                 return
-            job.return_code = return_code
-            job.finished_at = utc_now_iso()
-            job.updated_at = job.finished_at
-            if job.status == "cancelling":
-                job.status = "cancelled"
-            elif job.status != "cancelled":
-                job.status = self._status_from_return_code(return_code)
-            self._processes.pop(job_id, None)
-            self._save_job(job)
+            self._finish_executable_locked(job, return_code)
         self._dispatch_next()
 
     def _refresh_job(self, job_id: str) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return
+            child_ids = list(job.child_job_ids)
+        if child_ids:
+            for child_id in child_ids:
+                self._refresh_job(child_id)
+            with self._lock:
+                parent = self._jobs.get(job_id)
+                if parent is not None:
+                    self._refresh_parent_locked(parent)
+            return
+
         with self._lock:
             process = self._processes.get(job_id)
             job = self._jobs.get(job_id)
@@ -493,29 +752,166 @@ class SyncJobManager:
             self._refresh_running_job_updated_at(job_id)
             return
         with self._lock:
-            job.return_code = return_code
+            job = self._jobs.get(job_id)
+            if job is not None:
+                self._finish_executable_locked(job, return_code)
+        self._dispatch_next()
+
+    def _finish_executable_locked(self, job: JobRecord, return_code: int) -> None:
+        if job.job_id not in self._processes and job.status in TERMINAL_STATUSES:
+            return
+        job.return_code = return_code
+        job.finished_at = utc_now_iso()
+        job.updated_at = job.finished_at
+        if job.status in {"cancelling", "cancelled"}:
+            job.status = "cancelled"
+        else:
+            job.status = self._status_from_return_code(return_code)
+        self._processes.pop(job.job_id, None)
+        self._save_job(job)
+        if job.parent_job_id:
+            parent = self._jobs.get(job.parent_job_id)
+            if parent is not None:
+                self._append_scheduler_log_locked(
+                    parent,
+                    f"provider={job.source} child={job.job_id} status={job.status} "
+                    f"return_code={return_code}",
+                )
+                self._refresh_parent_locked(parent)
+
+    def _refresh_parent_locked(self, parent: JobRecord) -> None:
+        children = [
+            self._jobs[child_id]
+            for child_id in parent.child_job_ids
+            if child_id in self._jobs
+        ]
+        if not children:
+            return
+        statuses = [child.status for child in children]
+        started_values = [child.started_at for child in children if child.started_at]
+        updated_values = [
+            child.updated_at
+            for child in children
+            if child.updated_at
+        ]
+        if started_values:
+            parent.started_at = min(started_values)
+        if any(status == "cancelling" for status in statuses):
+            status = "cancelling"
+        elif any(status == "running" for status in statuses):
+            status = "running"
+        elif any(status == "queued" for status in statuses):
+            status = "running" if parent.started_at else "queued"
+        else:
+            status = self._aggregate_terminal_status(statuses)
+        status_changed = status != parent.status
+        parent.status = status
+        if updated_values:
+            parent.updated_at = max(updated_values)
+        if status in TERMINAL_STATUSES:
+            finished_values = [
+                child.finished_at
+                for child in children
+                if child.finished_at
+            ]
+            parent.finished_at = max(finished_values) if finished_values else utc_now_iso()
+            parent.updated_at = parent.finished_at
+            parent.return_code = self._return_code_from_status(status)
+            if status not in {"success", "partial_success"}:
+                failures = [
+                    f"{child.source}: {child.error or child.status}"
+                    for child in children
+                    if child.status not in {"success"}
+                ]
+                parent.error = "; ".join(failures) or parent.error
+        else:
+            parent.finished_at = None
+            parent.return_code = None
+        self._save_job(parent)
+        if parent.task_results_path:
+            self._write_parent_results_locked(parent)
+        if status_changed:
+            self._append_scheduler_log_locked(parent, f"status={status}")
+
+    @staticmethod
+    def _aggregate_terminal_status(statuses: list[str]) -> str:
+        unique = set(statuses)
+        if unique == {"success"}:
+            return "success"
+        if unique == {"cancelled"}:
+            return "cancelled"
+        if unique == {"interrupted"}:
+            return "interrupted"
+        if unique == {"failed"}:
+            return "failed"
+        if "success" in unique or "partial_success" in unique:
+            return "partial_success"
+        if "failed" in unique:
+            return "failed"
+        if "interrupted" in unique:
+            return "interrupted"
+        return "cancelled"
+
+    def _cancel_executable_locked(self, job: JobRecord) -> None:
+        if job.status == "queued":
+            if job.job_id in self._queue:
+                self._queue.remove(job.job_id)
+            job.status = "cancelled"
             job.finished_at = utc_now_iso()
             job.updated_at = job.finished_at
-            if job.status != "cancelled":
-                job.status = self._status_from_return_code(return_code)
-            self._processes.pop(job_id, None)
+            job.error = "cancelled before execution"
             self._save_job(job)
-        self._dispatch_next()
+            return
+        process = self._processes.get(job.job_id)
+        if process is None:
+            return
+        if job.status == "running":
+            job.status = "cancelling"
+            job.updated_at = utc_now_iso()
+            self._save_job(job)
+        process.terminate()
+
+    def _provider_queue_position_locked(self, job: JobRecord) -> Optional[int]:
+        if job.status != "queued" or job.job_id not in self._queue:
+            return None
+        lane = self._lane_key(job)
+        position = 0
+        for queued_id in self._queue:
+            queued = self._jobs.get(queued_id)
+            if queued is None or queued.status != "queued":
+                continue
+            if self._lane_key(queued) == lane:
+                position += 1
+            if queued_id == job.job_id:
+                return position
+        return None
 
     def _save_job(self, job: JobRecord) -> None:
         path = self.jobs_dir / f"{job.job_id}.json"
-        path.write_text(json.dumps(asdict(job), ensure_ascii=False, indent=2), encoding="utf-8")
+        path.write_text(
+            json.dumps(asdict(job), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
     def _refresh_running_job_updated_at(self, job_id: str) -> None:
         with self._lock:
             job = self._jobs.get(job_id)
-            if job is None or job.status not in {"running", "cancelling"}:
+            if job is None or job.status not in PROCESS_ACTIVE_STATUSES:
                 return
-            updated_at = self._log_updated_at(job) or job.updated_at or job.started_at or job.created_at
+            updated_at = (
+                self._log_updated_at(job)
+                or job.updated_at
+                or job.started_at
+                or job.created_at
+            )
             if updated_at == job.updated_at:
                 return
             job.updated_at = updated_at
             self._save_job(job)
+            if job.parent_job_id:
+                parent = self._jobs.get(job.parent_job_id)
+                if parent is not None:
+                    self._refresh_parent_locked(parent)
 
     def _log_updated_at(self, job: JobRecord) -> Optional[str]:
         if not job.log_path:
@@ -526,21 +922,29 @@ class SyncJobManager:
             return None
 
     def _load_existing_jobs(self) -> None:
+        loaded: dict[str, JobRecord] = {}
         for path in sorted(self.jobs_dir.glob("*.json")):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 job = JobRecord(**data)
-                if job.status in {"running", "cancelling"}:
-                    job.status = "interrupted"
-                    job.finished_at = job.finished_at or utc_now_iso()
-                    job.updated_at = job.updated_at or job.finished_at
-                    self._save_job(job)
-                elif not job.updated_at:
-                    job.updated_at = job.finished_at or job.started_at or job.created_at
-                    self._save_job(job)
-                self._jobs[job.job_id] = job
+                loaded[job.job_id] = job
             except Exception:
                 continue
+        self._jobs = loaded
+        for job in self._jobs.values():
+            is_parent = bool(job.child_job_ids)
+            if job.status in PROCESS_ACTIVE_STATUSES and not is_parent:
+                job.status = "interrupted"
+                job.finished_at = job.finished_at or utc_now_iso()
+                job.updated_at = job.finished_at
+                job.error = job.error or "service restarted while provider job was running"
+                self._save_job(job)
+            elif not job.updated_at:
+                job.updated_at = job.finished_at or job.started_at or job.created_at
+                self._save_job(job)
+        for job in self._jobs.values():
+            if job.child_job_ids:
+                self._refresh_parent_locked(job)
 
     def _load_queue(self) -> None:
         persisted: list[str] = []
@@ -553,7 +957,7 @@ class SyncJobManager:
         queued_ids = {
             job.job_id
             for job in self._jobs.values()
-            if job.status == "queued"
+            if job.status == "queued" and not job.child_job_ids
         }
         ordered = [job_id for job_id in persisted if job_id in queued_ids]
         remaining = sorted(
@@ -567,27 +971,50 @@ class SyncJobManager:
         while True:
             watcher: Optional[threading.Thread] = None
             with self._lock:
-                if any(job.status in {"running", "cancelling"} for job in self._jobs.values()):
+                active_jobs = [
+                    job
+                    for job in self._jobs.values()
+                    if not job.child_job_ids
+                    and job.status in PROCESS_ACTIVE_STATUSES
+                ]
+                if len(active_jobs) >= self.max_parallel_providers:
                     return
-                job: Optional[JobRecord] = None
+                active_lanes = {self._lane_key(job) for job in active_jobs}
+                selected_index: Optional[int] = None
+                selected: Optional[JobRecord] = None
                 queue_changed = False
-                while self._queue:
-                    job_id = self._queue.pop(0)
-                    queue_changed = True
+                for index, job_id in enumerate(self._queue):
                     candidate = self._jobs.get(job_id)
-                    if candidate is not None and candidate.status == "queued":
-                        job = candidate
-                        break
+                    if candidate is None or candidate.status != "queued":
+                        queue_changed = True
+                        continue
+                    if self._lane_key(candidate) in active_lanes:
+                        continue
+                    selected_index = index
+                    selected = candidate
+                    break
                 if queue_changed:
-                    self._save_queue()
-                if job is None:
+                    self._queue = [
+                        job_id
+                        for job_id in self._queue
+                        if job_id in self._jobs
+                        and self._jobs[job_id].status == "queued"
+                    ]
+                if selected is None or selected_index is None:
+                    if queue_changed:
+                        self._save_queue()
                     return
+                # Recalculate after stale queue entries were removed.
+                selected_index = self._queue.index(selected.job_id)
+                self._queue.pop(selected_index)
+                self._save_queue()
 
-                log_path = Path(job.log_path)
+                log_path = Path(selected.log_path)
+                log_path.parent.mkdir(parents=True, exist_ok=True)
                 log_fp = log_path.open("a", encoding="utf-8")
                 try:
                     process = subprocess.Popen(
-                        job.command,
+                        selected.command,
                         cwd=str(self.project_root),
                         env=self._build_subprocess_env(),
                         stdout=log_fp,
@@ -596,34 +1023,191 @@ class SyncJobManager:
                     )
                 except Exception as exc:
                     log_fp.close()
-                    job.status = "failed"
-                    job.error = str(exc)
-                    job.finished_at = utc_now_iso()
-                    job.updated_at = job.finished_at
-                    self._save_job(job)
+                    selected.status = "failed"
+                    selected.error = str(exc)
+                    selected.finished_at = utc_now_iso()
+                    selected.updated_at = selected.finished_at
+                    self._save_job(selected)
+                    if selected.parent_job_id:
+                        parent = self._jobs.get(selected.parent_job_id)
+                        if parent is not None:
+                            self._append_scheduler_log_locked(
+                                parent,
+                                f"provider={selected.source} child={selected.job_id} "
+                                f"status=failed error={exc}",
+                            )
+                            self._refresh_parent_locked(parent)
                     continue
 
                 now = utc_now_iso()
-                job.status = "running"
-                job.started_at = now
-                job.updated_at = now
-                job.pid = process.pid
-                self._processes[job.job_id] = process
-                self._save_job(job)
+                selected.status = "running"
+                selected.started_at = now
+                selected.updated_at = now
+                selected.pid = process.pid
+                self._processes[selected.job_id] = process
+                self._save_job(selected)
+                if selected.parent_job_id:
+                    parent = self._jobs.get(selected.parent_job_id)
+                    if parent is not None:
+                        self._append_scheduler_log_locked(
+                            parent,
+                            f"provider={selected.source} child={selected.job_id} status=running",
+                        )
+                        self._refresh_parent_locked(parent)
                 watcher = threading.Thread(
                     target=self._watch_process,
-                    args=(job.job_id, process, log_fp),
+                    args=(selected.job_id, process, log_fp),
                     daemon=True,
                 )
             if watcher is not None:
                 watcher.start()
-            return
 
     def _save_queue(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         temp_path = self.queue_path.with_suffix(".json.tmp")
-        temp_path.write_text(json.dumps(self._queue, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.write_text(
+            json.dumps(self._queue, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         temp_path.replace(self.queue_path)
+
+    def _aggregate_parent_results_locked(self, parent: JobRecord) -> dict[str, Any]:
+        snapshot = parent.request_payload or {}
+        original_tasks = list(snapshot.get("tasks") or [])
+        task_ids = list(snapshot.get("task_ids") or [])
+        child_results: dict[str, dict[str, Any]] = {}
+        task_child_status: dict[str, str] = {}
+        for child_id in parent.child_job_ids:
+            child = self._jobs.get(child_id)
+            if child is None:
+                continue
+            child_task_ids = {
+                str(task.get("id") or "")
+                for task in (child.request_payload or {}).get("tasks", [])
+            }
+            for task_id in child_task_ids:
+                if task_id:
+                    task_child_status[task_id] = child.status
+            path = Path(child.task_results_path) if child.task_results_path else None
+            if path is None or not path.exists():
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            for result in payload.get("tasks", []) if isinstance(payload, dict) else []:
+                if isinstance(result, dict):
+                    child_results[str(result.get("task_id") or "")] = result
+
+        results: list[dict[str, Any]] = []
+        for index, task in enumerate(original_tasks):
+            task_id = str(
+                task.get("id")
+                or (task_ids[index] if index < len(task_ids) else f"task_{index + 1}")
+            )
+            if not task.get("enabled", True):
+                results.append(self._pending_task_result(task, task_id, "disabled"))
+                continue
+            result = child_results.get(task_id)
+            if result is not None:
+                results.append(result)
+                continue
+            child_status = task_child_status.get(task_id, "queued")
+            status = (
+                "not_run"
+                if child_status in TERMINAL_STATUSES
+                else ("running" if child_status == "running" else "queued")
+            )
+            results.append(self._pending_task_result(task, task_id, status))
+        return {
+            "job_id": parent.job_id,
+            "status": parent.status,
+            "updated_at": parent.updated_at or parent.created_at,
+            "tasks": results,
+        }
+
+    def _write_parent_results_locked(self, parent: JobRecord) -> None:
+        if not parent.task_results_path:
+            return
+        payload = self._aggregate_parent_results_locked(parent)
+        path = Path(parent.task_results_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = path.with_suffix(".json.tmp")
+        temp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temp_path.replace(path)
+
+    @staticmethod
+    def _pending_task_result(
+        task: dict[str, Any],
+        task_id: str,
+        status: str,
+    ) -> dict[str, Any]:
+        return {
+            "task_id": task_id,
+            "name": str(task.get("name") or task.get("task") or ""),
+            "provider": str(task.get("provider") or task.get("source") or ""),
+            "database": str(task.get("database") or ""),
+            "target": str(task.get("target") or ""),
+            "status": status,
+            "started_at": None,
+            "finished_at": None,
+            "error": None,
+            "effective_parameters": {},
+        }
+
+    def _append_scheduler_log_locked(self, parent: JobRecord, message: str) -> None:
+        path = Path(parent.log_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                f"{utc_now_iso()} scheduler parent={parent.job_id} "
+                f"{redact_sensitive_text(message)}\n"
+            )
+
+    def _task_provider(self, task: dict[str, Any]) -> str:
+        name = str(task.get("name") or task.get("task") or "").strip()
+        if not name:
+            raise ValueError("task name is required")
+        try:
+            definition = TASK_REGISTRY.get_task(name)
+        except KeyError as exc:
+            raise ValueError(f"unknown registered task: {name}") from exc
+        supplied = str(task.get("provider") or task.get("source") or "").strip()
+        if supplied and supplied != definition.source:
+            raise ValueError(
+                f"task {name} belongs to provider {definition.source}, not {supplied}"
+            )
+        return definition.source
+
+    @staticmethod
+    def _lane_key(job: JobRecord) -> str:
+        return str(job.source or "__global__").strip().casefold() or "__global__"
+
+    def _resolve_max_parallel_providers(self, explicit: Optional[int]) -> int:
+        value: Any = explicit
+        if value is None:
+            value = (
+                os.environ.get("SYNC_MAX_PARALLEL_PROVIDERS")
+                or os.environ.get("ALPHABLOCKS_SYNC_MAX_PARALLEL_PROVIDERS")
+            )
+        if value is None:
+            try:
+                path = resolve_runtime_config_path()
+                if path.exists():
+                    value = load_runtime_config(
+                        path
+                    ).sync.scheduler.max_parallel_providers
+            except Exception:
+                value = None
+        if value is None:
+            value = DEFAULT_MAX_PARALLEL_PROVIDERS
+        try:
+            return max(1, int(value))
+        except (TypeError, ValueError):
+            return DEFAULT_MAX_PARALLEL_PROVIDERS
 
     def _build_subprocess_env(self) -> dict[str, str]:
         env = os.environ.copy()
@@ -650,6 +1234,14 @@ class SyncJobManager:
         if return_code == 2:
             return "partial_success"
         return "failed"
+
+    @staticmethod
+    def _return_code_from_status(status: str) -> int:
+        if status == "success":
+            return 0
+        if status == "partial_success":
+            return 2
+        return 1
 
 
 __all__ = ["JobRecord", "SyncJobManager"]

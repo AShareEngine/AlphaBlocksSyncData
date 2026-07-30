@@ -3,14 +3,61 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from sync_data_system.service.job_manager import JobRecord, SyncJobManager
+
+
+class ControlledProcess:
+    _next_pid = 1000
+
+    def __init__(self) -> None:
+        type(self)._next_pid += 1
+        self.pid = type(self)._next_pid
+        self._done = threading.Event()
+        self._return_code: int | None = None
+        self.terminated = False
+
+    def wait(self) -> int:
+        self._done.wait(timeout=5)
+        return 1 if self._return_code is None else self._return_code
+
+    def poll(self) -> int | None:
+        return self._return_code if self._done.is_set() else None
+
+    def finish(self, return_code: int = 0) -> None:
+        self._return_code = return_code
+        self._done.set()
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.finish(-15)
+
+
+def wait_for_status(
+    manager: SyncJobManager,
+    job_id: str,
+    expected: set[str],
+    timeout: float = 3,
+) -> JobRecord:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        job = manager.get_job(job_id)
+        if job.status in expected:
+            return job
+        time.sleep(0.01)
+    raise AssertionError(
+        f"job {job_id} did not reach {sorted(expected)}; "
+        f"current={manager.get_job(job_id).status}"
+    )
 
 
 class SyncJobManagerTest(unittest.TestCase):
@@ -30,15 +77,16 @@ class SyncJobManagerTest(unittest.TestCase):
             root = Path(tmpdir) / "sync_project"
             root.mkdir()
             manager = SyncJobManager(root, state_dir=root / ".service_state")
-            fake_process = Mock()
-            fake_process.pid = 123
-            fake_process.wait.return_value = 0
+            processes = [ControlledProcess(), ControlledProcess()]
             tasks = [
                 {"id": "a", "name": "amazingdata.daily_kline", "enabled": True},
                 {"id": "b", "name": "baostock.daily_kline", "enabled": True},
             ]
 
-            with patch("sync_data_system.service.job_manager.subprocess.Popen", return_value=fake_process) as popen:
+            with patch(
+                "sync_data_system.service.job_manager.subprocess.Popen",
+                side_effect=processes,
+            ) as popen:
                 job = manager.create_task_batch_job(
                     name="跨源日线",
                     tasks=tasks,
@@ -46,35 +94,50 @@ class SyncJobManagerTest(unittest.TestCase):
                     config_id="sync_config_daily",
                 )
 
-            command = popen.call_args.args[0]
             self.assertEqual(job.kind, "sync_config")
             self.assertEqual(job.config_id, "sync_config_daily")
             self.assertEqual(job.request_payload["tasks"], tasks)
             self.assertIsNotNone(job.updated_at)
-            self.assertEqual(Path(command[1]).name, "run_task_batch.py")
+            self.assertEqual(popen.call_count, 2)
+            self.assertEqual(
+                {item.source for item in manager.get_child_jobs(job.job_id)},
+                {"amazingdata", "baostock"},
+            )
+            self.assertTrue(
+                all(
+                    Path(call.args[0][1]).name == "run_task_batch.py"
+                    for call in popen.call_args_list
+                )
+            )
             snapshot = Path(job.request_payload and manager.jobs_dir / f"{job.job_id}.batch.json")
             self.assertTrue(snapshot.is_file())
+            for process in processes:
+                process.finish()
+            self.assertEqual(
+                wait_for_status(manager, job.job_id, {"success"}).status,
+                "success",
+            )
 
     def test_create_task_batch_job_uses_configured_job_python(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "sync_project"
             root.mkdir()
             manager = SyncJobManager(root, state_dir=root / ".service_state")
-            fake_process = Mock()
-            fake_process.pid = 123
-            fake_process.wait.return_value = 0
+            fake_process = ControlledProcess()
 
             with (
                 patch.dict(os.environ, {"SYNC_JOB_PYTHON_BIN": "/opt/conda/envs/amazing_data/bin/python3"}),
                 patch("sync_data_system.service.job_manager.subprocess.Popen", return_value=fake_process) as popen,
             ):
-                manager.create_task_batch_job(
+                job = manager.create_task_batch_job(
                     name="日线",
                     tasks=[{"id": "a", "name": "amazingdata.daily_kline", "enabled": True}],
                 )
 
             command = popen.call_args.args[0]
             self.assertEqual(command[0], "/opt/conda/envs/amazing_data/bin/python3")
+            fake_process.finish()
+            wait_for_status(manager, job.job_id, {"success"})
 
     def test_list_jobs_refreshes_running_job_updated_at_from_log_mtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -112,7 +175,7 @@ class SyncJobManagerTest(unittest.TestCase):
 
             self.assertEqual(jobs[0].updated_at, "2026-01-01T00:10:00+00:00")
 
-    def test_new_job_is_queued_when_another_job_is_running(self) -> None:
+    def test_different_provider_starts_while_another_provider_is_running(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "sync_project"
             root.mkdir()
@@ -135,13 +198,225 @@ class SyncJobManagerTest(unittest.TestCase):
                 return_code=None,
                 error=None,
             )
-            job = manager.create_task_batch_job(
-                name="排队任务",
-                tasks=[{"id": "a", "name": "baostock.daily_kline", "enabled": True}],
+            process = ControlledProcess()
+            with patch(
+                "sync_data_system.service.job_manager.subprocess.Popen",
+                return_value=process,
+            ) as popen:
+                job = manager.create_task_batch_job(
+                    name="跨供应商并发",
+                    tasks=[{"id": "a", "name": "baostock.daily_kline", "enabled": True}],
+                )
+
+            self.assertEqual(job.status, "running")
+            self.assertEqual(popen.call_count, 1)
+            self.assertIsNone(manager.queue_position(job.job_id))
+            process.finish()
+            wait_for_status(manager, job.job_id, {"success"})
+
+    def test_same_provider_jobs_run_fifo_one_at_a_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            manager = SyncJobManager(
+                root,
+                state_dir=root / ".service_state",
+                max_parallel_providers=3,
+            )
+            first_process = ControlledProcess()
+            second_process = ControlledProcess()
+            with patch(
+                "sync_data_system.service.job_manager.subprocess.Popen",
+                side_effect=[first_process, second_process],
+            ) as popen:
+                first = manager.create_registered_task_job(
+                    task="amazingdata.daily_kline",
+                    day=20260729,
+                )
+                second = manager.create_registered_task_job(
+                    task="amazingdata.daily_kline",
+                    day=20260730,
+                )
+                self.assertEqual(first.status, "running")
+                self.assertEqual(second.status, "queued")
+                self.assertEqual(manager.queue_position(second.job_id), 1)
+                self.assertEqual(popen.call_count, 1)
+
+                first_process.finish()
+                wait_for_status(manager, second.job_id, {"running"})
+                self.assertEqual(popen.call_count, 2)
+                second_process.finish()
+                wait_for_status(manager, second.job_id, {"success"})
+
+    def test_scheduler_skips_busy_lane_and_starts_oldest_eligible_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            manager = SyncJobManager(
+                root,
+                state_dir=root / ".service_state",
+                max_parallel_providers=2,
+            )
+            amazing_first = ControlledProcess()
+            baostock = ControlledProcess()
+            akshare = ControlledProcess()
+            amazing_second = ControlledProcess()
+            with patch(
+                "sync_data_system.service.job_manager.subprocess.Popen",
+                side_effect=[
+                    amazing_first,
+                    baostock,
+                    akshare,
+                    amazing_second,
+                ],
+            ) as popen:
+                amazing_first_job = manager.create_registered_task_job(
+                    task="amazingdata.daily_kline",
+                    day=20260729,
+                )
+                baostock_job = manager.create_registered_task_job(
+                    task="baostock.daily_kline",
+                    day=20260729,
+                )
+                amazing_queued = manager.create_registered_task_job(
+                    task="amazingdata.daily_kline",
+                    day=20260730,
+                )
+                akshare_job = manager.create_registered_task_job(
+                    task="akshare.us_daily_kline",
+                    day=20260729,
+                )
+                self.assertEqual(popen.call_count, 2)
+                self.assertEqual(amazing_queued.status, "queued")
+                self.assertEqual(akshare_job.status, "queued")
+
+                baostock.finish()
+                wait_for_status(manager, akshare_job.job_id, {"running"})
+                self.assertEqual(popen.call_count, 3)
+                self.assertEqual(manager.get_job(amazing_queued.job_id).status, "queued")
+
+                amazing_first.finish()
+                wait_for_status(manager, amazing_queued.job_id, {"running"})
+                self.assertEqual(popen.call_count, 4)
+
+                akshare.finish()
+                amazing_second.finish()
+                wait_for_status(manager, amazing_queued.job_id, {"success"})
+                wait_for_status(manager, baostock_job.job_id, {"success"})
+                wait_for_status(manager, amazing_first_job.job_id, {"success"})
+                wait_for_status(manager, akshare_job.job_id, {"success"})
+
+    def test_manual_exact_duplicate_returns_existing_active_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            manager = SyncJobManager(root, state_dir=root / ".service_state")
+            process = ControlledProcess()
+            with patch(
+                "sync_data_system.service.job_manager.subprocess.Popen",
+                return_value=process,
+            ) as popen:
+                first = manager.create_registered_task_job(
+                    task="amazingdata.daily_kline",
+                    day=20260730,
+                    runtime_path="/tmp/runtime.yaml",
+                )
+                duplicate = manager.create_registered_task_job(
+                    task="amazingdata.daily_kline",
+                    day=20260730,
+                    runtime_path="/tmp/runtime.yaml",
+                )
+                self.assertEqual(duplicate.job_id, first.job_id)
+                self.assertEqual(popen.call_count, 1)
+                process.finish()
+                wait_for_status(manager, first.job_id, {"success"})
+
+    def test_cancelling_parent_stops_running_children_and_removes_queued_child(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            manager = SyncJobManager(
+                root,
+                state_dir=root / ".service_state",
+                max_parallel_providers=2,
+            )
+            processes = [ControlledProcess(), ControlledProcess()]
+            tasks = [
+                {"id": "a", "name": "amazingdata.daily_kline", "enabled": True},
+                {"id": "b", "name": "baostock.daily_kline", "enabled": True},
+                {"id": "c", "name": "akshare.us_daily_kline", "enabled": True},
+            ]
+            with patch(
+                "sync_data_system.service.job_manager.subprocess.Popen",
+                side_effect=processes,
+            ):
+                parent = manager.create_task_batch_job(name="取消批次", tasks=tasks)
+                manager.cancel_job(parent.job_id)
+                cancelled = wait_for_status(
+                    manager,
+                    parent.job_id,
+                    {"cancelled"},
+                )
+
+            self.assertEqual(cancelled.status, "cancelled")
+            self.assertTrue(all(process.terminated for process in processes))
+            self.assertEqual(
+                {child.status for child in manager.get_child_jobs(parent.job_id)},
+                {"cancelled"},
             )
 
-            self.assertEqual(job.status, "queued")
-            self.assertEqual(manager.queue_position(job.job_id), 1)
+    def test_parent_aggregates_child_results_and_partial_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            manager = SyncJobManager(root, state_dir=root / ".service_state")
+            processes = [ControlledProcess(), ControlledProcess()]
+            tasks = [
+                {"id": "a", "name": "amazingdata.daily_kline", "enabled": True},
+                {"id": "b", "name": "baostock.daily_kline", "enabled": True},
+            ]
+            with patch(
+                "sync_data_system.service.job_manager.subprocess.Popen",
+                side_effect=processes,
+            ):
+                parent = manager.create_task_batch_job(name="结果聚合", tasks=tasks)
+                children = manager.get_child_jobs(parent.job_id)
+                for child, status in zip(children, ("success", "failed")):
+                    Path(child.task_results_path).write_text(
+                        json.dumps(
+                            {
+                                "job_id": child.job_id,
+                                "status": status,
+                                "tasks": [
+                                    {
+                                        "task_id": child.request_payload["tasks"][0]["id"],
+                                        "name": child.request_payload["tasks"][0]["name"],
+                                        "provider": child.source,
+                                        "status": status,
+                                    }
+                                ],
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                processes[0].finish(0)
+                processes[1].finish(1)
+                wait_for_status(manager, parent.job_id, {"partial_success"})
+
+            result = manager.read_task_results(parent.job_id)
+            self.assertEqual(result["status"], "partial_success")
+            self.assertEqual(
+                [item["status"] for item in result["tasks"]],
+                ["success", "failed"],
+            )
+
+    def test_max_parallel_provider_env_override_has_minimum_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            with patch.dict(os.environ, {"SYNC_MAX_PARALLEL_PROVIDERS": "0"}):
+                manager = SyncJobManager(root, state_dir=root / ".service_state")
+            self.assertEqual(manager.max_parallel_providers, 1)
 
     def test_same_config_cannot_be_queued_twice(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -183,6 +458,7 @@ class SyncJobManagerTest(unittest.TestCase):
                 cwd=str(root),
                 command=["python"],
                 log_path=str(root / "running.log"),
+                source="baostock",
             )
             scheduled = manager.create_task_batch_job(
                 name="定时配置",
@@ -220,6 +496,7 @@ class SyncJobManagerTest(unittest.TestCase):
                 cwd=str(root),
                 command=["python"],
                 log_path=str(root / "blocker.log"),
+                source="baostock",
             )
             manager._jobs[blocker.job_id] = blocker
             manager._save_job(blocker)
@@ -240,6 +517,51 @@ class SyncJobManagerTest(unittest.TestCase):
             self.assertTrue(popen.called)
             self.assertEqual(resumed.status, "success")
             self.assertEqual(reloaded.get_job("blocker").status, "interrupted")
+
+    def test_running_provider_child_is_interrupted_and_not_requeued_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            state_dir = root / ".service_state"
+            manager = SyncJobManager(root, state_dir=state_dir)
+            parent = JobRecord(
+                job_id="parent",
+                kind="task_batch",
+                status="running",
+                created_at="2026-07-30T01:00:00+00:00",
+                started_at="2026-07-30T01:00:01+00:00",
+                finished_at=None,
+                cwd=str(root),
+                command=[],
+                log_path=str(root / "parent.log"),
+                child_job_ids=["child"],
+            )
+            child = JobRecord(
+                job_id="child",
+                kind="provider_batch",
+                status="running",
+                created_at=parent.created_at,
+                started_at=parent.started_at,
+                finished_at=None,
+                cwd=str(root),
+                command=["python"],
+                log_path=str(root / "child.log"),
+                source="amazingdata",
+                parent_job_id=parent.job_id,
+            )
+            manager._jobs = {"parent": parent, "child": child}
+            manager._save_job(parent)
+            manager._save_job(child)
+            manager._save_queue()
+
+            with patch(
+                "sync_data_system.service.job_manager.subprocess.Popen"
+            ) as popen:
+                reloaded = SyncJobManager(root, state_dir=state_dir)
+
+            self.assertEqual(reloaded.get_job("child").status, "interrupted")
+            self.assertEqual(reloaded.get_job("parent").status, "interrupted")
+            popen.assert_not_called()
 
     def test_list_jobs_supports_filters(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

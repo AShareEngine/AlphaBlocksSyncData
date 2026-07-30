@@ -117,7 +117,13 @@ class SyncTushareConfig:
 
 
 @dataclass
+class SyncSchedulerConfig:
+    max_parallel_providers: int = 3
+
+
+@dataclass
 class SyncConfig:
+    scheduler: SyncSchedulerConfig = field(default_factory=SyncSchedulerConfig)
     akshare: SyncAkshareConfig = field(default_factory=SyncAkshareConfig)
     amazingdata: SyncAmazingDataConfig = field(default_factory=SyncAmazingDataConfig)
     baostock: SyncBaoStockConfig = field(default_factory=SyncBaoStockConfig)
@@ -165,6 +171,7 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
         discovery=DiscoveryConfig(**(data.get("discovery", {}) or {})),
         runtime_state=RuntimeStateConfig(**(data.get("runtime_state", {}) or {})),
         sync=SyncConfig(
+            scheduler=SyncSchedulerConfig(**(sync_payload.get("scheduler", {}) or {})),
             akshare=SyncAkshareConfig(**(sync_payload.get("akshare", {}) or {})),
             amazingdata=SyncAmazingDataConfig(**(sync_payload.get("amazingdata", {}) or {})),
             baostock=SyncBaoStockConfig(**(sync_payload.get("baostock", {}) or {})),
@@ -186,6 +193,7 @@ __all__ = [
     "SyncBaoStockConfig",
     "SyncConfig",
     "SyncQmtConfig",
+    "SyncSchedulerConfig",
     "SyncTushareConfig",
     "SyncYFinanceConfig",
     "load_runtime_config",

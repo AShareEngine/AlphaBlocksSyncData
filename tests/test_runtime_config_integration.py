@@ -100,6 +100,22 @@ class RuntimeConfigIntegrationTest(unittest.TestCase):
         self.assertEqual(runtime.sync.qmt.api_key, "TEST_QMT_API_KEY")
         self.assertEqual(runtime.sync.qmt.timeout, 30)
 
+    def test_runtime_config_loads_scheduler_provider_limit(self) -> None:
+        runtime_yaml = textwrap.dedent(
+            """
+            sync:
+              scheduler:
+                max_parallel_providers: 5
+            """
+        ).strip()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_path = Path(tmpdir) / "runtime.local.yaml"
+            runtime_path.write_text(runtime_yaml, encoding="utf-8")
+            runtime = load_runtime_config(runtime_path)
+
+        self.assertEqual(runtime.sync.scheduler.max_parallel_providers, 5)
+
     def test_qmt_config_reports_missing_runtime_fields(self) -> None:
         runtime_yaml = textwrap.dedent(
             """

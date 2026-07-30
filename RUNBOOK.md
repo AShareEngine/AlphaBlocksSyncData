@@ -274,55 +274,29 @@ python3 scripts/run_provider_sync.py --config run_sync.example.toml
 
 ## 同时同步多个数据源
 
-当前支持同时启动 AmazingData 和 BaoStock 两条同步链路，但建议遵守下面的边界。
+同步服务使用全局“供应商泳道”调度：
 
-推荐做法：
+- AmazingData、BaoStock、AKShare 等不同供应商可以并发执行。
+- 同一供应商在全局范围内只有一个子任务运行，后续任务按入队时间 FIFO 串行执行。
+- 一个跨供应商父任务会拆成多个供应商子任务；每个子任务内部仍按配置顺序逐项运行并复用供应商上下文。
+- 手动任务、定时任务和同步配置共用同一组泳道。
+- 默认最多同时运行 3 个供应商，可在 `config/runtime.local.yaml` 调整：
 
-- 一个进程跑 AmazingData：`python3 scripts/run_provider_sync.py --config run_sync.amazingdata.full.toml`
-- 另一个进程跑 BaoStock：`python3 scripts/run_provider_sync.py --config run_sync.baostock.full.toml`
-- 最好放在两个终端、两个 `tmux` 窗口，或者分别重定向日志文件
-
-安全组合：
-
-- `AmazingData` + `BaoStock` 同时跑
-
-原因：
-
-- AmazingData 主要写当前业务库中的 `ad_*` 表
-- BaoStock 当前默认写 `baostock` database 下的 `bs_*` 表
-- 两边日志和 checkpoint 也分开
-
-不建议的组合：
-
-- 两个 AmazingData 全量进程同时跑
-- 两个 BaoStock 进程同时跑同一批 code / 同一时间窗口
-- 两个进程同时跑同一来源、同一任务、同一 scope
-
-原因：
-
-- 会放大重复请求
-- 会增加 ClickHouse parts 和写入压力
-- BaoStock 还有每日接口请求量上限，不适合并发乱跑
-
-推荐启动方式：
-
-终端 1：
-
-```bash
-python3 scripts/run_provider_sync.py --config run_sync.amazingdata.full.toml >> logs/amazingdata.log 2>&1
+```yaml
+sync:
+  scheduler:
+    max_parallel_providers: 3
 ```
 
-终端 2：
+也可以用环境变量覆盖，最小值为 1：
 
 ```bash
-python3 scripts/run_provider_sync.py --config run_sync.baostock.full.toml >> logs/baostock.log 2>&1
+export SYNC_MAX_PARALLEL_PROVIDERS=3
 ```
 
-更稳妥的建议：
+父任务取消时，所有尚未运行的供应商子任务会从队列移除，正在运行的供应商子任务会收到终止信号。服务重启时，排队中的子任务会继续调度；重启前正在运行的子任务会标记为 `interrupted`，不会自动重跑。
 
-- 优先保证“不同数据源并发”
-- 尽量避免“同一数据源内部并发”
-- 如果要长期跑，建议用 `tmux` / `supervisor` / `systemd` 管理，而不是开很多手工后台任务
+直接从终端启动的独立 CLI 进程不受服务泳道约束。不要同时手工启动两个相同供应商的全量进程，以免放大重复请求、ClickHouse 写入压力和供应商配额消耗。
 
 ## 当前主表
 
