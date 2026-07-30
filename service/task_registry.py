@@ -47,6 +47,7 @@ PROBE_PUBLIC_FIELDS = (
     "input_code_market",
     "input_period",
     "input_fields",
+    "input_params",
     "input_adjust_type",
     "input_fill_data",
     "input_count",
@@ -109,6 +110,7 @@ class SyncTaskProbe:
     input_code_market: Optional[str] = None
     input_period: Optional[str] = None
     input_fields: Optional[str] = None
+    input_params: dict[str, Any] = field(default_factory=dict)
     input_adjust_type: Optional[str] = None
     input_fill_data: bool = True
     input_count: int = -1
@@ -167,6 +169,7 @@ class SyncTaskProbe:
             "input_code_market": self.input_code_market,
             "input_period": self.input_period,
             "input_fields": self.input_fields,
+            "input_params": dict(self.input_params),
             "input_adjust_type": self.input_adjust_type,
             "input_fill_data": self.input_fill_data,
             "input_count": self.input_count,
@@ -504,6 +507,7 @@ def create_probe(
     code_market: Optional[str] = None,
     period: Optional[str] = None,
     fields: Optional[str] = None,
+    params: Optional[dict[str, Any]] = None,
     qmt_adjust_type: Optional[str] = None,
     fill_data: bool = True,
     count: int = -1,
@@ -542,6 +546,7 @@ def create_probe(
         input_code_market=code_market,
         input_period=period,
         input_fields=fields,
+        input_params=dict(params or {}),
         input_adjust_type=qmt_adjust_type,
         input_fill_data=fill_data,
         input_count=count,

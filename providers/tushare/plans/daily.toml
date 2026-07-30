@@ -1,0 +1,48 @@
+source = "tushare"
+database = "tushare"
+log_level = "INFO"
+continue_on_error = true
+
+[defaults]
+begin_date = 20100101
+force = false
+resume = true
+page_size = 5000
+
+# 基础股票池会同时拉取 L/D/P/G，之后逐股票读取各目标表最大日期。
+[[tasks]]
+task = "stock_basic"
+params = { list_status = ["L", "D", "P", "G"] }
+
+[[tasks]]
+task = "daily"
+
+[[tasks]]
+task = "adj_factor"
+
+[[tasks]]
+task = "daily_basic"
+
+[[tasks]]
+task = "stk_limit"
+
+[[tasks]]
+task = "suspend_d"
+
+[[tasks]]
+task = "moneyflow"
+
+[[tasks]]
+task = "income"
+
+[[tasks]]
+task = "balancesheet"
+
+[[tasks]]
+task = "cashflow"
+
+[[tasks]]
+task = "fina_indicator"
+
+[[tasks]]
+task = "disclosure_date"

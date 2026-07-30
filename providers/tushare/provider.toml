@@ -1,0 +1,33 @@
+name = "tushare"
+display_name = "Tushare Pro"
+version = "0.1.0"
+module = "sync_data_system.providers.tushare"
+runtime_config_key = "tushare"
+default_database = "tushare"
+plans_path = "plans"
+task_catalog = "catalog.json"
+dependencies = ["httpx", "clickhouse-connect", "tushare"]
+import_modules = ["httpx", "tushare"]
+plan_fields = [
+  "codes",
+  "begin_date",
+  "end_date",
+  "fields",
+  "params",
+  "limit",
+  "page_size",
+  "max_pages",
+  "window_days",
+  "force",
+  "resume",
+  "continue_on_error",
+]
+
+[entrypoints]
+provider = "provider:TushareProvider"
+repository = "repository:TushareRepository"
+runner = "runner:run_sync_args"
+config_runner = "runner:run_config_file"
+context_builder = "runner:build_context"
+registered_task_runner = "runner:run_registered_task"
+specs = "specs:TUSHARE_TASK_SPECS"

@@ -145,6 +145,31 @@ PROVIDER_CONFIG_SCHEMAS: dict[str, list[dict[str, Any]]] = {
         {"key": "api_key", "label": "API Key", "type": "password", "required": False, "sensitive": True},
         {"key": "timeout", "label": "超时秒数", "type": "number", "required": False},
     ],
+    "tushare": [
+        {"key": "token", "label": "Token", "type": "password", "required": True, "sensitive": True},
+        {"key": "base_url", "label": "API 地址", "type": "text", "required": True},
+        {"key": "timeout", "label": "超时秒数", "type": "number", "required": False},
+        {"key": "retries", "label": "重试次数", "type": "number", "required": False},
+        {
+            "key": "request_interval_seconds",
+            "label": "请求间隔秒数",
+            "type": "number",
+            "required": False,
+        },
+        {
+            "key": "default_start_date",
+            "label": "默认开始日期",
+            "type": "text",
+            "required": False,
+        },
+        {"key": "page_size", "label": "分页行数", "type": "number", "required": False},
+        {
+            "key": "max_requests_per_run",
+            "label": "单次运行请求上限",
+            "type": "number",
+            "required": False,
+        },
+    ],
 }
 
 def _job_error_to_http(exc: Exception) -> HTTPException:
@@ -214,6 +239,7 @@ class RunTaskRequest(BaseModel):
     code_market: Optional[str] = None
     period: Optional[str] = None
     fields: Optional[str] = None
+    params: dict[str, Any] = Field(default_factory=dict)
     adjust_type: Optional[str] = None
     qmt_adjust_type: Optional[str] = None
     fill_data: Optional[bool] = None
@@ -1107,6 +1133,7 @@ def run_task(request: RunTaskRequest):
                 code_market=request.code_market,
                 period=request.period,
                 fields=request.fields,
+                params=request.params,
                 adjust_type=request.adjust_type,
                 qmt_adjust_type=request.qmt_adjust_type or request.adjust_type,
                 fill_data=request.fill_data,

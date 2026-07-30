@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -54,6 +55,7 @@ class ProviderManifest:
     manifest_path: Path
     root: Path
     plans_path: Path | None = None
+    task_catalog_path: Path | None = None
 
     @property
     def task_names(self) -> tuple[str, ...]:
@@ -163,6 +165,7 @@ def load_provider_manifest(path: str | Path) -> ProviderManifest:
         "entrypoints",
         "tasks",
         "plans_path",
+        "task_catalog",
     }
     unexpected = set(data) - allowed_keys
     if unexpected:
@@ -172,6 +175,11 @@ def load_provider_manifest(path: str | Path) -> ProviderManifest:
     root = manifest_path.parent
     plans_path_value = str(data.get("plans_path") or "").strip()
     plans_path = (root / plans_path_value).resolve() if plans_path_value else None
+    task_catalog_value = str(data.get("task_catalog") or "").strip()
+    task_catalog_path = (root / task_catalog_value).resolve() if task_catalog_value else None
+    inline_tasks = _parse_tasks(data.get("tasks"), manifest_path=manifest_path)
+    catalog_tasks = _load_task_catalog(task_catalog_path, manifest_path=manifest_path)
+    tasks = _merge_tasks(inline_tasks, catalog_tasks, manifest_path=manifest_path)
     return ProviderManifest(
         name=name,
         display_name=_optional_string(data, "display_name", name),
@@ -183,10 +191,11 @@ def load_provider_manifest(path: str | Path) -> ProviderManifest:
         import_modules=_string_tuple(data.get("import_modules"), field_name="import_modules", manifest_path=manifest_path),
         plan_fields=_string_tuple(data.get("plan_fields"), field_name="plan_fields", manifest_path=manifest_path),
         entrypoints=_parse_entrypoints(data.get("entrypoints"), manifest_path=manifest_path),
-        tasks=_parse_tasks(data.get("tasks"), manifest_path=manifest_path),
+        tasks=tasks,
         manifest_path=manifest_path,
         root=root,
         plans_path=plans_path,
+        task_catalog_path=task_catalog_path,
     )
 
 
@@ -224,7 +233,78 @@ def provider_manifest_to_dict(manifest: ProviderManifest) -> dict[str, Any]:
         ],
         "manifest_path": str(manifest.manifest_path),
         "plans_path": str(manifest.plans_path) if manifest.plans_path else None,
+        "task_catalog_path": str(manifest.task_catalog_path) if manifest.task_catalog_path else None,
     }
+
+
+def _load_task_catalog(
+    catalog_path: Path | None,
+    *,
+    manifest_path: Path,
+) -> tuple[ProviderTaskManifest, ...]:
+    if catalog_path is None:
+        return ()
+    if not catalog_path.is_file():
+        raise FileNotFoundError(f"{manifest_path}: task_catalog not found: {catalog_path}")
+    payload = json.loads(catalog_path.read_text(encoding="utf-8"))
+    endpoints = payload.get("endpoints") if isinstance(payload, dict) else None
+    if not isinstance(endpoints, list):
+        raise ValueError(f"{catalog_path}: endpoints must be an array")
+
+    tasks: list[ProviderTaskManifest] = []
+    for index, endpoint in enumerate(endpoints, start=1):
+        if not isinstance(endpoint, dict):
+            raise ValueError(f"{catalog_path}: endpoints[{index}] must be an object")
+        if bool(endpoint.get("mutating")):
+            continue
+        name = str(endpoint.get("api_name") or "").strip()
+        target = str(endpoint.get("table_name") or "").strip()
+        if not name or not target:
+            raise ValueError(f"{catalog_path}: endpoints[{index}] requires api_name and table_name")
+        supports_incremental = bool(endpoint.get("supports_incremental"))
+        request_mode = str(endpoint.get("request_mode") or "snapshot").strip()
+        is_realtime = name.startswith("rt_") or "实时" in str(endpoint.get("title") or "")
+        freshness_mode = "event_driven" if is_realtime or not supports_incremental else "daily"
+        request_fields = (
+            "name",
+            "codes",
+            "begin_date",
+            "end_date",
+            "fields",
+            "params",
+            "limit",
+            "force",
+            "resume",
+            "log_level",
+        )
+        tasks.append(
+            ProviderTaskManifest(
+                name=name,
+                target=target,
+                supports_incremental=supports_incremental,
+                cursor_field=str(endpoint.get("cursor_field") or "").strip(),
+                incremental_scope="code" if request_mode == "code_range" else "global",
+                freshness_mode=freshness_mode,
+                request_fields=request_fields,
+            )
+        )
+    return tuple(tasks)
+
+
+def _merge_tasks(
+    inline_tasks: tuple[ProviderTaskManifest, ...],
+    catalog_tasks: tuple[ProviderTaskManifest, ...],
+    *,
+    manifest_path: Path,
+) -> tuple[ProviderTaskManifest, ...]:
+    merged: list[ProviderTaskManifest] = []
+    seen: set[str] = set()
+    for task in (*inline_tasks, *catalog_tasks):
+        if task.name in seen:
+            raise ValueError(f"{manifest_path}: duplicate task name across manifest/catalog: {task.name!r}")
+        seen.add(task.name)
+        merged.append(task)
+    return tuple(merged)
 
 
 def _parse_entrypoints(value: Any, *, manifest_path: Path) -> ProviderEntrypoints:

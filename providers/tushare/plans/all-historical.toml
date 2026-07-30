@@ -1,0 +1,702 @@
+source = "tushare"
+database = "tushare"
+log_level = "INFO"
+continue_on_error = true
+
+[defaults]
+begin_date = 20100101
+force = false
+resume = true
+page_size = 5000
+
+# 该计划覆盖官方目录中的全部非实时、非停用只读历史接口。
+# 高权限接口会按账号权限返回错误并继续；建议配置 max_requests_per_run 控制日配额。
+
+[[tasks]]
+task = "etf_basic"
+params = { list_status = ["L", "D", "P"] }
+
+[[tasks]]
+task = "etf_index"
+
+[[tasks]]
+task = "etf_mins"
+params = { freq = "1min" }
+window_days = 1
+
+[[tasks]]
+task = "etf_sh_cons"
+
+[[tasks]]
+task = "etf_share_size"
+
+[[tasks]]
+task = "etf_sz_cons"
+
+[[tasks]]
+task = "fund_adj"
+
+[[tasks]]
+task = "fund_daily"
+
+[[tasks]]
+task = "idx_anns"
+
+[[tasks]]
+task = "bc_bestotcqt"
+
+[[tasks]]
+task = "bc_otcqt"
+
+[[tasks]]
+task = "bond_blk"
+
+[[tasks]]
+task = "bond_blk_detail"
+
+[[tasks]]
+task = "cb_basic"
+
+[[tasks]]
+task = "cb_call"
+
+[[tasks]]
+task = "cb_daily"
+
+[[tasks]]
+task = "cb_factor_pro"
+
+[[tasks]]
+task = "cb_issue"
+
+[[tasks]]
+task = "cb_price_chg"
+
+[[tasks]]
+task = "cb_rate"
+
+[[tasks]]
+task = "cb_rating"
+
+[[tasks]]
+task = "cb_share"
+
+[[tasks]]
+task = "eco_cal"
+
+[[tasks]]
+task = "repo_daily"
+
+[[tasks]]
+task = "top10_cb_holders"
+
+[[tasks]]
+task = "yc_cb"
+
+[[tasks]]
+task = "fund_basic"
+params = { status = ["L", "D", "I"] }
+
+[[tasks]]
+task = "fund_company"
+
+[[tasks]]
+task = "fund_div"
+
+[[tasks]]
+task = "fund_factor_pro"
+
+[[tasks]]
+task = "fund_manager"
+
+[[tasks]]
+task = "fund_nav"
+
+[[tasks]]
+task = "fund_portfolio"
+
+[[tasks]]
+task = "fund_share"
+
+[[tasks]]
+task = "mkt_idx_bmk"
+
+[[tasks]]
+task = "fx_daily"
+
+[[tasks]]
+task = "fx_obasic"
+
+[[tasks]]
+task = "anns_d"
+
+[[tasks]]
+task = "cctv_news"
+
+[[tasks]]
+task = "irm_qa_sh"
+
+[[tasks]]
+task = "irm_qa_sz"
+
+[[tasks]]
+task = "major_news"
+
+[[tasks]]
+task = "monetary_policy"
+
+[[tasks]]
+task = "news"
+params = { src = ["sina", "wallstreetcn", "10jqka", "eastmoney", "yuncaijing", "fenghuang", "jinrongjie", "cls", "yicai"] }
+
+[[tasks]]
+task = "npr"
+
+[[tasks]]
+task = "research_report"
+
+[[tasks]]
+task = "cn_schedule"
+
+[[tasks]]
+task = "cn_cpi"
+
+[[tasks]]
+task = "cn_ppi"
+
+[[tasks]]
+task = "gz_index"
+
+[[tasks]]
+task = "hibor"
+
+[[tasks]]
+task = "libor"
+
+[[tasks]]
+task = "shibor"
+
+[[tasks]]
+task = "shibor_lpr"
+
+[[tasks]]
+task = "shibor_quote"
+
+[[tasks]]
+task = "wz_index"
+
+[[tasks]]
+task = "cn_gdp"
+
+[[tasks]]
+task = "cn_pmi"
+
+[[tasks]]
+task = "sf_month"
+
+[[tasks]]
+task = "cn_m"
+
+[[tasks]]
+task = "us_tbr"
+
+[[tasks]]
+task = "us_tltr"
+
+[[tasks]]
+task = "us_trltr"
+
+[[tasks]]
+task = "us_trycr"
+
+[[tasks]]
+task = "us_tycr"
+
+[[tasks]]
+task = "ci_daily"
+
+[[tasks]]
+task = "ci_index_member"
+
+[[tasks]]
+task = "daily_info"
+
+[[tasks]]
+task = "idx_factor_pro"
+
+[[tasks]]
+task = "idx_mins"
+params = { freq = "1min" }
+window_days = 1
+
+[[tasks]]
+task = "index_basic"
+
+[[tasks]]
+task = "index_classify"
+
+[[tasks]]
+task = "index_daily"
+
+[[tasks]]
+task = "index_dailybasic"
+
+[[tasks]]
+task = "index_global"
+
+[[tasks]]
+task = "index_member_all"
+
+[[tasks]]
+task = "index_monthly"
+
+[[tasks]]
+task = "index_weekly"
+
+[[tasks]]
+task = "index_weight"
+
+[[tasks]]
+task = "sw_daily"
+
+[[tasks]]
+task = "sw_mins"
+params = { freq = "1min" }
+window_days = 1
+
+[[tasks]]
+task = "sz_daily_info"
+
+[[tasks]]
+task = "opt_basic"
+
+[[tasks]]
+task = "opt_daily"
+
+[[tasks]]
+task = "opt_mins"
+params = { freq = "1min" }
+window_days = 1
+
+[[tasks]]
+task = "ft_limit"
+
+[[tasks]]
+task = "ft_mins"
+params = { freq = "1min" }
+window_days = 1
+
+[[tasks]]
+task = "fut_basic"
+params = { exchange = ["CFFEX", "DCE", "CZCE", "SHFE", "INE", "GFEX"] }
+
+[[tasks]]
+task = "fut_daily"
+
+[[tasks]]
+task = "fut_holding"
+
+[[tasks]]
+task = "fut_index_daily"
+
+[[tasks]]
+task = "fut_mapping"
+
+[[tasks]]
+task = "fut_settle"
+
+[[tasks]]
+task = "fut_trade_cal"
+
+[[tasks]]
+task = "fut_weekly_detail"
+
+[[tasks]]
+task = "fut_weekly_monthly"
+params = { freq = ["week", "month"] }
+
+[[tasks]]
+task = "fut_wsr"
+
+[[tasks]]
+task = "hk_adjfactor"
+
+[[tasks]]
+task = "hk_balancesheet"
+
+[[tasks]]
+task = "hk_basic"
+params = { list_status = ["L", "D", "P"] }
+
+[[tasks]]
+task = "hk_cashflow"
+
+[[tasks]]
+task = "hk_daily"
+
+[[tasks]]
+task = "hk_daily_adj"
+
+[[tasks]]
+task = "hk_fina_indicator"
+
+[[tasks]]
+task = "hk_income"
+
+[[tasks]]
+task = "hk_mins"
+params = { freq = "1min" }
+window_days = 1
+
+[[tasks]]
+task = "hk_tradecal"
+
+[[tasks]]
+task = "sge_basic"
+
+[[tasks]]
+task = "sge_daily"
+
+[[tasks]]
+task = "us_adjfactor"
+
+[[tasks]]
+task = "us_balancesheet"
+
+[[tasks]]
+task = "us_basic"
+
+[[tasks]]
+task = "us_cashflow"
+
+[[tasks]]
+task = "us_daily"
+
+[[tasks]]
+task = "us_daily_adj"
+
+[[tasks]]
+task = "us_fina_indicator"
+
+[[tasks]]
+task = "us_income"
+
+[[tasks]]
+task = "us_tradecal"
+
+[[tasks]]
+task = "margin"
+
+[[tasks]]
+task = "margin_detail"
+
+[[tasks]]
+task = "margin_secs"
+
+[[tasks]]
+task = "slb_len"
+
+[[tasks]]
+task = "slb_len_mm"
+
+[[tasks]]
+task = "slb_sec"
+
+[[tasks]]
+task = "slb_sec_detail"
+
+[[tasks]]
+task = "block_trade"
+
+[[tasks]]
+task = "pledge_detail"
+
+[[tasks]]
+task = "pledge_stat"
+
+[[tasks]]
+task = "repurchase"
+
+[[tasks]]
+task = "share_float"
+
+[[tasks]]
+task = "stk_alert"
+
+[[tasks]]
+task = "stk_high_shock"
+
+[[tasks]]
+task = "stk_holdernumber"
+
+[[tasks]]
+task = "stk_holdertrade"
+
+[[tasks]]
+task = "stk_shock"
+
+[[tasks]]
+task = "top10_floatholders"
+
+[[tasks]]
+task = "top10_holders"
+
+[[tasks]]
+task = "bak_basic"
+
+[[tasks]]
+task = "bse_mapping"
+
+[[tasks]]
+task = "namechange"
+
+[[tasks]]
+task = "new_share"
+
+[[tasks]]
+task = "st"
+
+[[tasks]]
+task = "stk_managers"
+
+[[tasks]]
+task = "stk_premarket"
+
+[[tasks]]
+task = "stk_rewards"
+
+[[tasks]]
+task = "stock_basic"
+params = { list_status = ["L", "D", "P", "G"] }
+
+[[tasks]]
+task = "stock_company"
+
+[[tasks]]
+task = "stock_hsgt"
+params = { type = ["HK_SZ", "SZ_HK", "HK_SH", "SH_HK"] }
+
+[[tasks]]
+task = "stock_st"
+
+[[tasks]]
+task = "trade_cal"
+
+[[tasks]]
+task = "dc_concept"
+
+[[tasks]]
+task = "dc_concept_cons"
+
+[[tasks]]
+task = "dc_daily"
+
+[[tasks]]
+task = "dc_hot"
+
+[[tasks]]
+task = "dc_index"
+params = { idx_type = ["行业板块", "概念板块", "地域板块"] }
+
+[[tasks]]
+task = "dc_member"
+
+[[tasks]]
+task = "hm_detail"
+
+[[tasks]]
+task = "hm_list"
+
+[[tasks]]
+task = "kpl_concept_cons"
+
+[[tasks]]
+task = "kpl_list"
+
+[[tasks]]
+task = "limit_cpt_list"
+
+[[tasks]]
+task = "limit_list_d"
+
+[[tasks]]
+task = "limit_list_ths"
+
+[[tasks]]
+task = "limit_step"
+
+[[tasks]]
+task = "stk_auction"
+
+[[tasks]]
+task = "tdx_daily"
+
+[[tasks]]
+task = "tdx_index"
+
+[[tasks]]
+task = "tdx_member"
+
+[[tasks]]
+task = "ths_daily"
+
+[[tasks]]
+task = "ths_hot"
+
+[[tasks]]
+task = "ths_index"
+
+[[tasks]]
+task = "ths_member"
+
+[[tasks]]
+task = "top_inst"
+
+[[tasks]]
+task = "top_list"
+
+[[tasks]]
+task = "broker_recommend"
+
+[[tasks]]
+task = "ccass_hold"
+
+[[tasks]]
+task = "ccass_hold_detail"
+
+[[tasks]]
+task = "cyq_chips"
+
+[[tasks]]
+task = "cyq_perf"
+
+[[tasks]]
+task = "hk_hold"
+
+[[tasks]]
+task = "report_rc"
+
+[[tasks]]
+task = "stk_ah_comparison"
+
+[[tasks]]
+task = "stk_auction_c"
+
+[[tasks]]
+task = "stk_auction_o"
+
+[[tasks]]
+task = "stk_factor"
+
+[[tasks]]
+task = "stk_factor_pro"
+
+[[tasks]]
+task = "stk_nineturn"
+
+[[tasks]]
+task = "stk_surv"
+
+[[tasks]]
+task = "adj_factor"
+
+[[tasks]]
+task = "bak_daily"
+
+[[tasks]]
+task = "daily"
+
+[[tasks]]
+task = "daily_basic"
+
+[[tasks]]
+task = "ggt_daily"
+
+[[tasks]]
+task = "ggt_top10"
+
+[[tasks]]
+task = "hsgt_top10"
+
+[[tasks]]
+task = "monthly"
+
+[[tasks]]
+task = "pro_bar"
+params = { asset = "E", freq = "D", adj = ["", "qfq", "hfq"] }
+
+[[tasks]]
+task = "stk_limit"
+
+[[tasks]]
+task = "stk_mins"
+params = { freq = "1min" }
+window_days = 1
+
+[[tasks]]
+task = "stk_week_month_adj"
+params = { freq = ["week", "month"] }
+
+[[tasks]]
+task = "stk_weekly_monthly"
+params = { freq = ["week", "month"] }
+
+[[tasks]]
+task = "suspend_d"
+
+[[tasks]]
+task = "weekly"
+
+[[tasks]]
+task = "balancesheet"
+
+[[tasks]]
+task = "cashflow"
+
+[[tasks]]
+task = "disclosure_date"
+
+[[tasks]]
+task = "dividend"
+
+[[tasks]]
+task = "express"
+
+[[tasks]]
+task = "fina_audit"
+
+[[tasks]]
+task = "fina_indicator"
+
+[[tasks]]
+task = "fina_mainbz"
+
+[[tasks]]
+task = "forecast"
+
+[[tasks]]
+task = "income"
+
+[[tasks]]
+task = "moneyflow"
+
+[[tasks]]
+task = "moneyflow_cnt_ths"
+
+[[tasks]]
+task = "moneyflow_dc"
+
+[[tasks]]
+task = "moneyflow_hsgt"
+
+[[tasks]]
+task = "moneyflow_ind_dc"
+
+[[tasks]]
+task = "moneyflow_ind_ths"
+
+[[tasks]]
+task = "moneyflow_mkt_dc"
+
+[[tasks]]
+task = "moneyflow_ths"

@@ -329,6 +329,7 @@ class SyncJobManager:
         code_market: Optional[str] = None,
         period: Optional[str] = None,
         fields: Optional[str] = None,
+        params: Optional[dict[str, Any]] = None,
         adjust_type: Optional[str] = None,
         qmt_adjust_type: Optional[str] = None,
         fill_data: Optional[bool] = None,
@@ -389,6 +390,10 @@ class SyncJobManager:
             command.extend(["--period", str(period)])
         if fields:
             command.extend(["--fields", str(fields)])
+        if params:
+            command.extend(
+                ["--params", json.dumps(params, ensure_ascii=False, separators=(",", ":"))]
+            )
         resolved_qmt_adjust_type = qmt_adjust_type or adjust_type
         if resolved_qmt_adjust_type:
             command.extend(["--adjust-type", str(resolved_qmt_adjust_type)])
@@ -439,6 +444,7 @@ class SyncJobManager:
                 "code_market": code_market,
                 "period": period,
                 "fields": fields,
+                "params": dict(params or {}),
                 "adjust_type": adjust_type,
                 "qmt_adjust_type": qmt_adjust_type,
                 "fill_data": fill_data,

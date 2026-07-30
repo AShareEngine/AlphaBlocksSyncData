@@ -1,0 +1,121 @@
+# Tushare Pro 同步说明
+
+## 覆盖范围
+
+Tushare Provider 的任务目录由官方数据接口文档生成，当前目录快照包含：
+
+- 241 个叶子文档；
+- 239 个接口，其中 237 个只读接口已注册为同步任务；
+- `p_save`、`p_delete` 会修改远端自选组合，出于安全原因不注册为同步任务；
+- “A股复权行情”与“通用行情接口”实际都指向 SDK 的 `pro_bar`，合并为一个任务；
+- “期货 Tick 行情”官方明确不提供 API，只能单独购买 CSV 网盘交付，因此无法通过 Token 自动同步。
+
+完整机器可读目录在 `providers/tushare/catalog.json`。普通 HTTP 接口直接调用官方 JSON API；`pro_bar` 按官方要求通过 Python SDK 调用。
+
+## Linux 配置
+
+安装依赖：
+
+```bash
+python3 -m pip install -r requirements.txt
+python3 scripts/install_provider_deps.py tushare --check
+```
+
+在 `config/runtime.local.yaml` 中增加：
+
+```yaml
+sync:
+  tushare:
+    token: YOUR_TUSHARE_TOKEN
+    base_url: https://api.tushare.pro
+    timeout: 60
+    retries: 2
+    retry_backoff_seconds: 2.0
+    request_interval_seconds: 0.2
+    default_start_date: '20100101'
+    page_size: 5000
+    max_requests_per_run: 50000
+```
+
+也可以不把 Token 写入文件：
+
+```bash
+export TUSHARE_TOKEN='YOUR_TUSHARE_TOKEN'
+```
+
+`max_requests_per_run` 为 `0` 时不在本地限流。设置为正数后，达到预算会停止后续任务；已经按代码落库的数据会在下次运行时继续。
+
+## 执行
+
+日常核心任务：
+
+```bash
+python3 scripts/run_provider_sync.py \
+  --config providers/tushare/plans/daily.toml
+```
+
+全部非实时、非停用历史接口：
+
+```bash
+python3 scripts/run_provider_sync.py \
+  --config providers/tushare/plans/all-historical.toml
+```
+
+全历史计划包含 220 个以上的任务，很多接口要求单独权限，而且逐代码首轮回填会消耗大量请求。建议先设置请求预算，多次运行；无权限任务会记录错误并继续。
+
+单接口示例：
+
+```bash
+python3 scripts/run_provider_sync.py tushare.daily \
+  --codes 000001.SZ,000005.SZ \
+  --begin-date 20100101
+
+python3 scripts/run_provider_sync.py tushare.stock_hsgt \
+  --begin-date 20250812 \
+  --params '{"type":["HK_SZ","SZ_HK","HK_SH","SH_HK"]}'
+```
+
+所有 237 个只读任务也会出现在同步任务 API 和 freshness 页面中。需要接口专用参数时，可在 HTTP 请求的 `params` 对象中传入。
+
+## 增量规则
+
+代码型历史接口不会使用整张表的最大日期：
+
+1. 先从对应目标表一次性查询 `code -> max(cursor)`；
+2. 某只代码完全无数据时，从 `20100101` 开始；
+3. 有数据时，从该代码自己的最大日期开始，故意保留一个日期重叠以接收当天修订；
+4. 每只代码请求完成后立即落库，进程中断不会丢失已完成进度；
+5. 股票代码池来自 `stock_basic`，同时查询 `L/D/P/G`，包含退市和暂停上市股票，不混入指数。
+
+全市场型接口按自己的日期游标增量；支持 `offset/limit` 的接口会自动分页。分钟接口在全历史计划中按天切窗，避免单次返回上限截断。
+
+## ReplacingMergeTree 设计
+
+每个接口按需创建独立的 `ts_<api_name>` 表。文档输出字段全部保存为 `String`，并附加：
+
+- `_row_hash`：接口名、稳定请求维度（不含起止时间）、完整返回行的 SHA-256；
+- `_scope_key`：代码、频率、复权类型等请求维度；
+- `_cursor_value`：规范化增量游标；
+- `_ingested_at`：写入版本时间。
+
+表引擎统一为：
+
+```sql
+ENGINE = ReplacingMergeTree(_ingested_at)
+ORDER BY (_row_hash)
+```
+
+这样不会因为人工 `ORDER BY (code, date)` 漏掉公告类型、报告期、频率或其他维度而吞掉不同记录。完全相同的行会合并；同一业务键发生内容修订时，新旧版本会同时保留，避免静默丢数据。下游若只要最新版，应基于该接口明确的完整业务键使用 `argMax(..., _ingested_at)`，不能使用一个全接口通用但不完整的键。
+
+## 更新官方目录
+
+官方文档更新后执行：
+
+```bash
+python3 scripts/generate_tushare_catalog.py
+python3 scripts/generate_tushare_plans.py
+python3 scripts/validate_provider.py --provider tushare --load-entrypoints
+python3 scripts/validate_sync_config.py \
+  providers/tushare/plans/daily.toml \
+  providers/tushare/plans/all-historical.toml
+```

@@ -319,6 +319,7 @@ def _task_namespace(
         code_market=scalar("code_market"),
         period=scalar("period"),
         fields=fields,
+        params=dict(parameters.get("params") or {}),
         adjust_type=scalar("adjust_type"),
         qmt_adjust_type=scalar("qmt_adjust_type") or scalar("adjust_type"),
         fill_data=_optional_bool(scalar("fill_data"), default=True),

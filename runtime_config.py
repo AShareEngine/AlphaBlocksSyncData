@@ -11,7 +11,7 @@ from typing import Any
 import yaml
 
 
-@dataclass(slots=True)
+@dataclass
 class LlmConfig:
     provider_name: str = ""
     base_url: str = ""
@@ -23,7 +23,7 @@ class LlmConfig:
     verify_ssl: bool = True
 
 
-@dataclass(slots=True)
+@dataclass
 class DatasourceConfig:
     id: str = "primary"
     name: str = "Primary Data Source"
@@ -37,19 +37,19 @@ class DatasourceConfig:
     extra_params: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass(slots=True)
+@dataclass
 class DiscoveryConfig:
     allow_databases: list[str] = field(default_factory=list)
     allow_tables: list[str] = field(default_factory=list)
     trading_calendar_table: str = ""
 
 
-@dataclass(slots=True)
+@dataclass
 class RuntimeStateConfig:
     database: str = "alphablocks"
 
 
-@dataclass(slots=True)
+@dataclass
 class SyncAmazingDataConfig:
     username: str = ""
     password: str = ""
@@ -58,20 +58,20 @@ class SyncAmazingDataConfig:
     local_path: str = ""
 
 
-@dataclass(slots=True)
+@dataclass
 class SyncBaoStockConfig:
     user_id: str = "anonymous"
     password: str = "123456"
 
 
-@dataclass(slots=True)
+@dataclass
 class SyncQmtConfig:
     base_url: str = ""
     api_key: str = ""
     timeout: int = 60
 
 
-@dataclass(slots=True)
+@dataclass
 class SyncYFinanceConfig:
     proxy: str = ""
     batch_size: int = 5
@@ -91,7 +91,7 @@ class SyncYFinanceConfig:
     include_otc: bool = False
 
 
-@dataclass(slots=True)
+@dataclass
 class SyncAkshareConfig:
     proxy: str = ""
     request_interval_seconds: float = 1.0
@@ -103,16 +103,30 @@ class SyncAkshareConfig:
     include_pink: bool = False
 
 
-@dataclass(slots=True)
+@dataclass
+class SyncTushareConfig:
+    token: str = ""
+    base_url: str = "https://api.tushare.pro"
+    timeout: int = 60
+    retries: int = 2
+    retry_backoff_seconds: float = 2.0
+    request_interval_seconds: float = 0.2
+    default_start_date: str = "20100101"
+    page_size: int = 5000
+    max_requests_per_run: int = 0
+
+
+@dataclass
 class SyncConfig:
     akshare: SyncAkshareConfig = field(default_factory=SyncAkshareConfig)
     amazingdata: SyncAmazingDataConfig = field(default_factory=SyncAmazingDataConfig)
     baostock: SyncBaoStockConfig = field(default_factory=SyncBaoStockConfig)
     qmt: SyncQmtConfig = field(default_factory=SyncQmtConfig)
+    tushare: SyncTushareConfig = field(default_factory=SyncTushareConfig)
     yfinance: SyncYFinanceConfig = field(default_factory=SyncYFinanceConfig)
 
 
-@dataclass(slots=True)
+@dataclass
 class RuntimeConfig:
     llm: LlmConfig = field(default_factory=LlmConfig)
     datasource: DatasourceConfig = field(default_factory=DatasourceConfig)
@@ -155,6 +169,7 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
             amazingdata=SyncAmazingDataConfig(**(sync_payload.get("amazingdata", {}) or {})),
             baostock=SyncBaoStockConfig(**(sync_payload.get("baostock", {}) or {})),
             qmt=SyncQmtConfig(**(sync_payload.get("qmt", {}) or {})),
+            tushare=SyncTushareConfig(**(sync_payload.get("tushare", {}) or {})),
             yfinance=SyncYFinanceConfig(**(sync_payload.get("yfinance", {}) or {})),
         ),
     )
@@ -171,6 +186,7 @@ __all__ = [
     "SyncBaoStockConfig",
     "SyncConfig",
     "SyncQmtConfig",
+    "SyncTushareConfig",
     "SyncYFinanceConfig",
     "load_runtime_config",
 ]

@@ -35,6 +35,16 @@ def install_sync_data_system_alias(project_root: Path | None = None) -> Path:
     module = importlib.util.module_from_spec(spec)
     sys.modules["sync_data_system"] = module
     spec.loader.exec_module(module)
+    # A test or embedded host may reload only the package object while keeping
+    # already-imported children in sys.modules. Reattach direct children so
+    # dotted lookups (including unittest.mock.patch) keep working.
+    prefix = "sync_data_system."
+    for module_name, child in tuple(sys.modules.items()):
+        if not module_name.startswith(prefix):
+            continue
+        relative_name = module_name[len(prefix) :]
+        if "." not in relative_name and child is not None:
+            setattr(module, relative_name, child)
     return root
 
 

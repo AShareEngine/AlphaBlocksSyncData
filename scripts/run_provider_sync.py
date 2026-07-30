@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from dataclasses import replace
@@ -58,6 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--code-market")
     parser.add_argument("--period")
     parser.add_argument("--fields")
+    parser.add_argument("--params", default="", help="Provider-specific JSON object parameters")
     parser.add_argument("--adjust-type")
     parser.add_argument("--qmt-adjust-type")
     parser.add_argument("--fill-data", action=argparse.BooleanOptionalAction, default=True)
@@ -97,6 +99,7 @@ def parse_args() -> argparse.Namespace:
         or args.code_market
         or args.period
         or args.fields
+        or args.params
         or args.adjust_type
         or args.qmt_adjust_type
         or args.fill_data is not True
@@ -196,6 +199,7 @@ def run_registered_task(
         code_market=args.code_market,
         period=args.period,
         fields=args.fields,
+        params=_parse_params(args.params),
         qmt_adjust_type=args.qmt_adjust_type or args.adjust_type,
         fill_data=args.fill_data,
         count=args.count,
@@ -256,6 +260,16 @@ def run_registered_task(
     finally:
         if owns_context and context is not None:
             context.close()
+
+
+def _parse_params(value: Any) -> dict[str, Any]:
+    text = str(value or "").strip()
+    if not text:
+        return {}
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError("--params must be a JSON object")
+    return payload
 
 
 def _record_table_check(

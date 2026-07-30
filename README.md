@@ -63,6 +63,7 @@ flowchart LR
 - BaoStock 和 QMT 的部分开发、配置校验、单元测试可以在 macOS 上执行。
 - AKShare Provider 可在 macOS / Linux / Windows 运行，不需要 API Key。
 - yfinance Provider 可在 macOS / Linux / Windows 运行，不依赖 AKShare。
+- Tushare Provider 可在 Linux / macOS / Windows 运行，需要 Tushare Pro Token。
 - `config/runtime.local.yaml` 用于本地真实运行配置，示例文件是 `config/runtime.example.yaml`。
 
 ## 快速开始
@@ -95,6 +96,8 @@ cp config/runtime.example.yaml config/runtime.local.yaml
 | `providers/akshare/plans/full.toml` | AKShare 美股首次全量同步计划 |
 | `providers/akshare/plans/daily.toml` | AKShare 美股日常增量同步计划 |
 | `providers/akshare/plans/enrichment.sample.toml` | AKShare 美股资料、财务和估值示例 |
+| `providers/tushare/plans/daily.toml` | Tushare 核心日常增量同步计划 |
+| `providers/tushare/plans/all-historical.toml` | Tushare 全部历史只读接口计划 |
 | `providers/<name>/provider.toml` | provider 声明、依赖、任务和入口 |
 | `providers/<name>/plans/*.toml` | provider 自带计划模板 |
 
@@ -127,6 +130,11 @@ sync:
   qmt:
     base_url: http://YOUR_QMT_HOST:8000
     api_key: YOUR_QMT_API_KEY
+  tushare:
+    token: YOUR_TUSHARE_TOKEN
+    request_interval_seconds: 0.2
+    default_start_date: "20100101"
+    max_requests_per_run: 50000
   yfinance:
     proxy: ""
     batch_size: 5
@@ -160,6 +168,7 @@ python3 scripts/run_provider_sync.py --config config/sync/plans/run_sync.baostoc
 python3 scripts/run_provider_sync.py --config config/sync/plans/run_sync.amazingdata.full.toml
 python3 scripts/run_provider_sync.py --config providers/yfinance/plans/full.toml
 python3 scripts/run_provider_sync.py --config providers/akshare/plans/full.toml
+python3 scripts/run_provider_sync.py --config providers/tushare/plans/daily.toml
 ```
 
 执行单个任务：
@@ -170,6 +179,7 @@ python3 scripts/run_provider_sync.py baostock.trade_dates --begin-date 20240102 
 python3 scripts/run_provider_sync.py amazingdata.stock_basic --codes 600000.SH --limit 1
 python3 scripts/run_provider_sync.py yfinance.daily_kline --codes AAPL,MSFT --begin-date 20240101
 python3 scripts/run_provider_sync.py akshare.us_daily_kline --codes AAPL,MSFT --begin-date 20240101
+python3 scripts/run_provider_sync.py tushare.daily --codes 000001.SZ,000005.SZ --begin-date 20100101
 ```
 
 QMT 配置 dry-run：
@@ -200,7 +210,7 @@ curl http://127.0.0.1:18080/api/sync/meta/configs
 ```text
 AlphaBlocksSyncData/
 ├── core/                  # provider 注册、配置校验、执行分发
-├── providers/             # AmazingData / BaoStock / QMT / AKShare / yfinance provider 实现
+├── providers/             # AmazingData / BaoStock / QMT / AKShare / yfinance / Tushare provider
 ├── config/
 │   ├── runtime.example.yaml
 │   └── sync/plans/        # 同步计划
@@ -234,6 +244,7 @@ providers/<name>/
 | [运行手册](RUNBOOK.md) | 常用同步命令、任务说明、排查方式 |
 | [API 服务文档](API_SERVICE.md) | API 启动和接口说明 |
 | [BaoStock 说明](BAOSTOCK_RUNBOOK.md) | BaoStock 同步任务说明 |
+| [Tushare 说明](TUSHARE_RUNBOOK.md) | Tushare 全接口目录、增量、配额和建表说明 |
 | [QMT 接入说明](docs/qmt-data.md) | QMT HTTP API 和 TOML 测试说明 |
 | [AKShare 美股数据说明](docs/akshare-us-data.md) | AKShare 美股任务、表、配置和使用边界 |
 | [免费美股数据说明](docs/yfinance-data.md) | yfinance / FinanceDatabase 任务、表和使用边界 |

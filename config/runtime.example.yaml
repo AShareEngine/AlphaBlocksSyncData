@@ -51,6 +51,17 @@ sync:
     base_url: http://YOUR_QMT_HOST:8000
     api_key: YOUR_QMT_API_KEY
     timeout: 60
+  tushare:
+    token: YOUR_TUSHARE_TOKEN
+    base_url: https://api.tushare.pro
+    timeout: 60
+    retries: 2
+    retry_backoff_seconds: 2.0
+    request_interval_seconds: 0.2
+    default_start_date: '20100101'
+    page_size: 5000
+    # 0 表示不限制；设置正数可避免一次运行耗尽账号日配额。
+    max_requests_per_run: 0
   yfinance:
     proxy: ''
     batch_size: 5
