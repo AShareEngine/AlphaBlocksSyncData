@@ -1,0 +1,49 @@
+# 免费美股基本面与持仓同步
+#
+# 这些任务使用 Yahoo Finance 逐股接口，完整跑 5,000+ 股票耗时较长。
+# 首次验证建议把 limit 改为 10，或通过 --codes 指定少量股票。
+#
+# 用法：
+#   python3 scripts/run_provider_sync.py --config providers/yfinance/plans/fundamentals.toml
+
+source = "yfinance"
+log_level = "INFO"
+continue_on_error = true
+database = "yfinance"
+
+[defaults]
+limit = 0
+force = false
+continue_on_error = true
+
+[[tasks]]
+task = "income_statement"
+enabled = true
+
+[[tasks]]
+task = "balance_sheet"
+enabled = true
+
+[[tasks]]
+task = "cash_flow"
+enabled = true
+
+[[tasks]]
+task = "financial_metrics"
+enabled = true
+
+[[tasks]]
+task = "earnings_calendar"
+enabled = true
+
+[[tasks]]
+task = "analyst_estimates"
+enabled = true
+
+[[tasks]]
+task = "institutional_holders"
+enabled = true
+
+[[tasks]]
+task = "insider_transactions"
+enabled = true

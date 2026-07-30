@@ -28,6 +28,13 @@ AND positionCaseInsensitiveUTF8(name, 'warrant') = 0
 AND positionCaseInsensitiveUTF8(name, ' rights') = 0
 AND positionCaseInsensitiveUTF8(name, ' units') = 0
 AND positionCaseInsensitiveUTF8(name, 'debenture') = 0
+AND positionCaseInsensitiveUTF8(name, 'when-issued') = 0
+AND positionCaseInsensitiveUTF8(name, ' dep shs') = 0
+AND positionCaseInsensitiveUTF8(name, '% series') = 0
+AND (
+    positionCaseInsensitiveUTF8(name, 'depositary shares') = 0
+    OR positionCaseInsensitiveUTF8(name, 'american depositary shares') > 0
+)
 """
 
 TASK_COLUMNS: dict[str, tuple[str, ...]] = {
@@ -116,6 +123,99 @@ TASK_COLUMNS: dict[str, tuple[str, ...]] = {
         "weight",
         "membership_scope",
     ),
+    "income_statement": (
+        "symbol",
+        "report_date",
+        "period_type",
+        "metric",
+        "value",
+    ),
+    "balance_sheet": (
+        "symbol",
+        "report_date",
+        "period_type",
+        "metric",
+        "value",
+    ),
+    "cash_flow": (
+        "symbol",
+        "report_date",
+        "period_type",
+        "metric",
+        "value",
+    ),
+    "financial_metrics": (
+        "snapshot_date",
+        "symbol",
+        "currency",
+        "financial_currency",
+        "quote_type",
+        "market_cap",
+        "enterprise_value",
+        "trailing_pe",
+        "forward_pe",
+        "price_to_book",
+        "enterprise_to_revenue",
+        "enterprise_to_ebitda",
+        "dividend_yield",
+        "payout_ratio",
+        "beta",
+        "shares_outstanding",
+        "float_shares",
+        "held_percent_insiders",
+        "held_percent_institutions",
+        "profit_margins",
+        "operating_margins",
+        "gross_margins",
+        "return_on_assets",
+        "return_on_equity",
+        "revenue_growth",
+        "earnings_growth",
+        "total_revenue",
+        "net_income_to_common",
+        "total_cash",
+        "total_debt",
+        "free_cashflow",
+        "operating_cashflow",
+    ),
+    "earnings_calendar": (
+        "symbol",
+        "event_time",
+        "eps_estimate",
+        "reported_eps",
+        "surprise_percent",
+    ),
+    "analyst_estimates": (
+        "snapshot_date",
+        "symbol",
+        "dataset",
+        "horizon",
+        "metric",
+        "value",
+    ),
+    "institutional_holders": (
+        "snapshot_date",
+        "symbol",
+        "holder_type",
+        "holder",
+        "report_date",
+        "shares",
+        "value",
+        "percent_held",
+        "percent_change",
+    ),
+    "insider_transactions": (
+        "symbol",
+        "start_date",
+        "insider",
+        "position",
+        "transaction",
+        "shares",
+        "value",
+        "ownership",
+        "transaction_text",
+        "url",
+    ),
 }
 
 STRING_COLUMNS = frozenset(
@@ -148,6 +248,20 @@ STRING_COLUMNS = frozenset(
         "etf_symbol",
         "holding_name",
         "membership_scope",
+        "period_type",
+        "metric",
+        "financial_currency",
+        "quote_type",
+        "dataset",
+        "horizon",
+        "holder_type",
+        "holder",
+        "insider",
+        "position",
+        "transaction",
+        "ownership",
+        "transaction_text",
+        "url",
     }
 )
 
@@ -607,6 +721,127 @@ class YFinanceRepository:
             ENGINE = ReplacingMergeTree
             PARTITION BY toYYYYMM(snapshot_date)
             ORDER BY (snapshot_date, concept_code, etf_symbol, symbol)
+            """
+        if task in {"income_statement", "balance_sheet", "cash_flow"}:
+            return f"""
+            CREATE TABLE IF NOT EXISTS {table}
+            (
+                symbol String,
+                report_date Date,
+                period_type String,
+                metric String,
+                value Nullable(Float64)
+            )
+            ENGINE = ReplacingMergeTree
+            PARTITION BY toYYYYMM(report_date)
+            ORDER BY (symbol, report_date, period_type, metric)
+            """
+        if task == "financial_metrics":
+            return f"""
+            CREATE TABLE IF NOT EXISTS {table}
+            (
+                snapshot_date Date,
+                symbol String,
+                currency String,
+                financial_currency String,
+                quote_type String,
+                market_cap Nullable(Float64),
+                enterprise_value Nullable(Float64),
+                trailing_pe Nullable(Float64),
+                forward_pe Nullable(Float64),
+                price_to_book Nullable(Float64),
+                enterprise_to_revenue Nullable(Float64),
+                enterprise_to_ebitda Nullable(Float64),
+                dividend_yield Nullable(Float64),
+                payout_ratio Nullable(Float64),
+                beta Nullable(Float64),
+                shares_outstanding Nullable(Float64),
+                float_shares Nullable(Float64),
+                held_percent_insiders Nullable(Float64),
+                held_percent_institutions Nullable(Float64),
+                profit_margins Nullable(Float64),
+                operating_margins Nullable(Float64),
+                gross_margins Nullable(Float64),
+                return_on_assets Nullable(Float64),
+                return_on_equity Nullable(Float64),
+                revenue_growth Nullable(Float64),
+                earnings_growth Nullable(Float64),
+                total_revenue Nullable(Float64),
+                net_income_to_common Nullable(Float64),
+                total_cash Nullable(Float64),
+                total_debt Nullable(Float64),
+                free_cashflow Nullable(Float64),
+                operating_cashflow Nullable(Float64)
+            )
+            ENGINE = ReplacingMergeTree
+            PARTITION BY toYYYYMM(snapshot_date)
+            ORDER BY (snapshot_date, symbol)
+            """
+        if task == "earnings_calendar":
+            return f"""
+            CREATE TABLE IF NOT EXISTS {table}
+            (
+                symbol String,
+                event_time DateTime64(3),
+                eps_estimate Nullable(Float64),
+                reported_eps Nullable(Float64),
+                surprise_percent Nullable(Float64)
+            )
+            ENGINE = ReplacingMergeTree
+            PARTITION BY toYYYYMM(event_time)
+            ORDER BY (symbol, event_time)
+            """
+        if task == "analyst_estimates":
+            return f"""
+            CREATE TABLE IF NOT EXISTS {table}
+            (
+                snapshot_date Date,
+                symbol String,
+                dataset String,
+                horizon String,
+                metric String,
+                value Nullable(Float64)
+            )
+            ENGINE = ReplacingMergeTree
+            PARTITION BY toYYYYMM(snapshot_date)
+            ORDER BY (snapshot_date, symbol, dataset, horizon, metric)
+            """
+        if task == "institutional_holders":
+            return f"""
+            CREATE TABLE IF NOT EXISTS {table}
+            (
+                snapshot_date Date,
+                symbol String,
+                holder_type String,
+                holder String,
+                report_date Nullable(Date),
+                shares Nullable(Float64),
+                value Nullable(Float64),
+                percent_held Nullable(Float64),
+                percent_change Nullable(Float64)
+            )
+            ENGINE = ReplacingMergeTree
+            PARTITION BY toYYYYMM(snapshot_date)
+            ORDER BY (snapshot_date, symbol, holder_type, holder)
+            """
+        if task == "insider_transactions":
+            return f"""
+            CREATE TABLE IF NOT EXISTS {table}
+            (
+                symbol String,
+                start_date Date,
+                insider String,
+                position String,
+                transaction String,
+                shares Nullable(Float64),
+                value Nullable(Float64),
+                ownership String,
+                transaction_text String,
+                url String
+            )
+            ENGINE = ReplacingMergeTree
+            PARTITION BY toYYYYMM(start_date)
+            ORDER BY (symbol, start_date, insider, transaction, transaction_text, url)
             """
         raise KeyError(task)
 

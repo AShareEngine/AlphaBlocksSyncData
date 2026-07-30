@@ -86,6 +86,54 @@ YFINANCE_TASK_SPECS: dict[str, YFinanceTaskSpec] = {
         kind="concept_price",
     ),
     "concept_membership": YFinanceTaskSpec("concept_membership", "yf_concept_membership"),
+    "income_statement": YFinanceTaskSpec(
+        "income_statement",
+        "yf_income_statement",
+        uses_codes=True,
+        kind="fundamental",
+    ),
+    "balance_sheet": YFinanceTaskSpec(
+        "balance_sheet",
+        "yf_balance_sheet",
+        uses_codes=True,
+        kind="fundamental",
+    ),
+    "cash_flow": YFinanceTaskSpec(
+        "cash_flow",
+        "yf_cash_flow",
+        uses_codes=True,
+        kind="fundamental",
+    ),
+    "financial_metrics": YFinanceTaskSpec(
+        "financial_metrics",
+        "yf_financial_metrics",
+        uses_codes=True,
+        kind="fundamental",
+    ),
+    "earnings_calendar": YFinanceTaskSpec(
+        "earnings_calendar",
+        "yf_earnings_calendar",
+        uses_codes=True,
+        kind="fundamental",
+    ),
+    "analyst_estimates": YFinanceTaskSpec(
+        "analyst_estimates",
+        "yf_analyst_estimates",
+        uses_codes=True,
+        kind="fundamental",
+    ),
+    "institutional_holders": YFinanceTaskSpec(
+        "institutional_holders",
+        "yf_institutional_holders",
+        uses_codes=True,
+        kind="fundamental",
+    ),
+    "insider_transactions": YFinanceTaskSpec(
+        "insider_transactions",
+        "yf_insider_transactions",
+        uses_codes=True,
+        kind="fundamental",
+    ),
 }
 
 YFINANCE_TASK_CHOICES = tuple(YFINANCE_TASK_SPECS)

@@ -246,6 +246,88 @@ sync:
         self.assertEqual(len(fake_client.latest_date_queries), 1)
         self.assertIn("UNION ALL", fake_client.latest_date_queries[0])
 
+    def test_sync_table_status_reuses_watermark_until_source_parts_change(self) -> None:
+        client = TestClient(app)
+
+        class _FakeClient:
+            latest_date_queries = 0
+            latest_date = "2026-07-28"
+            source_signature = "2026-07-28 10:00:00|1|100|2048"
+            watermarks = {}
+
+            def command(self, sql, parameters=None):
+                return None
+
+            def query_rows(self, sql, parameters=None):
+                if "FROM system.tables" in sql:
+                    return [("market", "first_daily")]
+                if "FROM system.columns" in sql:
+                    return [("market", "first_daily", "trade_date")]
+                if "FROM system.parts" in sql:
+                    return [
+                        (
+                            "market",
+                            "first_daily",
+                            True,
+                            "2026-07-28 10:00:00",
+                            self.source_signature,
+                        )
+                    ]
+                if "FROM `alphablocks`.`sync_table_watermark`" in sql:
+                    return list(self.watermarks.values())
+                if "AS latest_date" in sql:
+                    self.latest_date_queries += 1
+                    return [(0, self.latest_date)]
+                return []
+
+            def insert_rows(self, table, column_names, rows):
+                if table != "`alphablocks`.`sync_table_watermark`":
+                    return
+                for row in rows:
+                    self.watermarks[(str(row[0]), str(row[1]))] = (
+                        row[0],
+                        row[1],
+                        row[2],
+                        row[3],
+                        row[4],
+                        row[5],
+                        row[6],
+                        row[7],
+                    )
+
+            def close(self):
+                return None
+
+        fake_client = _FakeClient()
+        task = {
+            "name": "test.first",
+            "target": "first_daily",
+            "cursor_field": "trade_date",
+        }
+        with patch(
+            "sync_data_system.service.api.JOB_MANAGER.list_registered_tasks",
+            return_value=[task],
+        ), patch(
+            "sync_data_system.service.api.ClickHouseConfig.from_env",
+            return_value=object(),
+        ), patch(
+            "sync_data_system.service.api.create_clickhouse_client",
+            return_value=fake_client,
+        ):
+            first = client.get("/api/sync-table-status")
+            second = client.get("/api/sync-table-status")
+            fake_client.latest_date = "2026-07-29"
+            fake_client.source_signature = "2026-07-29 10:00:00|2|101|4096"
+            third = client.get("/api/sync-table-status")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(third.status_code, 200)
+        self.assertEqual(first.json()["items"][0]["latest_date"], "2026-07-28")
+        self.assertEqual(second.json()["items"][0]["latest_date"], "2026-07-28")
+        self.assertEqual(third.json()["items"][0]["latest_date"], "2026-07-29")
+        self.assertEqual(fake_client.latest_date_queries, 2)
+
     def test_sync_table_status_returns_event_driven_check_state(self) -> None:
         client = TestClient(app)
 

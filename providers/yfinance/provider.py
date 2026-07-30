@@ -64,7 +64,8 @@ OTHER_EXCHANGE_CODES = {
 }
 
 NON_COMMON_SECURITY_RE = re.compile(
-    r"\b(?:WARRANTS?|RIGHTS?|PREFERRED|PREFERENCE|PFD|DEBENTURES?|NOTES?)\b",
+    r"\b(?:WARRANTS?|RIGHTS?|PREFERRED|PREFERENCE|PFD|DEBENTURES?|NOTES?|"
+    r"CORPORATE\s+UNITS?|WHEN-ISSUED)\b",
     re.IGNORECASE,
 )
 
@@ -103,6 +104,124 @@ PRICE_COLUMNS = (
     "dividends",
     "stock_splits",
     "capital_gains",
+)
+
+STATEMENT_COLUMNS = (
+    "symbol",
+    "report_date",
+    "period_type",
+    "metric",
+    "value",
+)
+
+FINANCIAL_METRICS_COLUMNS = (
+    "snapshot_date",
+    "symbol",
+    "currency",
+    "financial_currency",
+    "quote_type",
+    "market_cap",
+    "enterprise_value",
+    "trailing_pe",
+    "forward_pe",
+    "price_to_book",
+    "enterprise_to_revenue",
+    "enterprise_to_ebitda",
+    "dividend_yield",
+    "payout_ratio",
+    "beta",
+    "shares_outstanding",
+    "float_shares",
+    "held_percent_insiders",
+    "held_percent_institutions",
+    "profit_margins",
+    "operating_margins",
+    "gross_margins",
+    "return_on_assets",
+    "return_on_equity",
+    "revenue_growth",
+    "earnings_growth",
+    "total_revenue",
+    "net_income_to_common",
+    "total_cash",
+    "total_debt",
+    "free_cashflow",
+    "operating_cashflow",
+)
+
+FINANCIAL_METRIC_FIELDS = {
+    "currency": "currency",
+    "financial_currency": "financialCurrency",
+    "quote_type": "quoteType",
+    "market_cap": "marketCap",
+    "enterprise_value": "enterpriseValue",
+    "trailing_pe": "trailingPE",
+    "forward_pe": "forwardPE",
+    "price_to_book": "priceToBook",
+    "enterprise_to_revenue": "enterpriseToRevenue",
+    "enterprise_to_ebitda": "enterpriseToEbitda",
+    "dividend_yield": "dividendYield",
+    "payout_ratio": "payoutRatio",
+    "beta": "beta",
+    "shares_outstanding": "sharesOutstanding",
+    "float_shares": "floatShares",
+    "held_percent_insiders": "heldPercentInsiders",
+    "held_percent_institutions": "heldPercentInstitutions",
+    "profit_margins": "profitMargins",
+    "operating_margins": "operatingMargins",
+    "gross_margins": "grossMargins",
+    "return_on_assets": "returnOnAssets",
+    "return_on_equity": "returnOnEquity",
+    "revenue_growth": "revenueGrowth",
+    "earnings_growth": "earningsGrowth",
+    "total_revenue": "totalRevenue",
+    "net_income_to_common": "netIncomeToCommon",
+    "total_cash": "totalCash",
+    "total_debt": "totalDebt",
+    "free_cashflow": "freeCashflow",
+    "operating_cashflow": "operatingCashflow",
+}
+
+EARNINGS_CALENDAR_COLUMNS = (
+    "symbol",
+    "event_time",
+    "eps_estimate",
+    "reported_eps",
+    "surprise_percent",
+)
+
+ANALYST_ESTIMATE_COLUMNS = (
+    "snapshot_date",
+    "symbol",
+    "dataset",
+    "horizon",
+    "metric",
+    "value",
+)
+
+INSTITUTIONAL_HOLDER_COLUMNS = (
+    "snapshot_date",
+    "symbol",
+    "holder_type",
+    "holder",
+    "report_date",
+    "shares",
+    "value",
+    "percent_held",
+    "percent_change",
+)
+
+INSIDER_TRANSACTION_COLUMNS = (
+    "symbol",
+    "start_date",
+    "insider",
+    "position",
+    "transaction",
+    "shares",
+    "value",
+    "ownership",
+    "transaction_text",
+    "url",
 )
 
 
@@ -185,6 +304,9 @@ class YFinanceProvider:
         normalized = str(message or "").strip()
         if normalized:
             self._diagnostics.append(normalized)
+
+    def record_diagnostic(self, message: str) -> None:
+        self._record_diagnostic(message)
 
     def fetch_symbol_master(
         self,
@@ -500,6 +622,231 @@ class YFinanceProvider:
             raise RuntimeError(message)
         return result.loc[:, list(columns)].reset_index(drop=True)
 
+    def fetch_income_statement(self, symbol: str) -> pd.DataFrame:
+        return self._fetch_financial_statement(
+            symbol,
+            getter_name="get_income_stmt",
+            statement_label="income statement",
+        )
+
+    def fetch_balance_sheet(self, symbol: str) -> pd.DataFrame:
+        return self._fetch_financial_statement(
+            symbol,
+            getter_name="get_balance_sheet",
+            statement_label="balance sheet",
+        )
+
+    def fetch_cash_flow(self, symbol: str) -> pd.DataFrame:
+        return self._fetch_financial_statement(
+            symbol,
+            getter_name="get_cash_flow",
+            statement_label="cash flow",
+        )
+
+    def _fetch_financial_statement(
+        self,
+        symbol: str,
+        *,
+        getter_name: str,
+        statement_label: str,
+    ) -> pd.DataFrame:
+        normalized_symbol = normalize_us_symbol(symbol)
+        if not normalized_symbol:
+            return _empty_frame(STATEMENT_COLUMNS)
+        ticker = self._yfinance.Ticker(normalized_symbol)
+        getter = getattr(ticker, getter_name)
+        frames: list[pd.DataFrame] = []
+        for period_type, frequency in (("annual", "yearly"), ("quarterly", "quarterly")):
+            raw = self._run_yahoo_call(
+                f"{statement_label} {normalized_symbol} {period_type}",
+                lambda frequency=frequency: getter(freq=frequency),
+            )
+            frame = _normalize_statement(
+                raw,
+                symbol=normalized_symbol,
+                period_type=period_type,
+            )
+            if not frame.empty:
+                frames.append(frame)
+        if not frames:
+            return _empty_frame(STATEMENT_COLUMNS)
+        return (
+            pd.concat(frames, ignore_index=True)
+            .drop_duplicates(
+                subset=["symbol", "report_date", "period_type", "metric"],
+                keep="last",
+            )
+            .sort_values(["symbol", "report_date", "period_type", "metric"])
+            .reset_index(drop=True)
+        )
+
+    def fetch_financial_metrics(
+        self,
+        symbol: str,
+        *,
+        snapshot_date: date | None = None,
+    ) -> pd.DataFrame:
+        normalized_symbol = normalize_us_symbol(symbol)
+        if not normalized_symbol:
+            return _empty_frame(FINANCIAL_METRICS_COLUMNS)
+        ticker = self._yfinance.Ticker(normalized_symbol)
+        info = self._run_yahoo_call(
+            f"financial metrics {normalized_symbol}",
+            ticker.get_info,
+        )
+        if not isinstance(info, dict) or not info:
+            return _empty_frame(FINANCIAL_METRICS_COLUMNS)
+        row: dict[str, Any] = {
+            "snapshot_date": snapshot_date or date.today(),
+            "symbol": normalized_symbol,
+        }
+        for column, source_field in FINANCIAL_METRIC_FIELDS.items():
+            value = info.get(source_field)
+            row[column] = (
+                _string_value(value)
+                if column in {"currency", "financial_currency", "quote_type"}
+                else _optional_float(value)
+            )
+        return pd.DataFrame([row], columns=list(FINANCIAL_METRICS_COLUMNS))
+
+    def fetch_earnings_calendar(self, symbol: str) -> pd.DataFrame:
+        normalized_symbol = normalize_us_symbol(symbol)
+        if not normalized_symbol:
+            return _empty_frame(EARNINGS_CALENDAR_COLUMNS)
+        ticker = self._yfinance.Ticker(normalized_symbol)
+        raw = self._run_yahoo_call(
+            f"earnings calendar {normalized_symbol}",
+            lambda: ticker.get_earnings_dates(limit=24),
+        )
+        return _normalize_earnings_calendar(raw, symbol=normalized_symbol)
+
+    def fetch_analyst_estimates(
+        self,
+        symbol: str,
+        *,
+        snapshot_date: date | None = None,
+    ) -> pd.DataFrame:
+        normalized_symbol = normalize_us_symbol(symbol)
+        if not normalized_symbol:
+            return _empty_frame(ANALYST_ESTIMATE_COLUMNS)
+        ticker = self._yfinance.Ticker(normalized_symbol)
+        snapshot = snapshot_date or date.today()
+        datasets = (
+            ("earnings_estimate", "get_earnings_estimate"),
+            ("revenue_estimate", "get_revenue_estimate"),
+            ("eps_trend", "get_eps_trend"),
+            ("eps_revisions", "get_eps_revisions"),
+            ("growth_estimates", "get_growth_estimates"),
+            ("recommendations", "get_recommendations"),
+        )
+        frames: list[pd.DataFrame] = []
+        failures: list[str] = []
+        for dataset, getter_name in datasets:
+            try:
+                raw = self._run_yahoo_call(
+                    f"{dataset} {normalized_symbol}",
+                    getattr(ticker, getter_name),
+                )
+            except Exception as exc:
+                failures.append(dataset)
+                self._record_diagnostic(
+                    f"Yahoo 分析师数据请求失败 symbol={normalized_symbol} "
+                    f"dataset={dataset} error_type={type(exc).__name__} error={exc}"
+                )
+                continue
+            frame = _normalize_analyst_frame(
+                raw,
+                symbol=normalized_symbol,
+                snapshot_date=snapshot,
+                dataset=dataset,
+            )
+            if not frame.empty:
+                frames.append(frame)
+        try:
+            targets = self._run_yahoo_call(
+                f"analyst price targets {normalized_symbol}",
+                ticker.get_analyst_price_targets,
+            )
+            target_frame = _normalize_analyst_mapping(
+                targets,
+                symbol=normalized_symbol,
+                snapshot_date=snapshot,
+                dataset="price_targets",
+            )
+            if not target_frame.empty:
+                frames.append(target_frame)
+        except Exception as exc:
+            failures.append("price_targets")
+            self._record_diagnostic(
+                f"Yahoo 分析师数据请求失败 symbol={normalized_symbol} "
+                f"dataset=price_targets error_type={type(exc).__name__} error={exc}"
+            )
+        if not frames:
+            if failures:
+                raise RuntimeError(
+                    f"未获取到分析师数据 symbol={normalized_symbol} "
+                    f"failed_datasets={','.join(failures)}"
+                )
+            return _empty_frame(ANALYST_ESTIMATE_COLUMNS)
+        return (
+            pd.concat(frames, ignore_index=True)
+            .drop_duplicates(
+                subset=["snapshot_date", "symbol", "dataset", "horizon", "metric"],
+                keep="last",
+            )
+            .reset_index(drop=True)
+        )
+
+    def fetch_institutional_holders(
+        self,
+        symbol: str,
+        *,
+        snapshot_date: date | None = None,
+    ) -> pd.DataFrame:
+        normalized_symbol = normalize_us_symbol(symbol)
+        if not normalized_symbol:
+            return _empty_frame(INSTITUTIONAL_HOLDER_COLUMNS)
+        ticker = self._yfinance.Ticker(normalized_symbol)
+        snapshot = snapshot_date or date.today()
+        frames: list[pd.DataFrame] = []
+        for holder_type, getter_name in (
+            ("institution", "get_institutional_holders"),
+            ("mutual_fund", "get_mutualfund_holders"),
+        ):
+            raw = self._run_yahoo_call(
+                f"{holder_type} holders {normalized_symbol}",
+                getattr(ticker, getter_name),
+            )
+            frame = _normalize_holder_frame(
+                raw,
+                symbol=normalized_symbol,
+                snapshot_date=snapshot,
+                holder_type=holder_type,
+            )
+            if not frame.empty:
+                frames.append(frame)
+        if not frames:
+            return _empty_frame(INSTITUTIONAL_HOLDER_COLUMNS)
+        return (
+            pd.concat(frames, ignore_index=True)
+            .drop_duplicates(
+                subset=["snapshot_date", "symbol", "holder_type", "holder", "report_date"],
+                keep="last",
+            )
+            .reset_index(drop=True)
+        )
+
+    def fetch_insider_transactions(self, symbol: str) -> pd.DataFrame:
+        normalized_symbol = normalize_us_symbol(symbol)
+        if not normalized_symbol:
+            return _empty_frame(INSIDER_TRANSACTION_COLUMNS)
+        ticker = self._yfinance.Ticker(normalized_symbol)
+        raw = self._run_yahoo_call(
+            f"insider transactions {normalized_symbol}",
+            ticker.get_insider_transactions,
+        )
+        return _normalize_insider_transactions(raw, symbol=normalized_symbol)
+
     def _filter_us_listings(self, frame: pd.DataFrame) -> pd.DataFrame:
         if "market" not in frame.columns:
             logger.warning("FinanceDatabase equities 数据缺少 market 字段，无法识别美国上市市场。")
@@ -755,22 +1102,28 @@ def _parse_other_listed(text: str) -> pd.DataFrame:
         missing = sorted(required - set(frame.columns))
         raise ValueError(f"otherlisted.txt 缺少字段: {missing}")
 
+    act_symbol = frame["act_symbol"].fillna("").astype(str).str.strip().str.upper()
     raw_symbol = (
         frame["cqs_symbol"]
         .fillna("")
         .astype(str)
         .str.strip()
-        .where(lambda values: values != "", frame["act_symbol"].fillna("").astype(str).str.strip())
+        .where(lambda values: values != "", act_symbol)
         .str.upper()
     )
     name = frame["security_name"].fillna("").astype(str).str.strip()
     exchange = frame["exchange"].fillna("").astype(str).str.strip().str.upper()
+    special_act_symbol = (
+        act_symbol.str.contains("$", regex=False)
+        | act_symbol.str.endswith((".U", ".W", ".V", ".R"))
+    )
     mask = (
         (raw_symbol != "")
         & ~raw_symbol.str.startswith("FILE CREATION TIME")
         & frame["test_issue"].fillna("").astype(str).str.upper().eq("N")
         & frame["etf"].fillna("").astype(str).str.upper().eq("N")
         & exchange.isin(OTHER_MARKET_NAMES)
+        & ~special_act_symbol
         & _common_security_mask(raw_symbol, name)
     )
     result = pd.DataFrame(
@@ -818,13 +1171,14 @@ def _merge_active_symbol_directory(
     )
     result = directory.merge(finance, on="symbol", how="left")
     result = _ensure_columns(result, SYMBOL_MASTER_COLUMNS)
-    for column, fallback_column in (
-        ("name", "directory_name"),
+    name = result["name"].fillna("").astype(str).str.strip()
+    result["name"] = result["name"].where(name != "", result["directory_name"])
+    for column, directory_column in (
         ("exchange", "directory_exchange"),
         ("market", "directory_market"),
     ):
-        values = result[column].fillna("").astype(str).str.strip()
-        result[column] = result[column].where(values != "", result[fallback_column])
+        directory_value = result[directory_column].fillna("").astype(str).str.strip()
+        result[column] = result[directory_column].where(directory_value != "", result[column])
     currency = result["currency"].fillna("").astype(str).str.strip()
     result["currency"] = result["currency"].where(currency != "", "USD")
     return result.loc[:, list(SYMBOL_MASTER_COLUMNS)].sort_values("symbol").reset_index(drop=True)
@@ -971,6 +1325,285 @@ def _normalize_holdings(value: Any) -> pd.DataFrame:
     ]
 
 
+def _normalize_statement(
+    value: Any,
+    *,
+    symbol: str,
+    period_type: str,
+) -> pd.DataFrame:
+    frame = _as_dataframe(value, reset_index=False)
+    if frame.empty:
+        return _empty_frame(STATEMENT_COLUMNS)
+    rows: list[dict[str, Any]] = []
+    for report_column in frame.columns:
+        report_date = _optional_date(report_column)
+        if report_date is None:
+            continue
+        for metric, raw_value in frame[report_column].items():
+            numeric_value = _optional_float(raw_value)
+            metric_name = _string_value(metric)
+            if not metric_name or numeric_value is None:
+                continue
+            rows.append(
+                {
+                    "symbol": normalize_us_symbol(symbol),
+                    "report_date": report_date,
+                    "period_type": str(period_type or "").strip(),
+                    "metric": metric_name,
+                    "value": numeric_value,
+                }
+            )
+    if not rows:
+        return _empty_frame(STATEMENT_COLUMNS)
+    return pd.DataFrame(rows, columns=list(STATEMENT_COLUMNS))
+
+
+def _normalize_earnings_calendar(value: Any, *, symbol: str) -> pd.DataFrame:
+    frame = _normalize_columns(_as_dataframe(value))
+    if frame.empty:
+        return _empty_frame(EARNINGS_CALENDAR_COLUMNS)
+    event_column = _first_existing_column(
+        frame,
+        "earnings_date",
+        "event_time",
+        "date",
+        "datetime",
+        "index",
+    )
+    if not event_column:
+        return _empty_frame(EARNINGS_CALENDAR_COLUMNS)
+    event_time = pd.to_datetime(frame[event_column], errors="coerce", utc=True)
+    result = pd.DataFrame(
+        {
+            "symbol": normalize_us_symbol(symbol),
+            "event_time": event_time.dt.tz_convert(None),
+            "eps_estimate": _numeric_column(frame, "eps_estimate"),
+            "reported_eps": _numeric_column(frame, "reported_eps"),
+            "surprise_percent": _numeric_column(
+                frame,
+                "surprise_percent",
+                "surprise",
+            ),
+        }
+    )
+    result = result[result["event_time"].notna()].copy()
+    if result.empty:
+        return _empty_frame(EARNINGS_CALENDAR_COLUMNS)
+    return (
+        result.loc[:, list(EARNINGS_CALENDAR_COLUMNS)]
+        .drop_duplicates(subset=["symbol", "event_time"], keep="last")
+        .sort_values(["symbol", "event_time"])
+        .reset_index(drop=True)
+    )
+
+
+def _normalize_analyst_frame(
+    value: Any,
+    *,
+    symbol: str,
+    snapshot_date: date,
+    dataset: str,
+) -> pd.DataFrame:
+    frame = _normalize_columns(_as_dataframe(value))
+    if frame.empty:
+        return _empty_frame(ANALYST_ESTIMATE_COLUMNS)
+    horizon_column = _first_existing_column(
+        frame,
+        "period",
+        "horizon",
+        "index",
+    )
+    rows: list[dict[str, Any]] = []
+    for row_index, record in frame.iterrows():
+        horizon = (
+            _string_value(record.get(horizon_column))
+            if horizon_column
+            else _string_value(row_index)
+        )
+        for metric in frame.columns:
+            if metric == horizon_column:
+                continue
+            numeric_value = _optional_float(record.get(metric))
+            if numeric_value is None:
+                continue
+            rows.append(
+                {
+                    "snapshot_date": snapshot_date,
+                    "symbol": normalize_us_symbol(symbol),
+                    "dataset": str(dataset or "").strip(),
+                    "horizon": horizon or "current",
+                    "metric": str(metric or "").strip(),
+                    "value": numeric_value,
+                }
+            )
+    if not rows:
+        return _empty_frame(ANALYST_ESTIMATE_COLUMNS)
+    return pd.DataFrame(rows, columns=list(ANALYST_ESTIMATE_COLUMNS))
+
+
+def _normalize_analyst_mapping(
+    value: Any,
+    *,
+    symbol: str,
+    snapshot_date: date,
+    dataset: str,
+) -> pd.DataFrame:
+    if not isinstance(value, dict) or not value:
+        return _empty_frame(ANALYST_ESTIMATE_COLUMNS)
+    rows = [
+        {
+            "snapshot_date": snapshot_date,
+            "symbol": normalize_us_symbol(symbol),
+            "dataset": str(dataset or "").strip(),
+            "horizon": "current",
+            "metric": _normalize_column_name(metric),
+            "value": numeric_value,
+        }
+        for metric, raw_value in value.items()
+        if (numeric_value := _optional_float(raw_value)) is not None
+    ]
+    if not rows:
+        return _empty_frame(ANALYST_ESTIMATE_COLUMNS)
+    return pd.DataFrame(rows, columns=list(ANALYST_ESTIMATE_COLUMNS))
+
+
+def _normalize_holder_frame(
+    value: Any,
+    *,
+    symbol: str,
+    snapshot_date: date,
+    holder_type: str,
+) -> pd.DataFrame:
+    frame = _normalize_columns(_as_dataframe(value))
+    if frame.empty:
+        return _empty_frame(INSTITUTIONAL_HOLDER_COLUMNS)
+    holder_column = _first_existing_column(frame, "holder", "name")
+    if not holder_column:
+        return _empty_frame(INSTITUTIONAL_HOLDER_COLUMNS)
+    report_column = _first_existing_column(frame, "date_reported", "report_date")
+    percent_held_column = _first_existing_column(
+        frame,
+        "pct_held",
+        "pctheld",
+        "percent_held",
+    )
+    percent_change_column = _first_existing_column(
+        frame,
+        "pct_change",
+        "pctchange",
+        "percent_change",
+    )
+    rows: list[dict[str, Any]] = []
+    for _, record in frame.iterrows():
+        holder = _string_value(record.get(holder_column))
+        if not holder:
+            continue
+        rows.append(
+            {
+                "snapshot_date": snapshot_date,
+                "symbol": normalize_us_symbol(symbol),
+                "holder_type": str(holder_type or "").strip(),
+                "holder": holder,
+                "report_date": (
+                    _optional_date(record.get(report_column))
+                    if report_column
+                    else None
+                ),
+                "shares": _optional_float(record.get("shares")),
+                "value": _optional_float(record.get("value")),
+                "percent_held": _optional_float(
+                    record.get(percent_held_column)
+                    if percent_held_column
+                    else None
+                ),
+                "percent_change": _optional_float(
+                    record.get(percent_change_column)
+                    if percent_change_column
+                    else None
+                ),
+            }
+        )
+    if not rows:
+        return _empty_frame(INSTITUTIONAL_HOLDER_COLUMNS)
+    return pd.DataFrame(rows, columns=list(INSTITUTIONAL_HOLDER_COLUMNS))
+
+
+def _normalize_insider_transactions(value: Any, *, symbol: str) -> pd.DataFrame:
+    frame = _normalize_columns(_as_dataframe(value))
+    if frame.empty:
+        return _empty_frame(INSIDER_TRANSACTION_COLUMNS)
+    date_column = _first_existing_column(frame, "start_date", "date")
+    insider_column = _first_existing_column(frame, "insider", "name")
+    if not date_column or not insider_column:
+        return _empty_frame(INSIDER_TRANSACTION_COLUMNS)
+    rows: list[dict[str, Any]] = []
+    for _, record in frame.iterrows():
+        start_date = _optional_date(record.get(date_column))
+        insider = _string_value(record.get(insider_column))
+        if start_date is None or not insider:
+            continue
+        rows.append(
+            {
+                "symbol": normalize_us_symbol(symbol),
+                "start_date": start_date,
+                "insider": insider,
+                "position": _string_value(record.get("position")),
+                "transaction": _string_value(record.get("transaction")),
+                "shares": _optional_float(record.get("shares")),
+                "value": _optional_float(record.get("value")),
+                "ownership": _string_value(record.get("ownership")),
+                "transaction_text": _string_value(record.get("text")),
+                "url": _string_value(record.get("url")),
+            }
+        )
+    if not rows:
+        return _empty_frame(INSIDER_TRANSACTION_COLUMNS)
+    return (
+        pd.DataFrame(rows, columns=list(INSIDER_TRANSACTION_COLUMNS))
+        .drop_duplicates(
+            subset=["symbol", "start_date", "insider", "transaction", "shares"],
+            keep="last",
+        )
+        .reset_index(drop=True)
+    )
+
+
+def _first_existing_column(frame: pd.DataFrame, *candidates: str) -> str:
+    return next((column for column in candidates if column in frame.columns), "")
+
+
+def _numeric_column(frame: pd.DataFrame, *candidates: str) -> pd.Series:
+    column = _first_existing_column(frame, *candidates)
+    if not column:
+        return pd.Series([None] * len(frame), index=frame.index, dtype="object")
+    return pd.to_numeric(frame[column], errors="coerce")
+
+
+def _string_value(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    return str(value).strip()
+
+
+def _optional_date(value: Any) -> date | None:
+    try:
+        parsed = pd.to_datetime(value, errors="coerce")
+    except Exception:
+        return None
+    if pd.isna(parsed):
+        return None
+    if isinstance(parsed, datetime):
+        return parsed.date()
+    if isinstance(parsed, pd.Timestamp):
+        return parsed.date()
+    return None
+
+
 def _parse_date(value: str | date) -> date:
     if isinstance(value, date):
         return value
@@ -1008,9 +1641,15 @@ def _coverage_by_symbol(
 
 
 __all__ = [
-    "MAIN_US_EXCHANGES",
-    "OTC_EXCHANGES",
+    "ANALYST_ESTIMATE_COLUMNS",
+    "EARNINGS_CALENDAR_COLUMNS",
+    "FINANCIAL_METRICS_COLUMNS",
+    "INSIDER_TRANSACTION_COLUMNS",
+    "INSTITUTIONAL_HOLDER_COLUMNS",
+    "MAIN_US_MARKETS",
+    "OTC_MARKETS",
     "PRICE_COLUMNS",
+    "STATEMENT_COLUMNS",
     "SYMBOL_MASTER_COLUMNS",
     "YFinanceConfig",
     "YFinanceProvider",

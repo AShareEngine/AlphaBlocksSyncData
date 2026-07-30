@@ -8,9 +8,10 @@ import argparse
 import hashlib
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
+from zoneinfo import ZoneInfo
 
 from sync_data_system.config_paths import resolve_config_candidate
 from sync_data_system.providers.yfinance.provider import (
@@ -34,6 +35,24 @@ from sync_data_system.toml_compat import tomllib
 
 
 logger = logging.getLogger(__name__)
+US_EASTERN = ZoneInfo("America/New_York")
+US_DAILY_CLOSE_BUFFER = datetime_time(16, 15)
+FUNDAMENTAL_SYMBOL_TASKS: dict[str, str] = {
+    "income_statement": "fetch_income_statement",
+    "balance_sheet": "fetch_balance_sheet",
+    "cash_flow": "fetch_cash_flow",
+    "financial_metrics": "fetch_financial_metrics",
+    "earnings_calendar": "fetch_earnings_calendar",
+    "analyst_estimates": "fetch_analyst_estimates",
+    "institutional_holders": "fetch_institutional_holders",
+    "insider_transactions": "fetch_insider_transactions",
+}
+
+
+class YFinancePartialSyncError(RuntimeError):
+    def __init__(self, message: str, *, row_count: int) -> None:
+        super().__init__(message)
+        self.row_count = max(0, int(row_count))
 
 
 @dataclass(frozen=True)
@@ -147,14 +166,18 @@ def build_context(runtime_path: str | None = None, database: str = "yfinance") -
 
 
 def run_registered_task(probe: Any) -> int:
+    task_name = _provider_task_name(probe.name, probe.source)
     args = SyncArgs(
-        task=_provider_task_name(probe.name, probe.source),
+        task=task_name,
         codes_raw=",".join(probe.input_codes),
         begin_date="" if probe.input_begin_date is None else str(probe.input_begin_date),
         end_date="" if probe.input_end_date is None else str(probe.input_end_date),
         limit=max(0, int(probe.limit or 0)),
         force=bool(probe.force),
-        continue_on_error=False,
+        continue_on_error=(
+            bool(getattr(probe, "continue_on_error", False))
+            or task_name in FUNDAMENTAL_SYMBOL_TASKS
+        ),
         runtime_path=probe.runtime_path,
         database=str(probe.database or "yfinance"),
         log_level=str(probe.log_level or "INFO"),
@@ -165,6 +188,9 @@ def run_registered_task(probe: Any) -> int:
         drain_diagnostics()
     try:
         inserted = run_sync_args(args, provider, probe.context.repository)
+    except Exception as exc:
+        probe.set_row_count(int(getattr(exc, "row_count", 0) or 0))
+        raise
     finally:
         if callable(drain_diagnostics):
             for message in drain_diagnostics():
@@ -184,6 +210,13 @@ def run_sync_args(
     if args.task not in YFINANCE_TASK_SPECS:
         raise ValueError(f"未知 yfinance 任务: {args.task}")
     request_meta = _request_meta(args, provider.config)
+    requested_end = str(request_meta.get("requested_end_date") or "")
+    effective_end = str(request_meta.get("end_date") or "")
+    if requested_end and requested_end != effective_end:
+        provider.record_diagnostic(
+            "请求结束日期晚于最近已完成的美股交易日，已自动截断 "
+            f"requested_end={requested_end} effective_end={effective_end}"
+        )
     scope_key = _scope_key(args, request_meta)
     if not args.force and repository.has_successful_sync_today(args.task, scope_key, date.today()):
         logger.info("skip task=%s reason=successful_sync_today scope=%s", args.task, scope_key)
@@ -194,6 +227,7 @@ def run_sync_args(
     try:
         row_count = _execute_task(args, provider, repository, request_meta)
     except Exception as exc:
+        row_count = max(row_count, int(getattr(exc, "row_count", 0) or 0))
         write_sync_result(
             repository=repository,
             task=args.task,
@@ -275,6 +309,16 @@ def _execute_task(
         if not symbols:
             raise ValueError("未获取到可用的美股 symbol；请先同步 symbol_master 或显式传 --codes。")
         return _run_symbol_task(args, provider, repository, symbols, request_meta)
+    if args.task in FUNDAMENTAL_SYMBOL_TASKS:
+        symbols = resolve_symbol_list(args, provider, repository)
+        if not symbols:
+            raise ValueError("未获取到可用的美股 symbol；请先同步 symbol_master 或显式传 --codes。")
+        return _run_fundamental_symbol_task(
+            args,
+            provider,
+            repository,
+            symbols,
+        )
     raise KeyError(args.task)
 
 
@@ -309,10 +353,13 @@ def _run_symbol_task(
     start = str(request_meta["start_date"])
     end = str(request_meta["end_date"])
     windows: dict[str, list[str]] = {}
+    previous_cursors: dict[str, str | None] = {}
     for symbol in symbols:
+        latest_cursor = repository.load_latest_cursor(args.task, symbol=symbol)
+        previous_cursors[symbol] = latest_cursor
         effective_start = _effective_start(
             start,
-            repository.load_latest_cursor(args.task, symbol=symbol),
+            latest_cursor,
             force=args.force,
         )
         if effective_start > end:
@@ -320,14 +367,42 @@ def _run_symbol_task(
         windows.setdefault(effective_start, []).append(symbol)
 
     total = 0
+    unresolved_without_history: set[str] = set()
     fetcher: Callable[..., Any]
     fetcher = provider.fetch_daily if args.task == "daily_kline" else provider.fetch_corporate_actions
+
+    def save_result(frame: Any, requested_symbols: Sequence[str]) -> set[str]:
+        nonlocal total
+        total += repository.save_frame(args.task, frame)
+        _update_task_cursors(repository, args.task, requested_symbols, frame)
+        return {
+            str(symbol or "").strip().upper()
+            for symbol in dict(getattr(frame, "attrs", {}).get("coverage_by_symbol", {}))
+            if str(symbol or "").strip()
+        }
+
+    def record_missing(
+        symbol: str,
+        effective_start: str,
+        exc: Exception | None = None,
+    ) -> None:
+        details = (
+            f" error_type={type(exc).__name__} error={exc}"
+            if exc is not None
+            else ""
+        )
+        provider.record_diagnostic(
+            f"Yahoo 未返回代码行情 task={args.task} symbol={symbol} "
+            f"begin_date={effective_start} end_date={end}{details}"
+        )
+        if not previous_cursors.get(symbol):
+            unresolved_without_history.add(symbol)
+
     for effective_start, window_symbols in sorted(windows.items()):
         for batch in _chunks(window_symbols, provider.config.batch_size):
             try:
                 frame = fetcher(batch, start_date=effective_start, end_date=end)
-                total += repository.save_frame(args.task, frame)
-                _update_task_cursors(repository, args.task, batch, frame)
+                covered = save_result(frame, batch)
             except Exception:
                 if not args.continue_on_error:
                     raise
@@ -339,10 +414,119 @@ def _run_symbol_task(
                 for symbol in batch:
                     try:
                         frame = fetcher([symbol], start_date=effective_start, end_date=end)
-                        total += repository.save_frame(args.task, frame)
-                        _update_task_cursors(repository, args.task, [symbol], frame)
-                    except Exception:
+                        covered = save_result(frame, [symbol])
+                        if symbol not in covered:
+                            record_missing(symbol, effective_start)
+                    except Exception as exc:
                         logger.exception("symbol failed task=%s symbol=%s", args.task, symbol)
+                        record_missing(symbol, effective_start, exc)
+                continue
+
+            missing = [symbol for symbol in batch if symbol not in covered]
+            if not missing:
+                continue
+            if not covered:
+                never_seen = [
+                    symbol for symbol in missing if not previous_cursors.get(symbol)
+                ]
+                historical_count = len(missing) - len(never_seen)
+                if historical_count:
+                    provider.record_diagnostic(
+                        "Yahoo 整批未返回新交易日，已有历史游标的代码不逐个重试 "
+                        f"task={args.task} historical_count={historical_count} "
+                        f"begin_date={effective_start} end_date={end}"
+                    )
+                missing = never_seen
+                if not missing:
+                    continue
+            provider.record_diagnostic(
+                f"Yahoo 批量请求缺少 {len(missing)} 个代码，正在逐个重试 "
+                f"task={args.task} symbols={','.join(missing)}"
+            )
+            for symbol in missing:
+                try:
+                    retry_frame = fetcher(
+                        [symbol],
+                        start_date=effective_start,
+                        end_date=end,
+                    )
+                    retry_covered = save_result(retry_frame, [symbol])
+                    if symbol not in retry_covered:
+                        record_missing(symbol, effective_start)
+                except Exception as exc:
+                    logger.exception(
+                        "missing symbol retry failed task=%s symbol=%s",
+                        args.task,
+                        symbol,
+                    )
+                    record_missing(symbol, effective_start, exc)
+    if unresolved_without_history:
+        symbols_text = ",".join(sorted(unresolved_without_history))
+        raise YFinancePartialSyncError(
+            "部分代码在批量和单代码重试后仍没有任何历史行情 "
+            f"task={args.task} count={len(unresolved_without_history)} "
+            f"symbols={symbols_text}",
+            row_count=total,
+        )
+    return total
+
+
+def _run_fundamental_symbol_task(
+    args: SyncArgs,
+    provider: YFinanceProvider,
+    repository: YFinanceRepository,
+    symbols: Sequence[str],
+) -> int:
+    fetcher_name = FUNDAMENTAL_SYMBOL_TASKS[args.task]
+    fetcher: Callable[[str], Any] = getattr(provider, fetcher_name)
+    total = 0
+    empty_symbols: list[str] = []
+    failed_symbols: list[str] = []
+    for index, symbol in enumerate(symbols, start=1):
+        try:
+            frame = fetcher(symbol)
+            inserted = repository.save_frame(args.task, frame)
+        except Exception as exc:
+            message = (
+                f"Yahoo 逐股基本面请求失败 task={args.task} symbol={symbol} "
+                f"error_type={type(exc).__name__} error={exc}"
+            )
+            provider.record_diagnostic(message)
+            failed_symbols.append(symbol)
+            if not args.continue_on_error:
+                raise YFinancePartialSyncError(message, row_count=total) from exc
+            continue
+        total += inserted
+        if inserted <= 0:
+            empty_symbols.append(symbol)
+        if index % 100 == 0 or index == len(symbols):
+            logger.info(
+                "fundamental progress task=%s progress=%s/%s rows=%s "
+                "empty=%s failed=%s",
+                args.task,
+                index,
+                len(symbols),
+                total,
+                len(empty_symbols),
+                len(failed_symbols),
+            )
+
+    if empty_symbols:
+        provider.record_diagnostic(
+            f"Yahoo 逐股基本面返回空数据 task={args.task} "
+            f"count={len(empty_symbols)} symbols={_symbol_preview(empty_symbols)}"
+        )
+    if failed_symbols:
+        raise YFinancePartialSyncError(
+            f"部分代码基本面同步失败 task={args.task} "
+            f"count={len(failed_symbols)} symbols={_symbol_preview(failed_symbols)}",
+            row_count=total,
+        )
+    if total <= 0:
+        raise RuntimeError(
+            f"未获取到任何基本面数据 task={args.task} "
+            f"symbol_count={len(symbols)}"
+        )
     return total
 
 
@@ -394,10 +578,32 @@ def _request_meta(args: SyncArgs, config: YFinanceConfig) -> dict[str, str | int
     if not spec.supports_incremental:
         return {"start_date": None, "end_date": None}
     start = normalize_request_value(args.begin_date or config.default_start_date, "day")
-    end = normalize_request_value(args.end_date or date.today().strftime("%Y%m%d"), "day")
+    requested_end = normalize_request_value(
+        args.end_date or date.today().strftime("%Y%m%d"),
+        "day",
+    )
+    completed_end = latest_completed_us_session_date().strftime("%Y%m%d")
+    end = min(requested_end, completed_end)
     if start > end:
         raise ValueError(f"开始日期不能晚于结束日期: {start} > {end}")
-    return {"start_date": start, "end_date": end}
+    return {
+        "start_date": start,
+        "end_date": end,
+        "requested_end_date": requested_end,
+    }
+
+
+def latest_completed_us_session_date(now: datetime | None = None) -> date:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    market_now = current.astimezone(US_EASTERN)
+    candidate = market_now.date()
+    if market_now.weekday() >= 5 or market_now.time() < US_DAILY_CLOSE_BUFFER:
+        candidate -= timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate -= timedelta(days=1)
+    return candidate
 
 
 def _effective_start(requested_start: str, latest_cursor: str | None, *, force: bool) -> str:
@@ -425,6 +631,11 @@ def _scope_key(args: SyncArgs, request_meta: dict[str, str | int | None]) -> str
 
 def _chunks(values: Sequence[str], size: int) -> list[list[str]]:
     return [list(values[index : index + size]) for index in range(0, len(values), max(1, size))]
+
+
+def _symbol_preview(values: Sequence[str], limit: int = 20) -> str:
+    preview = ",".join(str(value) for value in values[:limit])
+    return f"{preview},..." if len(values) > limit else preview
 
 
 def _update_task_cursors(

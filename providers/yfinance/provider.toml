@@ -1,6 +1,6 @@
 name = "yfinance"
 display_name = "US Market Free (yfinance + FinanceDatabase)"
-version = "0.1.0"
+version = "0.2.0"
 module = "sync_data_system.providers.yfinance"
 runtime_config_key = "yfinance"
 default_database = "yfinance"
@@ -69,3 +69,59 @@ target = "yf_concept_membership"
 supports_incremental = false
 freshness_mode = "event_driven"
 request_fields = ["name", "force", "log_level"]
+
+[[tasks]]
+name = "income_statement"
+target = "yf_income_statement"
+supports_incremental = false
+freshness_mode = "event_driven"
+request_fields = ["name", "codes", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "balance_sheet"
+target = "yf_balance_sheet"
+supports_incremental = false
+freshness_mode = "event_driven"
+request_fields = ["name", "codes", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "cash_flow"
+target = "yf_cash_flow"
+supports_incremental = false
+freshness_mode = "event_driven"
+request_fields = ["name", "codes", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "financial_metrics"
+target = "yf_financial_metrics"
+supports_incremental = false
+freshness_mode = "event_driven"
+request_fields = ["name", "codes", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "earnings_calendar"
+target = "yf_earnings_calendar"
+supports_incremental = false
+freshness_mode = "event_driven"
+request_fields = ["name", "codes", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "analyst_estimates"
+target = "yf_analyst_estimates"
+supports_incremental = false
+freshness_mode = "event_driven"
+request_fields = ["name", "codes", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "institutional_holders"
+target = "yf_institutional_holders"
+supports_incremental = false
+freshness_mode = "event_driven"
+request_fields = ["name", "codes", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "insider_transactions"
+target = "yf_insider_transactions"
+supports_incremental = false
+freshness_mode = "event_driven"
+request_fields = ["name", "codes", "limit", "force", "log_level"]

@@ -7,7 +7,7 @@ import os
 import tempfile
 import textwrap
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -18,6 +18,9 @@ from sync_data_system.providers.yfinance.provider import YFinanceConfig, YFinanc
 from sync_data_system.providers.yfinance.repository import YFinanceRepository
 from sync_data_system.providers.yfinance.runner import (
     SyncArgs,
+    YFinancePartialSyncError,
+    _request_meta,
+    latest_completed_us_session_date,
     load_execution_plan_from_toml,
     run_registered_task,
     run_sync_args,
@@ -116,6 +119,135 @@ class _FakeFundsData:
 class _FakeTicker:
     funds_data = _FakeFundsData()
 
+    def __init__(self, symbol: str = "") -> None:
+        self.symbol = symbol
+
+    def get_income_stmt(self, *, freq: str):
+        report_date = "2023-12-31" if freq == "yearly" else "2024-03-31"
+        return pd.DataFrame(
+            {pd.Timestamp(report_date): [1000.0, 120.0]},
+            index=["Total Revenue", "Net Income"],
+        )
+
+    def get_balance_sheet(self, *, freq: str):
+        report_date = "2023-12-31" if freq == "yearly" else "2024-03-31"
+        return pd.DataFrame(
+            {pd.Timestamp(report_date): [5000.0, 1800.0]},
+            index=["Total Assets", "Total Debt"],
+        )
+
+    def get_cash_flow(self, *, freq: str):
+        report_date = "2023-12-31" if freq == "yearly" else "2024-03-31"
+        return pd.DataFrame(
+            {pd.Timestamp(report_date): [300.0, 220.0]},
+            index=["Operating Cash Flow", "Free Cash Flow"],
+        )
+
+    def get_info(self):
+        return {
+            "currency": "USD",
+            "financialCurrency": "USD",
+            "quoteType": "EQUITY",
+            "marketCap": 3_000_000_000_000,
+            "enterpriseValue": 3_100_000_000_000,
+            "trailingPE": 30.5,
+            "forwardPE": 28.0,
+            "priceToBook": 40.0,
+            "returnOnEquity": 1.5,
+            "totalRevenue": 400_000_000_000,
+        }
+
+    def get_earnings_dates(self, *, limit: int):
+        return pd.DataFrame(
+            {
+                "EPS Estimate": [2.1, 2.2],
+                "Reported EPS": [2.3, None],
+                "Surprise(%)": [9.5, None],
+            },
+            index=pd.to_datetime(
+                ["2024-01-25 16:00:00-05:00", "2024-04-25 16:00:00-04:00"],
+                utc=True,
+            ).rename("Earnings Date"),
+        ).head(limit)
+
+    def get_earnings_estimate(self):
+        return pd.DataFrame(
+            {"avg": [2.2], "low": [2.0], "high": [2.4]},
+            index=pd.Index(["0q"], name="period"),
+        )
+
+    def get_revenue_estimate(self):
+        return pd.DataFrame(
+            {"avg": [100_000.0], "growth": [0.08]},
+            index=pd.Index(["0q"], name="period"),
+        )
+
+    def get_eps_trend(self):
+        return pd.DataFrame(
+            {"current": [2.2], "30daysAgo": [2.1]},
+            index=pd.Index(["0q"], name="period"),
+        )
+
+    def get_eps_revisions(self):
+        return pd.DataFrame(
+            {"upLast30days": [5], "downLast30days": [1]},
+            index=pd.Index(["0q"], name="period"),
+        )
+
+    def get_growth_estimates(self):
+        return pd.DataFrame(
+            {"stock": [0.12], "industry": [0.08]},
+            index=pd.Index(["+5y"], name="period"),
+        )
+
+    def get_recommendations(self):
+        return pd.DataFrame(
+            {"strongBuy": [10], "buy": [20], "hold": [5], "sell": [1]},
+            index=pd.Index(["0m"], name="period"),
+        )
+
+    def get_analyst_price_targets(self):
+        return {"current": 200.0, "low": 170.0, "high": 240.0, "mean": 210.0}
+
+    def get_institutional_holders(self):
+        return pd.DataFrame(
+            {
+                "Holder": ["Vanguard"],
+                "Date Reported": [pd.Timestamp("2024-03-31")],
+                "pctHeld": [0.08],
+                "Shares": [1000],
+                "Value": [200_000],
+                "pctChange": [0.01],
+            }
+        )
+
+    def get_mutualfund_holders(self):
+        return pd.DataFrame(
+            {
+                "Holder": ["Vanguard 500 Index"],
+                "Date Reported": [pd.Timestamp("2024-03-31")],
+                "pctHeld": [0.02],
+                "Shares": [250],
+                "Value": [50_000],
+                "pctChange": [0.005],
+            }
+        )
+
+    def get_insider_transactions(self):
+        return pd.DataFrame(
+            {
+                "Start Date": [pd.Timestamp("2024-04-01")],
+                "Insider": ["Jane Doe"],
+                "Position": ["Director"],
+                "Transaction": ["Sale"],
+                "Shares": [100],
+                "Value": [20_000],
+                "Ownership": ["Direct"],
+                "Text": ["Sale at market"],
+                "URL": ["https://example.test/filing"],
+            }
+        )
+
 
 class _FakeYFinance:
     def __init__(self) -> None:
@@ -153,12 +285,39 @@ class _FakeYFinance:
         return pd.DataFrame(values, index=index, columns=pd.MultiIndex.from_tuples(columns))
 
     def Ticker(self, symbol: str):
-        return _FakeTicker()
+        return _FakeTicker(symbol)
 
 
 class _FailingFundsYFinance(_FakeYFinance):
     def Ticker(self, symbol: str):
         raise RuntimeError("HTTP Error 401 token=secret")
+
+
+class _PartialBatchYFinance(_FakeYFinance):
+    def download(self, **kwargs):
+        requested = list(kwargs["tickers"])
+        if len(requested) > 1:
+            kwargs = dict(kwargs)
+            kwargs["tickers"] = requested[:1]
+        return super().download(**kwargs)
+
+
+class _MissingTickerYFinance(_FakeYFinance):
+    def download(self, **kwargs):
+        requested = list(kwargs["tickers"])
+        if requested == ["KRG"]:
+            self.download_calls.append(kwargs)
+            return pd.DataFrame()
+        if "KRG" in requested:
+            kwargs = dict(kwargs)
+            kwargs["tickers"] = [symbol for symbol in requested if symbol != "KRG"]
+        return super().download(**kwargs)
+
+
+class _EmptyYFinance(_FakeYFinance):
+    def download(self, **kwargs):
+        self.download_calls.append(kwargs)
+        return pd.DataFrame()
 
 
 class _FakeClickHouseClient:
@@ -234,6 +393,10 @@ class YFinanceProviderTest(unittest.TestCase):
                 "BAC^A|Bank of America Preferred Stock|N|BAC^A|N|100|N|BAC^A",
                 "AHLpE|Aspen Insurance Depositary Shares representing Preference Shares|N|AHLpE|N|100|N|AHLpE",
                 "ATHpA|Athene Depositary Shares representing Preferred Stock|N|ATHpA|N|100|N|ATHpA",
+                "DBRG$H|DigitalBridge Group, Inc. 7.125% Series H|N|DBRGpH|N|100|N|DBRG-H",
+                "ADIG.V|ADI Global Distribution Inc. Common Stock When-Issued|N|ADIGw|N|100|N|ADIG#",
+                "NEEPS|NextEra Energy, Inc. 7.299% Corporate Units|N|NEEPS|N|100|N|NEEPS",
+                "TXO|TXO Partners, L.P. Common Units Representing Limited Partner Interests|N|TXO|N|100|N|TXO",
                 "SPY|SPDR S&P 500 ETF Trust|P|SPY|Y|100|N|SPY",
                 "File Creation Time: 0728202618:00|||||||",
             )
@@ -252,8 +415,9 @@ class YFinanceProviderTest(unittest.TestCase):
 
         frame = provider.fetch_symbol_master(snapshot_date=date(2026, 7, 28))
 
-        self.assertEqual(frame["symbol"].tolist(), ["AAME", "AAPL", "BRK-B", "IBM"])
+        self.assertEqual(frame["symbol"].tolist(), ["AAME", "AAPL", "BRK-B", "IBM", "TXO"])
         self.assertEqual(frame.loc[frame["symbol"] == "AAME", "industry"].iloc[0], "Insurance")
+        self.assertEqual(frame.loc[frame["symbol"] == "AAME", "exchange"].iloc[0], "NASDAQ")
         self.assertEqual(frame.loc[frame["symbol"] == "BRK-B", "currency"].iloc[0], "USD")
         self.assertTrue({"source", "fetched_at"}.isdisjoint(frame.columns))
 
@@ -354,6 +518,68 @@ class YFinanceProviderTest(unittest.TestCase):
         self.assertEqual(frame.attrs["coverage_by_symbol"]["AAPL"], date(2024, 1, 3))
         self.assertTrue({"source", "fetched_at"}.isdisjoint(frame.columns))
 
+    def test_financial_statements_are_normalized_as_period_metric_rows(self) -> None:
+        income = self.provider.fetch_income_statement("AAPL")
+        balance = self.provider.fetch_balance_sheet("AAPL")
+        cash_flow = self.provider.fetch_cash_flow("AAPL")
+
+        self.assertEqual(len(income), 4)
+        self.assertEqual(set(income["period_type"]), {"annual", "quarterly"})
+        self.assertEqual(set(income["metric"]), {"Total Revenue", "Net Income"})
+        self.assertEqual(set(balance["metric"]), {"Total Assets", "Total Debt"})
+        self.assertEqual(
+            set(cash_flow["metric"]),
+            {"Operating Cash Flow", "Free Cash Flow"},
+        )
+        self.assertEqual(set(income["symbol"]), {"AAPL"})
+        self.assertTrue({"source", "fetched_at"}.isdisjoint(income.columns))
+
+    def test_financial_metrics_earnings_and_analyst_data_are_normalized(self) -> None:
+        metrics = self.provider.fetch_financial_metrics(
+            "AAPL",
+            snapshot_date=date(2024, 4, 5),
+        )
+        earnings = self.provider.fetch_earnings_calendar("AAPL")
+        analyst = self.provider.fetch_analyst_estimates(
+            "AAPL",
+            snapshot_date=date(2024, 4, 5),
+        )
+
+        self.assertEqual(metrics.iloc[0]["market_cap"], 3_000_000_000_000)
+        self.assertEqual(metrics.iloc[0]["quote_type"], "EQUITY")
+        self.assertEqual(len(earnings), 2)
+        self.assertEqual(earnings.iloc[0]["reported_eps"], 2.3)
+        self.assertTrue(
+            {
+                "earnings_estimate",
+                "revenue_estimate",
+                "eps_trend",
+                "eps_revisions",
+                "growth_estimates",
+                "recommendations",
+                "price_targets",
+            }.issubset(set(analyst["dataset"]))
+        )
+        self.assertTrue({"source", "fetched_at"}.isdisjoint(analyst.columns))
+
+    def test_holder_and_insider_data_are_normalized(self) -> None:
+        holders = self.provider.fetch_institutional_holders(
+            "AAPL",
+            snapshot_date=date(2024, 4, 5),
+        )
+        insiders = self.provider.fetch_insider_transactions("AAPL")
+
+        self.assertEqual(set(holders["holder_type"]), {"institution", "mutual_fund"})
+        self.assertEqual(set(holders["holder"]), {"Vanguard", "Vanguard 500 Index"})
+        self.assertEqual(
+            holders.loc[holders["holder"] == "Vanguard", "percent_held"].iloc[0],
+            0.08,
+        )
+        self.assertEqual(insiders.iloc[0]["insider"], "Jane Doe")
+        self.assertEqual(insiders.iloc[0]["transaction"], "Sale")
+        self.assertEqual(insiders.iloc[0]["start_date"], date(2024, 4, 1))
+        self.assertTrue({"source", "fetched_at"}.isdisjoint(insiders.columns))
+
     def test_concept_membership_is_labeled_top_holdings(self) -> None:
         frame = self.provider.fetch_concept_membership(
             CONCEPT_DEFINITIONS[:1],
@@ -452,6 +678,14 @@ class YFinanceRepositoryTest(unittest.TestCase):
         self.assertIn("yf_symbol_master", ddl)
         self.assertIn("yf_daily_kline", ddl)
         self.assertIn("yf_concept_membership", ddl)
+        self.assertIn("yf_income_statement", ddl)
+        self.assertIn("yf_balance_sheet", ddl)
+        self.assertIn("yf_cash_flow", ddl)
+        self.assertIn("yf_financial_metrics", ddl)
+        self.assertIn("yf_earnings_calendar", ddl)
+        self.assertIn("yf_analyst_estimates", ddl)
+        self.assertIn("yf_institutional_holders", ddl)
+        self.assertIn("yf_insider_transactions", ddl)
         self.assertNotIn("source String", ddl)
         self.assertNotIn("fetched_at", ddl)
 
@@ -495,9 +729,57 @@ class YFinanceRepositoryTest(unittest.TestCase):
         self.assertIn("positioncaseinsensitiveutf8(name, 'preference')", sql)
         self.assertIn("positioncaseinsensitiveutf8(name, 'preferred')", sql)
         self.assertIn("positioncaseinsensitiveutf8(name, 'warrant')", sql)
+        self.assertIn("positioncaseinsensitiveutf8(name, 'when-issued')", sql)
+        self.assertIn("positioncaseinsensitiveutf8(name, ' dep shs')", sql)
+        self.assertIn("positioncaseinsensitiveutf8(name, '% series')", sql)
+        self.assertIn("american depositary shares", sql)
 
 
 class YFinanceRunnerTest(unittest.TestCase):
+    def test_latest_completed_session_waits_for_us_market_close(self) -> None:
+        self.assertEqual(
+            latest_completed_us_session_date(
+                datetime(2026, 7, 30, 15, 0, tzinfo=timezone.utc)
+            ),
+            date(2026, 7, 29),
+        )
+        self.assertEqual(
+            latest_completed_us_session_date(
+                datetime(2026, 7, 30, 20, 30, tzinfo=timezone.utc)
+            ),
+            date(2026, 7, 30),
+        )
+        self.assertEqual(
+            latest_completed_us_session_date(
+                datetime(2026, 8, 3, 14, 0, tzinfo=timezone.utc)
+            ),
+            date(2026, 7, 31),
+        )
+
+    def test_request_meta_caps_future_end_to_completed_us_session(self) -> None:
+        args = SyncArgs(
+            task="daily_kline",
+            codes_raw="AAPL",
+            begin_date="20260701",
+            end_date="20260730",
+            limit=0,
+            force=True,
+            continue_on_error=False,
+            runtime_path=None,
+            database="yfinance",
+            log_level="INFO",
+        )
+
+        with patch(
+            "sync_data_system.providers.yfinance.runner.latest_completed_us_session_date",
+            return_value=date(2026, 7, 29),
+        ):
+            request_meta = _request_meta(args, YFinanceConfig())
+
+        self.assertEqual(request_meta["start_date"], "20260701")
+        self.assertEqual(request_meta["end_date"], "20260729")
+        self.assertEqual(request_meta["requested_end_date"], "20260730")
+
     def test_registered_task_flushes_provider_diagnostics_to_web_log(self) -> None:
         messages: list[str] = []
         provider = SimpleNamespace(
@@ -613,6 +895,186 @@ class YFinanceRunnerTest(unittest.TestCase):
         self.assertEqual(cursor_call[2][0][1], "AAPL")
         self.assertEqual(cursor_call[2][0][2], date(2024, 1, 3))
 
+    def test_fundamental_task_writes_rows_without_price_cursor(self) -> None:
+        provider = YFinanceProvider(
+            YFinanceConfig(request_interval_seconds=0),
+            yfinance_module=_FakeYFinance(),
+            finance_database_module=_FakeFinanceDatabase,
+        )
+        client = _FakeClickHouseClient()
+        repository = YFinanceRepository(client, database="yfinance")
+        args = SyncArgs(
+            task="income_statement",
+            codes_raw="AAPL",
+            begin_date="",
+            end_date="",
+            limit=0,
+            force=True,
+            continue_on_error=True,
+            runtime_path=None,
+            database="yfinance",
+            log_level="INFO",
+        )
+
+        inserted = run_sync_args(args, provider, repository)
+
+        self.assertEqual(inserted, 4)
+        tables = [call[0] for call in client.insert_calls]
+        self.assertIn("yfinance.yf_income_statement", tables)
+        self.assertIn("yfinance.yf_sync_task_log", tables)
+        self.assertNotIn("yfinance.yf_symbol_cursor", tables)
+
+    def test_fundamental_task_records_saved_rows_when_later_symbol_fails(self) -> None:
+        provider = YFinanceProvider(
+            YFinanceConfig(request_interval_seconds=0),
+            yfinance_module=_FakeYFinance(),
+            finance_database_module=_FakeFinanceDatabase,
+        )
+        client = _FakeClickHouseClient()
+        repository = YFinanceRepository(client, database="yfinance")
+        successful_frame = provider.fetch_income_statement("AAPL")
+        args = SyncArgs(
+            task="income_statement",
+            codes_raw="AAPL,MSFT",
+            begin_date="",
+            end_date="",
+            limit=0,
+            force=True,
+            continue_on_error=True,
+            runtime_path=None,
+            database="yfinance",
+            log_level="INFO",
+        )
+
+        with (
+            patch.object(
+                provider,
+                "fetch_income_statement",
+                side_effect=[successful_frame, RuntimeError("upstream failed")],
+            ),
+            self.assertRaisesRegex(YFinancePartialSyncError, "symbols=MSFT") as caught,
+        ):
+            run_sync_args(args, provider, repository)
+
+        self.assertEqual(caught.exception.row_count, 4)
+        log_call = next(
+            call for call in client.insert_calls if call[0].endswith("yf_sync_task_log")
+        )
+        saved_log = dict(zip(log_call[1], log_call[2][0]))
+        self.assertEqual(saved_log["status"], "failed")
+        self.assertEqual(saved_log["row_count"], 4)
+
+    def test_daily_task_retries_symbols_missing_from_batch(self) -> None:
+        fake_yfinance = _PartialBatchYFinance()
+        provider = YFinanceProvider(
+            YFinanceConfig(batch_size=2, request_interval_seconds=0),
+            yfinance_module=fake_yfinance,
+            finance_database_module=_FakeFinanceDatabase,
+        )
+        client = _FakeClickHouseClient()
+        repository = YFinanceRepository(client, database="yfinance")
+        args = SyncArgs(
+            task="daily_kline",
+            codes_raw="AAPL,KRG",
+            begin_date="20240102",
+            end_date="20240110",
+            limit=0,
+            force=True,
+            continue_on_error=False,
+            runtime_path=None,
+            database="yfinance",
+            log_level="INFO",
+        )
+
+        inserted = run_sync_args(args, provider, repository)
+
+        self.assertEqual(inserted, 4)
+        self.assertEqual(len(fake_yfinance.download_calls), 2)
+        daily_calls = [
+            (columns, rows)
+            for table, columns, rows in client.insert_calls
+            if table.endswith("yf_daily_kline")
+        ]
+        daily_symbols = {
+            row[columns.index("symbol")]
+            for columns, rows in daily_calls
+            for row in rows
+        }
+        self.assertEqual(daily_symbols, {"AAPL", "KRG"})
+
+    def test_daily_task_fails_with_saved_row_count_for_never_seen_missing_symbol(self) -> None:
+        fake_yfinance = _MissingTickerYFinance()
+        provider = YFinanceProvider(
+            YFinanceConfig(batch_size=2, request_interval_seconds=0),
+            yfinance_module=fake_yfinance,
+            finance_database_module=_FakeFinanceDatabase,
+        )
+        client = _FakeClickHouseClient()
+        repository = YFinanceRepository(client, database="yfinance")
+        args = SyncArgs(
+            task="daily_kline",
+            codes_raw="AAPL,KRG",
+            begin_date="20240102",
+            end_date="20240110",
+            limit=0,
+            force=True,
+            continue_on_error=False,
+            runtime_path=None,
+            database="yfinance",
+            log_level="INFO",
+        )
+
+        with self.assertRaisesRegex(YFinancePartialSyncError, "symbols=KRG") as caught:
+            run_sync_args(args, provider, repository)
+
+        self.assertEqual(caught.exception.row_count, 2)
+        log_call = next(
+            call for call in client.insert_calls if call[0].endswith("yf_sync_task_log")
+        )
+        saved_log = dict(zip(log_call[1], log_call[2][0]))
+        self.assertEqual(saved_log["status"], "failed")
+        self.assertEqual(saved_log["row_count"], 2)
+        self.assertTrue(
+            any("symbol=KRG" in message for message in provider.drain_diagnostics())
+        )
+
+    def test_daily_task_does_not_retry_every_historical_symbol_on_empty_session(self) -> None:
+        fake_yfinance = _EmptyYFinance()
+        provider = YFinanceProvider(
+            YFinanceConfig(batch_size=2, request_interval_seconds=0),
+            yfinance_module=fake_yfinance,
+            finance_database_module=_FakeFinanceDatabase,
+        )
+        client = _FakeClickHouseClient()
+        repository = YFinanceRepository(client, database="yfinance")
+        args = SyncArgs(
+            task="daily_kline",
+            codes_raw="AAPL,MSFT",
+            begin_date="20240102",
+            end_date="20240103",
+            limit=0,
+            force=False,
+            continue_on_error=False,
+            runtime_path=None,
+            database="yfinance",
+            log_level="INFO",
+        )
+
+        with (
+            patch.object(repository, "has_successful_sync_today", return_value=False),
+            patch.object(repository, "load_latest_cursor", return_value="20240101"),
+        ):
+            inserted = run_sync_args(args, provider, repository)
+
+        self.assertEqual(inserted, 0)
+        self.assertEqual(len(fake_yfinance.download_calls), 1)
+        self.assertTrue(
+            any(
+                "已有历史游标的代码不逐个重试" in message
+                for message in provider.drain_diagnostics()
+            )
+        )
+
     def test_daily_task_reuses_stored_symbol_universe_without_finance_database(self) -> None:
         _FailingFinanceDatabase.select_calls = 0
         provider = YFinanceProvider(
@@ -716,6 +1178,32 @@ class YFinanceRunnerTest(unittest.TestCase):
         self.assertEqual([task.task for task in plan.tasks], ["symbol_master", "daily_kline"])
         self.assertEqual(plan.tasks[1].codes_raw, "AAPL,MSFT")
         self.assertEqual(plan.tasks[1].limit, 10)
+
+    def test_fundamentals_plan_contains_all_new_tasks(self) -> None:
+        plan_path = (
+            Path(__file__).resolve().parents[1]
+            / "providers"
+            / "yfinance"
+            / "plans"
+            / "fundamentals.toml"
+        )
+
+        plan = load_execution_plan_from_toml(str(plan_path))
+
+        self.assertEqual(
+            [task.task for task in plan.tasks],
+            [
+                "income_statement",
+                "balance_sheet",
+                "cash_flow",
+                "financial_metrics",
+                "earnings_calendar",
+                "analyst_estimates",
+                "institutional_holders",
+                "insider_transactions",
+            ],
+        )
+        self.assertTrue(all(task.continue_on_error for task in plan.tasks))
 
 
 if __name__ == "__main__":

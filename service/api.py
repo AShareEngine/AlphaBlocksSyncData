@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import os
 import sys
@@ -37,6 +38,7 @@ from sync_data_system.wide_table_sync import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+logger = logging.getLogger(__name__)
 JOB_MANAGER = SyncJobManager(PROJECT_ROOT)
 CONFIG_MANAGER = SyncConfigManager(PROJECT_ROOT)
 SCHEDULE_MANAGER = SyncScheduleManager(PROJECT_ROOT, JOB_MANAGER, CONFIG_MANAGER)
@@ -947,10 +949,15 @@ def sync_table_status(runtime_path: Optional[str] = Query(None)):
                 try:
                     watermark_repository.ensure_table()
                     cached_watermarks = watermark_repository.load(resolved_targets)
-                except Exception:
+                except Exception as exc:
                     # Keep the endpoint backward-compatible for read-only
                     # ClickHouse users. It will remain correct, but slower,
                     # until the alphablocks state table can be created.
+                    logger.warning(
+                        "freshness watermark cache unavailable database=%s error=%s",
+                        FRESHNESS_WATERMARK_DATABASE,
+                        exc,
+                    )
                     watermark_repository = None
                     cached_watermarks = {}
 
@@ -997,10 +1004,15 @@ def sync_table_status(runtime_path: Optional[str] = Query(None)):
                 if watermark_repository is not None and refreshed_watermarks:
                     try:
                         watermark_repository.save(refreshed_watermarks)
-                    except Exception:
+                    except Exception as exc:
                         # A cache write failure must not make freshness status
                         # unavailable; the next request will recompute it.
-                        pass
+                        logger.warning(
+                            "freshness watermark cache write failed database=%s rows=%s error=%s",
+                            FRESHNESS_WATERMARK_DATABASE,
+                            len(refreshed_watermarks),
+                            exc,
+                        )
 
             for target in targets:
                 related_tasks = tasks_by_target.get(target, [])
