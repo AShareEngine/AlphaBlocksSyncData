@@ -170,10 +170,21 @@ class YFinanceProvider:
         self._last_request_at = 0.0
         self._active_symbol_directory_cache: pd.DataFrame | None = None
         self._finance_database_equities_cache: pd.DataFrame | None = None
+        self._diagnostics: list[str] = []
 
     def close(self) -> None:
         self._active_symbol_directory_cache = None
         self._finance_database_equities_cache = None
+
+    def drain_diagnostics(self) -> tuple[str, ...]:
+        messages = tuple(self._diagnostics)
+        self._diagnostics.clear()
+        return messages
+
+    def _record_diagnostic(self, message: str) -> None:
+        normalized = str(message or "").strip()
+        if normalized:
+            self._diagnostics.append(normalized)
 
     def fetch_symbol_master(
         self,
@@ -186,11 +197,13 @@ class YFinanceProvider:
         except Exception as exc:
             if not self.config.active_symbols_only:
                 raise
-            logger.warning(
+            message = (
                 "FinanceDatabase equities unavailable; using Nasdaq Trader directory "
-                "without sector/industry metadata: %s",
-                exc,
+                "without sector/industry metadata; "
+                f"error_type={type(exc).__name__} error={exc}"
             )
+            self._record_diagnostic(message)
+            logger.warning("%s", message)
             frame = _empty_frame(SYMBOL_MASTER_COLUMNS)
 
         if self.config.active_symbols_only:
@@ -227,7 +240,12 @@ class YFinanceProvider:
             "exchange",
         )
         if master.empty:
-            return _empty_frame(columns)
+            message = (
+                "未获取到行业分类：yf_symbol_master 为空，且 FinanceDatabase "
+                "没有返回可用的美股主数据。"
+            )
+            self._record_diagnostic(message)
+            raise RuntimeError(message)
         result = _ensure_columns(master.copy(), columns)
         result = result.loc[:, list(columns)]
         classification = (
@@ -237,10 +255,14 @@ class YFinanceProvider:
         )
         result = result[classification != ""].copy()
         if result.empty:
-            logger.warning(
-                "No sector/industry metadata is available; industry membership will be empty."
+            message = (
+                "未获取到行业分类：当前 symbol_master 只有 Nasdaq Trader 证券目录，"
+                "sector、industry_group 和 industry 全部为空；请检查 FinanceDatabase "
+                "的 GitHub 文件连通性及 sync.yfinance.proxy。"
             )
-            return _empty_frame(columns)
+            self._record_diagnostic(message)
+            logger.warning("%s", message)
+            raise RuntimeError(message)
         return result.reset_index(drop=True)
 
     def _load_finance_database_equities(self) -> pd.DataFrame:
@@ -417,8 +439,11 @@ class YFinanceProvider:
         )
         snapshot = snapshot_date or date.today()
         rows: list[dict[str, Any]] = []
+        requested_etfs = 0
+        failed_etfs: list[str] = []
         for definition in definitions:
             for etf_symbol in definition.holding_etfs:
+                requested_etfs += 1
                 normalized_etf = normalize_us_symbol(etf_symbol)
                 try:
                     holdings = self._run_yahoo_call(
@@ -429,7 +454,19 @@ class YFinanceProvider:
                     )
                     frame = _normalize_holdings(holdings)
                 except Exception as exc:
-                    logger.warning("Unable to fetch ETF top holdings etf=%s: %s", normalized_etf, exc)
+                    failed_etfs.append(normalized_etf)
+                    message = (
+                        f"ETF Top Holdings 请求失败 etf={normalized_etf} "
+                        f"error_type={type(exc).__name__} error={exc}"
+                    )
+                    self._record_diagnostic(message)
+                    logger.warning("%s", message)
+                    continue
+                if frame.empty:
+                    failed_etfs.append(normalized_etf)
+                    message = f"ETF Top Holdings 返回空数据 etf={normalized_etf}"
+                    self._record_diagnostic(message)
+                    logger.warning("%s", message)
                     continue
                 for item in frame.to_dict("records"):
                     rows.append(
@@ -445,12 +482,22 @@ class YFinanceProvider:
                         }
                     )
         if not rows:
-            return _empty_frame(columns)
+            message = (
+                "未获取到任何概念 ETF Top Holdings；"
+                f"failed_etfs={len(failed_etfs)}/{requested_etfs} "
+                f"etfs={','.join(failed_etfs)}。请检查 Yahoo 连通性、限流、代理和 yfinance 版本。"
+            )
+            self._record_diagnostic(message)
+            raise RuntimeError(message)
         result = pd.DataFrame(rows)
         result = result[result["symbol"] != ""].drop_duplicates(
             subset=["snapshot_date", "concept_code", "etf_symbol", "symbol"],
             keep="first",
         )
+        if result.empty:
+            message = "概念 ETF Top Holdings 已返回数据，但没有任何有效的美股 symbol。"
+            self._record_diagnostic(message)
+            raise RuntimeError(message)
         return result.loc[:, list(columns)].reset_index(drop=True)
 
     def _filter_us_listings(self, frame: pd.DataFrame) -> pd.DataFrame:

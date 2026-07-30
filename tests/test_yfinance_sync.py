@@ -10,13 +10,18 @@ import unittest
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pandas as pd
 
 from sync_data_system.providers.yfinance.provider import YFinanceConfig, YFinanceProvider
 from sync_data_system.providers.yfinance.repository import YFinanceRepository
-from sync_data_system.providers.yfinance.runner import SyncArgs, load_execution_plan_from_toml, run_sync_args
+from sync_data_system.providers.yfinance.runner import (
+    SyncArgs,
+    load_execution_plan_from_toml,
+    run_registered_task,
+    run_sync_args,
+)
 from sync_data_system.providers.yfinance.specs import CONCEPT_DEFINITIONS
 
 
@@ -149,6 +154,11 @@ class _FakeYFinance:
 
     def Ticker(self, symbol: str):
         return _FakeTicker()
+
+
+class _FailingFundsYFinance(_FakeYFinance):
+    def Ticker(self, symbol: str):
+        raise RuntimeError("HTTP Error 401 token=secret")
 
 
 class _FakeClickHouseClient:
@@ -307,11 +317,14 @@ class YFinanceProviderTest(unittest.TestCase):
         )
 
         frame = provider.fetch_symbol_master(snapshot_date=date(2026, 7, 28))
-        industry = provider.fetch_industry_membership(symbol_master=frame)
 
         self.assertEqual(frame["symbol"].tolist(), ["AAPL", "IBM"])
         self.assertTrue({"source", "fetched_at"}.isdisjoint(frame.columns))
-        self.assertTrue(industry.empty)
+        with self.assertRaisesRegex(RuntimeError, "未获取到行业分类"):
+            provider.fetch_industry_membership(symbol_master=frame)
+        diagnostics = provider.drain_diagnostics()
+        self.assertTrue(any("FinanceDatabase equities unavailable" in item for item in diagnostics))
+        self.assertTrue(any("sector、industry_group" in item for item in diagnostics))
         self.assertEqual(_FailingFinanceDatabase.select_calls, 1)
 
     def test_daily_download_normalizes_multi_index_and_inclusive_end(self) -> None:
@@ -351,6 +364,25 @@ class YFinanceProviderTest(unittest.TestCase):
         self.assertEqual(set(frame["membership_scope"]), {"top_holdings"})
         self.assertEqual(set(frame["etf_symbol"]), {"AIQ", "BOTZ", "ROBO"})
         self.assertTrue({"source", "fetched_at"}.isdisjoint(frame.columns))
+
+    def test_concept_membership_fails_when_every_etf_request_fails(self) -> None:
+        provider = YFinanceProvider(
+            YFinanceConfig(
+                request_interval_seconds=0,
+                rate_limit_retries=0,
+            ),
+            yfinance_module=_FailingFundsYFinance(),
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "未获取到任何概念 ETF Top Holdings",
+        ):
+            provider.fetch_concept_membership(CONCEPT_DEFINITIONS)
+
+        diagnostics = provider.drain_diagnostics()
+        self.assertTrue(any("etf=AIQ" in item for item in diagnostics))
+        self.assertTrue(any("failed_etfs=11/11" in item for item in diagnostics))
 
     def test_proxy_config_and_rate_limit_retry_are_applied(self) -> None:
         self.yf.download_failures = 1
@@ -466,6 +498,89 @@ class YFinanceRepositoryTest(unittest.TestCase):
 
 
 class YFinanceRunnerTest(unittest.TestCase):
+    def test_registered_task_flushes_provider_diagnostics_to_web_log(self) -> None:
+        messages: list[str] = []
+        provider = SimpleNamespace(
+            drain_diagnostics=Mock(
+                side_effect=[
+                    (),
+                    ("ETF Top Holdings 请求失败 token=secret",),
+                ]
+            )
+        )
+        probe = SimpleNamespace(
+            name="yfinance.concept_membership",
+            source="yfinance",
+            input_codes=[],
+            input_begin_date=None,
+            input_end_date=None,
+            limit=0,
+            force=True,
+            runtime_path=None,
+            database="yfinance",
+            log_level="INFO",
+            context=SimpleNamespace(
+                provider=provider,
+                repository=SimpleNamespace(),
+            ),
+            log=messages.append,
+            set_row_count=Mock(),
+        )
+
+        with (
+            patch(
+                "sync_data_system.providers.yfinance.runner.run_sync_args",
+                side_effect=RuntimeError("upstream failed"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "upstream failed"),
+        ):
+            run_registered_task(probe)
+
+        self.assertEqual(
+            messages,
+            [
+                "task=yfinance.concept_membership warning="
+                "ETF Top Holdings 请求失败 token=[REDACTED]"
+            ],
+        )
+
+    def test_empty_concept_membership_is_recorded_as_failed(self) -> None:
+        provider = YFinanceProvider(
+            YFinanceConfig(
+                request_interval_seconds=0,
+                rate_limit_retries=0,
+            ),
+            yfinance_module=_FailingFundsYFinance(),
+        )
+        client = _FakeClickHouseClient()
+        repository = YFinanceRepository(client, database="yfinance")
+        args = SyncArgs(
+            task="concept_membership",
+            codes_raw="",
+            begin_date="",
+            end_date="",
+            limit=0,
+            force=True,
+            continue_on_error=False,
+            runtime_path=None,
+            database="yfinance",
+            log_level="INFO",
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "未获取到任何概念 ETF Top Holdings",
+        ):
+            run_sync_args(args, provider, repository)
+
+        log_call = next(
+            call for call in client.insert_calls if call[0].endswith("yf_sync_task_log")
+        )
+        saved_log = dict(zip(log_call[1], log_call[2][0]))
+        self.assertEqual(saved_log["status"], "failed")
+        self.assertEqual(saved_log["row_count"], 0)
+        self.assertIn("failed_etfs=11/11", saved_log["message"])
+
     def test_daily_task_writes_data_cursor_and_sync_log(self) -> None:
         provider = YFinanceProvider(
             YFinanceConfig(batch_size=10),

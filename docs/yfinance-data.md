@@ -31,6 +31,9 @@
 - 生物科技：`XBI`，成分参考 `XBI/IBB`
 
 `concept_membership.membership_scope` 固定为 `top_holdings`。它是 ETF 公开的主要持仓，不是完整、权威的“概念股全集”。
+如果 FinanceDatabase 没有返回任何行业分类，`industry_membership` 会失败；如果所有概念 ETF
+持仓请求均失败或返回空数据，`concept_membership` 也会失败，不再把 `row_count=0` 记录为成功。
+FinanceDatabase 降级原因和逐 ETF 异常会同时写入网页批任务日志。
 
 ## 配置
 

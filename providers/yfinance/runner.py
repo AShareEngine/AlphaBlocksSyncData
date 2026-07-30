@@ -29,6 +29,7 @@ from sync_data_system.providers.yfinance.specs import (
 from sync_data_system.sync_core.clickhouse import ClickHouseConfig, create_clickhouse_client
 from sync_data_system.sync_core.incremental import advance_cursor_value, normalize_request_value
 from sync_data_system.sync_core.task_logging import write_sync_result
+from sync_data_system.service.log_redaction import redact_sensitive_text
 from sync_data_system.toml_compat import tomllib
 
 
@@ -158,7 +159,19 @@ def run_registered_task(probe: Any) -> int:
         database=str(probe.database or "yfinance"),
         log_level=str(probe.log_level or "INFO"),
     )
-    inserted = run_sync_args(args, probe.context.provider, probe.context.repository)
+    provider = probe.context.provider
+    drain_diagnostics = getattr(provider, "drain_diagnostics", None)
+    if callable(drain_diagnostics):
+        drain_diagnostics()
+    try:
+        inserted = run_sync_args(args, provider, probe.context.repository)
+    finally:
+        if callable(drain_diagnostics):
+            for message in drain_diagnostics():
+                probe.log(
+                    f"task={probe.name} warning="
+                    f"{redact_sensitive_text(message)}"
+                )
     probe.set_row_count(inserted)
     return inserted
 

@@ -22,6 +22,12 @@ from sync_data_system.service.job_manager import SyncJobManager
 from sync_data_system.service.schedule_manager import SyncScheduleManager
 from sync_data_system.service.sync_config_manager import SyncConfigManager
 from sync_data_system.service.table_check_state import TableCheckStateStore
+from sync_data_system.service.table_watermark import (
+    TableWatermark,
+    TableWatermarkRepository,
+    is_current_watermark,
+    source_part_state,
+)
 from sync_data_system.wide_table_sync import (
     WideTableSyncStateRepository,
     build_wide_table_metadata,
@@ -80,6 +86,7 @@ DATE_FIELD_CANDIDATES = (
     "date",
 )
 LATEST_DATE_QUERY_BATCH_SIZE = 32
+FRESHNESS_WATERMARK_DATABASE = "alphablocks"
 
 
 def _normalize_field_name(value: Any) -> str:
@@ -905,15 +912,20 @@ def sync_table_status(runtime_path: Optional[str] = Query(None)):
                     )
                     if latest_field:
                         latest_fields_by_table[(database, table)] = latest_field
-                latest_dates_by_table = _query_latest_dates(connection, latest_fields_by_table)
 
                 part_rows = connection.query_rows(
                     """
                     SELECT
                       database,
                       table,
-                      max(rows) > 0 AS has_data,
-                      max(modification_time) AS last_update_time
+                      sum(rows) > 0 AS has_data,
+                      max(modification_time) AS last_update_time,
+                      concat(
+                        toString(max(modification_time)), '|',
+                        toString(count()), '|',
+                        toString(sum(rows)), '|',
+                        toString(sum(bytes_on_disk))
+                      ) AS source_signature
                     FROM system.parts
                     WHERE active = 1
                       AND database IN {databases:Array(String)}
@@ -927,6 +939,68 @@ def sync_table_status(runtime_path: Optional[str] = Query(None)):
                     for row in part_rows
                     if len(row) >= 4
                 }
+
+                watermark_repository = TableWatermarkRepository(
+                    connection,
+                    database=FRESHNESS_WATERMARK_DATABASE,
+                )
+                try:
+                    watermark_repository.ensure_table()
+                    cached_watermarks = watermark_repository.load(resolved_targets)
+                except Exception:
+                    # Keep the endpoint backward-compatible for read-only
+                    # ClickHouse users. It will remain correct, but slower,
+                    # until the alphablocks state table can be created.
+                    watermark_repository = None
+                    cached_watermarks = {}
+
+                stale_latest_fields: dict[tuple[str, str], str] = {}
+                stale_states: dict[tuple[str, str], tuple[bool, str, str]] = {}
+                for database, table in resolved_targets:
+                    key = (database, table)
+                    latest_field = latest_fields_by_table.get(key, "")
+                    has_data, last_update_time, source_signature = source_part_state(
+                        parts_by_table.get(key)
+                    )
+                    cached = cached_watermarks.get(key)
+                    if is_current_watermark(
+                        cached,
+                        latest_field=latest_field,
+                        has_data=has_data,
+                        source_signature=source_signature,
+                    ):
+                        latest_dates_by_table[key] = cached.latest_date
+                        continue
+                    stale_states[key] = (has_data, last_update_time, source_signature)
+                    if latest_field and has_data:
+                        stale_latest_fields[key] = latest_field
+
+                refreshed_latest_dates = _query_latest_dates(
+                    connection,
+                    stale_latest_fields,
+                )
+                refreshed_watermarks: list[TableWatermark] = []
+                for key, (has_data, last_update_time, source_signature) in stale_states.items():
+                    latest_date = refreshed_latest_dates.get(key, "")
+                    latest_dates_by_table[key] = latest_date
+                    refreshed_watermarks.append(
+                        TableWatermark(
+                            source_database=key[0],
+                            source_table=key[1],
+                            latest_field=latest_fields_by_table.get(key, ""),
+                            latest_date=latest_date,
+                            has_data=has_data,
+                            source_last_update_time=last_update_time,
+                            source_signature=source_signature,
+                        )
+                    )
+                if watermark_repository is not None and refreshed_watermarks:
+                    try:
+                        watermark_repository.save(refreshed_watermarks)
+                    except Exception:
+                        # A cache write failure must not make freshness status
+                        # unavailable; the next request will recompute it.
+                        pass
 
             for target in targets:
                 related_tasks = tasks_by_target.get(target, [])
