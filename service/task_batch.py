@@ -134,21 +134,17 @@ def run_task_batch(payload: dict[str, Any], *, results_path: Path, log_path: Pat
                 )
                 source = str(metadata.get("source") or result["provider"] or "").strip()
                 database = str(metadata.get("database") or result["database"] or "").strip()
-                if source in {"akshare", "amazingdata"}:
-                    context_key = (source, database)
-                    context = shared_contexts.get(context_key)
-                    if context is None:
-                        context = build_provider_context(
-                            source,
-                            runtime_path=runtime_path,
-                            database=database,
-                        )
-                        shared_contexts[context_key] = context
-                    registered_task_started = True
-                    return_code = run_registered_task(args, context=context)
-                else:
-                    registered_task_started = True
-                    return_code = run_registered_task(args)
+                context_key = (source, database)
+                context = shared_contexts.get(context_key)
+                if context is None:
+                    context = build_provider_context(
+                        source,
+                        runtime_path=runtime_path,
+                        database=database,
+                    )
+                    shared_contexts[context_key] = context
+                registered_task_started = True
+                return_code = run_registered_task(args, context=context)
                 if return_code:
                     raise RuntimeError(f"task returned non-zero status: {return_code}")
                 result["status"] = "success"

@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from sync_data_system.service.task_batch import _resolve_incremental_parameters, run_task_batch
 
@@ -69,7 +69,8 @@ class TaskBatchTest(unittest.TestCase):
                 ],
             }
 
-            shared_context = Mock()
+            baostock_context = Mock()
+            amazingdata_context = Mock()
             with (
                 patch(
                     "sync_data_system.service.task_batch.run_registered_task",
@@ -77,7 +78,7 @@ class TaskBatchTest(unittest.TestCase):
                 ) as runner,
                 patch(
                     "sync_data_system.service.task_batch.build_provider_context",
-                    return_value=shared_context,
+                    side_effect=[baostock_context, amazingdata_context],
                 ),
             ):
                 return_code = run_task_batch(payload, results_path=results_path, log_path=log_path)
@@ -87,7 +88,8 @@ class TaskBatchTest(unittest.TestCase):
             self.assertEqual(results["status"], "partial_success")
             self.assertEqual([item["status"] for item in results["tasks"]], ["failed", "success"])
             self.assertEqual(runner.call_count, 2)
-            shared_context.close.assert_called_once_with()
+            baostock_context.close.assert_called_once_with()
+            amazingdata_context.close.assert_called_once_with()
 
     def test_batch_stops_after_failure_when_continue_is_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -102,10 +104,17 @@ class TaskBatchTest(unittest.TestCase):
                 ],
             }
 
-            with patch(
-                "sync_data_system.service.task_batch.run_registered_task",
-                return_value=1,
-            ) as runner:
+            context = Mock()
+            with (
+                patch(
+                    "sync_data_system.service.task_batch.run_registered_task",
+                    return_value=1,
+                ) as runner,
+                patch(
+                    "sync_data_system.service.task_batch.build_provider_context",
+                    return_value=context,
+                ),
+            ):
                 return_code = run_task_batch(
                     payload,
                     results_path=results_path,
@@ -117,11 +126,13 @@ class TaskBatchTest(unittest.TestCase):
             self.assertEqual(results["status"], "failed")
             self.assertEqual(len(results["tasks"]), 1)
             self.assertEqual(runner.call_count, 1)
+            context.close.assert_called_once_with()
 
     def test_amazingdata_tasks_share_one_context_across_batch(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            shared_context = Mock()
+            amazingdata_context = Mock()
+            baostock_context = Mock()
             payload = {
                 "job_id": "job_shared_amazingdata",
                 "continue_on_error": True,
@@ -140,25 +151,45 @@ class TaskBatchTest(unittest.TestCase):
                 ) as runner,
                 patch(
                     "sync_data_system.service.task_batch.build_provider_context",
-                    return_value=shared_context,
+                    side_effect=[amazingdata_context, baostock_context],
                 ) as build_context,
             ):
                 return_code = run_task_batch(
                     payload,
                     results_path=root / "results.json",
                     log_path=root / "batch.log",
-                )
+            )
 
             self.assertEqual(return_code, 0)
-            build_context.assert_called_once_with(
-                "amazingdata",
-                runtime_path="/tmp/runtime.local.yaml",
-                database="starlight",
+            self.assertEqual(
+                build_context.call_args_list,
+                [
+                    call(
+                        "amazingdata",
+                        runtime_path="/tmp/runtime.local.yaml",
+                        database="starlight",
+                    ),
+                    call(
+                        "baostock",
+                        runtime_path="/tmp/runtime.local.yaml",
+                        database="baostock",
+                    ),
+                ],
             )
-            self.assertIs(runner.call_args_list[0].kwargs["context"], shared_context)
-            self.assertNotIn("context", runner.call_args_list[1].kwargs)
-            self.assertIs(runner.call_args_list[2].kwargs["context"], shared_context)
-            shared_context.close.assert_called_once_with()
+            self.assertIs(
+                runner.call_args_list[0].kwargs["context"],
+                amazingdata_context,
+            )
+            self.assertIs(
+                runner.call_args_list[1].kwargs["context"],
+                baostock_context,
+            )
+            self.assertIs(
+                runner.call_args_list[2].kwargs["context"],
+                amazingdata_context,
+            )
+            amazingdata_context.close.assert_called_once_with()
+            baostock_context.close.assert_called_once_with()
 
     def test_akshare_tasks_share_one_context_across_batch(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
