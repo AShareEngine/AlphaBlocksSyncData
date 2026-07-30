@@ -11,7 +11,7 @@ from sync_data_system.clickhouse_tables import (
     CREATE_AD_CASH_FLOW_TABLE,
     CREATE_AD_INCOME_TABLE,
 )
-from sync_data_system.data_models import BalanceSheetRow, CashFlowRow, IncomeRow
+from sync_data_system.data_models import BalanceSheetRow, CashFlowRow, FundIopvRow, IncomeRow
 from sync_data_system.providers.amazingdata.info import (
     HISTORICAL_REVISION_LOOKBACK_DAYS,
     InfoData,
@@ -34,6 +34,9 @@ class _FakeFinancialRepository:
         return self._save(rows)
 
     def save_income_rows(self, rows) -> int:
+        return self._save(rows)
+
+    def save_fund_iopv_rows(self, rows) -> int:
         return self._save(rows)
 
     def insert_sync_log(self, row) -> None:
@@ -74,6 +77,14 @@ class _FakeFinancialProvider:
             statement_type="1",
             reporting_period=end_date,
             ann_date=end_date,
+        )
+
+    def fetch_fund_iopv(self, code_list, start_date=None, end_date=None):
+        self.calls.append(("fund_iopv", list(code_list), start_date, end_date))
+        yield FundIopvRow(
+            market_code=code_list[0],
+            price_date=end_date.isoformat() if end_date is not None else None,
+            iopv_nav=1.0,
         )
 
 
@@ -134,6 +145,31 @@ class AmazingDataFinancialStatementSyncTest(unittest.TestCase):
             latest_date - timedelta(days=HISTORICAL_REVISION_LOOKBACK_DAYS),
         )
         self.assertEqual(provider.calls[0][3], date(2026, 12, 31))
+
+    def test_fund_iopv_incremental_start_comes_from_target_table(self) -> None:
+        repository = _FakeFinancialRepository(latest_date=date(2026, 6, 30))
+        provider = _FakeFinancialProvider()
+        info_data = InfoData(repository=repository, sync_provider=provider)
+
+        inserted = info_data.sync_fund_iopv(
+            code_list=["510050.SH"],
+            begin_date=20100101,
+            end_date=20261231,
+            force=False,
+        )
+
+        self.assertEqual(inserted, 1)
+        self.assertEqual(
+            provider.calls,
+            [
+                (
+                    "fund_iopv",
+                    ["510050.SH"],
+                    date(2026, 7, 1),
+                    date(2026, 12, 31),
+                )
+            ],
+        )
 
 
 if __name__ == "__main__":

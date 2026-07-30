@@ -23,9 +23,12 @@ class _FakeRepository:
         self.saved_backward_batches: list[list[PriceFactorRow]] = []
         self.saved_codes: set[str] = set()
         self.sync_logs = []
+        self.latest_dates: dict[str, date] = {}
 
-    def load_sync_checkpoint_date(self, task_name: str, scope_key: str):
-        return None
+    def load_latest_price_factor_trade_date(self, table_name: str, code_list):
+        del table_name
+        dates = [self.latest_dates[code] for code in code_list if code in self.latest_dates]
+        return min(dates) if len(dates) == len(code_list) else None
 
     def has_successful_sync_today(self, task_name: str, scope_key: str, run_date: date) -> bool:
         return False
@@ -112,6 +115,22 @@ class BackwardFactorSyncTest(unittest.TestCase):
         self.assertEqual(
             [row.code for row in base_data.repository.saved_backward_batches[0]],
             ["600000.SH", "600004.SH"],
+        )
+
+    def test_factor_incremental_start_comes_from_target_table(self) -> None:
+        base_data = _BufferedSpyBaseData()
+        base_data.repository.latest_dates["600000.SH"] = date(2024, 1, 1)
+
+        inserted = base_data.sync_adj_factor(
+            code_list=["600000.SH"],
+            local_path="/tmp/amazing_data_cache",
+            force=False,
+        )
+
+        self.assertEqual(inserted, 1)
+        self.assertEqual(
+            base_data.provider_calls,
+            [(FactorType.ADJ, ["600000.SH"], date(2024, 1, 1))],
         )
 
 

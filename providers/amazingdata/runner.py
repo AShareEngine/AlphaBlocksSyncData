@@ -162,6 +162,40 @@ TASK_CHOICES = (
     "market_snapshot",
 )
 
+# These tasks derive their incremental boundary or existing-data state from the
+# target table. A persistent checkpoint can outlive the target table (for
+# example after DROP/rebuild) and must not be allowed to skip source data.
+TARGET_TABLE_DRIVEN_RESUME_TASKS = frozenset(
+    {
+        "adj_factor",
+        "backward_factor",
+        "history_stock_status",
+        "balance_sheet",
+        "cash_flow",
+        "income",
+        "profit_express",
+        "profit_notice",
+        "fund_share",
+        "fund_iopv",
+        "option_std_ctr_specs",
+        "option_mon_ctr_specs",
+        "treasury_yield",
+        "share_holder",
+        "holder_num",
+        "equity_structure",
+        "equity_pledge_freeze",
+        "equity_restricted",
+        "dividend",
+        "right_issue",
+        "index_weight",
+        "industry_weight",
+        "industry_daily",
+        "daily_kline",
+        "minute_kline",
+        "market_snapshot",
+    }
+)
+
 TASK_TARGET_TABLE_MAP = {
     "code_info": "ad_code_info",
     "hist_code_list": "ad_hist_code_daily",
@@ -2281,6 +2315,13 @@ def filter_code_list_for_resume(
     end_date: int,
 ) -> list[str]:
     if not task_spec.resume or not code_list:
+        return code_list
+
+    if task_spec.task in TARGET_TABLE_DRIVEN_RESUME_TASKS:
+        logger.info(
+            "resume checkpoint bypassed task=%s reason=target_table_driven_incremental",
+            task_spec.task,
+        )
         return code_list
 
     scope_pairs = build_resume_scope_pairs(

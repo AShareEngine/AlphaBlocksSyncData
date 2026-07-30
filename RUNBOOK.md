@@ -229,7 +229,16 @@ python3 scripts/run_provider_sync.py --config run_sync.full.toml --resume
 
 说明：
 
-- `--resume` 会结合 `ad_sync_checkpoint` 跳过已成功的 code / 标的
+- `--resume` 会对支持 checkpoint 恢复的任务结合 `ad_sync_checkpoint` 跳过已成功的 code / 标的
+- 已由目标表计算增量日期或数据状态的任务不使用永久 checkpoint 跳过标的，包括：
+  - 财务与持有人：`balance_sheet`、`cash_flow`、`income`、`profit_express`、
+    `profit_notice`、`fund_share`、`fund_iopv`、`share_holder`、`holder_num`
+  - 证券事件：`history_stock_status`、`equity_structure`、`equity_pledge_freeze`、
+    `equity_restricted`、`dividend`、`right_issue`
+  - 指数与行情：`index_weight`、`industry_weight`、`industry_daily`、
+    `daily_kline`、`minute_kline`、`market_snapshot`
+  - 其他日期序列：`adj_factor`、`backward_factor`、`option_std_ctr_specs`、
+    `option_mon_ctr_specs`、`treasury_yield`
 - 是否能继续到你想要的位置，取决于对应任务的 checkpoint scope 设计
 
 ## 配置执行

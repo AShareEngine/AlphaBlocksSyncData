@@ -632,8 +632,15 @@ class BaseData:
 
         scope_key = self._build_factor_scope_key(factor_type, normalized_codes)
         task_name = f"get_{factor_type}_factor"
-        latest_date = self.repository.load_sync_checkpoint_date(task_name, scope_key)
         target_table = self._resolve_factor_table_name(factor_type)
+        latest_date = (
+            None
+            if force
+            else self.repository.load_latest_price_factor_trade_date(
+                target_table,
+                normalized_codes,
+            )
+        )
         save_rows = (
             self.repository.save_adj_factor_rows
             if factor_type == FactorType.ADJ
@@ -739,7 +746,14 @@ class BaseData:
         run_date = datetime.now().date()
         started_at = utcnow()
         scope_key = self._build_factor_scope_key(factor_type, [code])
-        latest_date = self.repository.load_sync_checkpoint_date(task_name, scope_key)
+        latest_date = (
+            None
+            if force
+            else self.repository.load_latest_price_factor_trade_date(
+                target_table,
+                [code],
+            )
+        )
 
         if (
             not force

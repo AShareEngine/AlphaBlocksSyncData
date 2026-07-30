@@ -110,9 +110,12 @@ class RunSyncResumeTest(unittest.TestCase):
         )
 
     def test_filter_code_list_for_resume_skips_successful_codes(self) -> None:
-        successful = {"factor:backward:000001.SZ", "factor:backward:000002.SZ"}
+        successful = {
+            "info:get_kzz_share:000001.SZ:None:None",
+            "info:get_kzz_share:000002.SZ:None:None",
+        }
         context = self._build_context(successful_scope_keys=successful)
-        task_spec = TaskRunSpec(task="backward_factor", resume=True)
+        task_spec = TaskRunSpec(task="kzz_share", resume=True)
 
         result = filter_code_list_for_resume(
             context=context,
@@ -123,7 +126,57 @@ class RunSyncResumeTest(unittest.TestCase):
         )
 
         self.assertEqual(result, ["000004.SZ"])
-        self.assertEqual(context.base_data.repository.last_task_name, "get_backward_factor")
+        self.assertEqual(context.base_data.repository.last_task_name, "get_kzz_share")
+
+    def test_target_table_driven_tasks_ignore_persistent_resume_checkpoints(self) -> None:
+        codes = ["000001.SZ", "600000.SH"]
+
+        for task in (
+            "adj_factor",
+            "backward_factor",
+            "history_stock_status",
+            "balance_sheet",
+            "cash_flow",
+            "income",
+            "profit_express",
+            "profit_notice",
+            "fund_share",
+            "fund_iopv",
+            "option_std_ctr_specs",
+            "option_mon_ctr_specs",
+            "treasury_yield",
+            "share_holder",
+            "holder_num",
+            "equity_structure",
+            "equity_pledge_freeze",
+            "equity_restricted",
+            "dividend",
+            "right_issue",
+            "index_weight",
+            "industry_weight",
+            "industry_daily",
+            "daily_kline",
+            "minute_kline",
+            "market_snapshot",
+        ):
+            with self.subTest(task=task):
+                context = self._build_context(
+                    successful_scope_keys={
+                        f"info:get_{task}:{code}:2024-01-01:2024-01-31"
+                        for code in codes
+                    }
+                )
+
+                result = filter_code_list_for_resume(
+                    context=context,
+                    task_spec=TaskRunSpec(task=task, resume=True),
+                    code_list=codes,
+                    begin_date=20240101,
+                    end_date=20240131,
+                )
+
+                self.assertEqual(result, codes)
+                self.assertEqual(context.base_data.repository.last_scope_keys, [])
 
     def test_etf_pcf_resume_requires_info_and_constituent_both_success(self) -> None:
         repository = _FakeRepository(

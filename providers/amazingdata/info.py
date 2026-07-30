@@ -612,8 +612,20 @@ class InfoData:
         end = to_ch_date(end_date) if end_date is not None else None
         self._validate_optional_date_range(begin, end)
         scope_key = self._build_code_scope_key("get_fund_iopv", normalized_codes, begin_date=begin, end_date=end)
-        latest_date = self.repository.load_sync_checkpoint_date("get_fund_iopv", scope_key)
-        sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
+        latest_date_raw = self.repository.load_latest_date_by_codes(
+            table_name=AD_FUND_IOPV_TABLE,
+            code_field="market_code",
+            date_field="price_date",
+            code_list=normalized_codes,
+        )
+        latest_date = self._coerce_optional_date_text(
+            str(latest_date_raw) if latest_date_raw is not None else None
+        )
+        sync_start = self._resolve_force_aware_sync_start_date(
+            latest_date=latest_date,
+            requested_begin_date=begin,
+            force=force,
+        )
         return self._run_sync_job(
             task_name="get_fund_iopv",
             scope_key=scope_key,
