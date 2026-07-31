@@ -3,8 +3,8 @@
   "generated_at": "2026-07-30T04:23:53+00:00",
   "source_url": "https://tushare.pro/document/2",
   "navigation_document_count": 241,
-  "endpoint_count": 239,
-  "read_only_endpoint_count": 237,
+  "endpoint_count": 241,
+  "read_only_endpoint_count": 239,
   "mutating_endpoint_count": 2,
   "failed_documents": [],
   "document_aliases": [
@@ -5262,7 +5262,7 @@
         {
           "name": "total_netasset",
           "type": "float",
-          "required_or_default": "Y",
+          "required_or_default": "N",
           "description": "合计资产净值"
         },
         {
@@ -5885,8 +5885,8 @@
         }
       ],
       "cursor_field": "ann_date",
-      "request_mode": "code_range",
-      "incremental_scope": "code",
+      "request_mode": "date_slice",
+      "incremental_scope": "global",
       "supports_incremental": true,
       "mutating": false,
       "stopped": false,
@@ -6035,8 +6035,8 @@
         }
       ],
       "cursor_field": "trade_date",
-      "request_mode": "code_range",
-      "incremental_scope": "code",
+      "request_mode": "date_slice",
+      "incremental_scope": "global",
       "supports_incremental": true,
       "mutating": false,
       "stopped": false,
@@ -6140,8 +6140,8 @@
         }
       ],
       "cursor_field": "trade_date",
-      "request_mode": "code_range",
-      "incremental_scope": "code",
+      "request_mode": "date_slice",
+      "incremental_scope": "global",
       "supports_incremental": true,
       "mutating": false,
       "stopped": false,
@@ -6569,8 +6569,8 @@
         }
       ],
       "cursor_field": "trade_date",
-      "request_mode": "code_range",
-      "incremental_scope": "code",
+      "request_mode": "date_slice",
+      "incremental_scope": "global",
       "supports_incremental": true,
       "mutating": false,
       "stopped": false,
@@ -22030,6 +22030,12 @@
           "type": "str",
           "required_or_default": "N",
           "description": "结束日期"
+        },
+        {
+          "name": "ts_type",
+          "type": "str",
+          "required_or_default": "N",
+          "description": "类型（股票STK, ETF用ETF）"
         }
       ],
       "output_fields": [
@@ -34253,6 +34259,200 @@
       "mutating": true,
       "stopped": false,
       "default_enabled": false,
+      "supports_pagination": false,
+      "transport": "http"
+    },
+    {
+      "doc_id": "420",
+      "title": "指数实时分钟-日累计",
+      "category_path": [
+        "指数专题"
+      ],
+      "doc_url": "https://tushare.pro/document/2?doc_id=420",
+      "api_name": "rt_idx_min_daily",
+      "document_api_names": [
+        "rt_idx_min",
+        "rt_idx_min_daily"
+      ],
+      "table_name": "ts_rt_idx_min_daily",
+      "description": "获取单个指数当日开盘以来的分钟数据。",
+      "input_fields": [
+        {
+          "name": "freq",
+          "type": "str",
+          "required_or_default": "Y",
+          "description": "1MIN,5MIN,15MIN,30MIN,60MIN （大写）"
+        },
+        {
+          "name": "ts_code",
+          "type": "str",
+          "required_or_default": "Y",
+          "description": "仅支持单个指数代码"
+        }
+      ],
+      "output_fields": [
+        {
+          "name": "ts_code",
+          "type": "str",
+          "required_or_default": "Y",
+          "description": "股票代码"
+        },
+        {
+          "name": "time",
+          "type": "none",
+          "required_or_default": "Y",
+          "description": "交易时间"
+        },
+        {
+          "name": "open",
+          "type": "float",
+          "required_or_default": "Y",
+          "description": "开盘价"
+        },
+        {
+          "name": "close",
+          "type": "float",
+          "required_or_default": "Y",
+          "description": "收盘价"
+        },
+        {
+          "name": "high",
+          "type": "float",
+          "required_or_default": "Y",
+          "description": "最高价"
+        },
+        {
+          "name": "low",
+          "type": "float",
+          "required_or_default": "Y",
+          "description": "最低价"
+        },
+        {
+          "name": "vol",
+          "type": "float",
+          "required_or_default": "Y",
+          "description": "成交量(股）"
+        },
+        {
+          "name": "amount",
+          "type": "float",
+          "required_or_default": "Y",
+          "description": "成交额（元）"
+        }
+      ],
+      "cursor_field": "time",
+      "request_mode": "snapshot",
+      "incremental_scope": "global",
+      "supports_incremental": false,
+      "mutating": false,
+      "stopped": false,
+      "default_enabled": true,
+      "supports_pagination": false,
+      "transport": "http"
+    },
+    {
+      "doc_id": "340",
+      "title": "期货实时分钟-日累计",
+      "category_path": [
+        "期货数据"
+      ],
+      "doc_url": "https://tushare.pro/document/2?doc_id=340",
+      "api_name": "rt_fut_min_daily",
+      "document_api_names": [
+        "rt_fut_min",
+        "rt_fut_min_daily"
+      ],
+      "table_name": "ts_rt_fut_min_daily",
+      "description": "获取单个期货合约当日开盘以来的分钟数据。",
+      "input_fields": [
+        {
+          "name": "ts_code",
+          "type": "str",
+          "required_or_default": "Y",
+          "description": "仅支持单个期货合约"
+        },
+        {
+          "name": "freq",
+          "type": "str",
+          "required_or_default": "Y",
+          "description": "分钟频度（1MIN/5MIN/15MIN/30MIN/60MIN）"
+        },
+        {
+          "name": "date_str",
+          "type": "str",
+          "required_or_default": "N",
+          "description": "回放日期（YYYY-MM-DD，默认为交易当日，支持回溯一天）"
+        }
+      ],
+      "output_fields": [
+        {
+          "name": "code",
+          "type": "str",
+          "required_or_default": "Y",
+          "description": "股票代码"
+        },
+        {
+          "name": "freq",
+          "type": "str",
+          "required_or_default": "Y",
+          "description": "频度"
+        },
+        {
+          "name": "time",
+          "type": "str",
+          "required_or_default": "Y",
+          "description": "交易时间"
+        },
+        {
+          "name": "open",
+          "type": "float",
+          "required_or_default": "Y",
+          "description": "开盘价"
+        },
+        {
+          "name": "close",
+          "type": "float",
+          "required_or_default": "Y",
+          "description": "收盘价"
+        },
+        {
+          "name": "high",
+          "type": "float",
+          "required_or_default": "Y",
+          "description": "最高价"
+        },
+        {
+          "name": "low",
+          "type": "float",
+          "required_or_default": "Y",
+          "description": "最低价"
+        },
+        {
+          "name": "vol",
+          "type": "int",
+          "required_or_default": "Y",
+          "description": "成交量"
+        },
+        {
+          "name": "amount",
+          "type": "float",
+          "required_or_default": "Y",
+          "description": "成交金额"
+        },
+        {
+          "name": "oi",
+          "type": "float",
+          "required_or_default": "Y",
+          "description": "持仓量"
+        }
+      ],
+      "cursor_field": "time",
+      "request_mode": "snapshot",
+      "incremental_scope": "global",
+      "supports_incremental": false,
+      "mutating": false,
+      "stopped": false,
+      "default_enabled": true,
       "supports_pagination": false,
       "transport": "http"
     }

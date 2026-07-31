@@ -62,7 +62,13 @@ UNIVERSE_DEFINITIONS: dict[str, tuple[str, tuple[dict[str, Any], ...]]] = {
         "fund_basic",
         tuple({"status": status} for status in ("L", "D", "I")),
     ),
-    "指数专题": ("index_basic", ({},)),
+    "指数专题": (
+        "index_basic",
+        tuple(
+            {"market": market}
+            for market in ("MSCI", "CSI", "SSE", "SZSE", "CICC", "SW", "OTH")
+        ),
+    ),
     "期货数据": (
         "fut_basic",
         tuple(
@@ -332,6 +338,18 @@ def _run_code_range(
     if args.limit > 0:
         codes = codes[: args.limit]
     if not codes:
+        if spec.code_field not in spec.required_input_names:
+            logger.warning(
+                "Tushare task=%s code universe is empty; falling back to a global date request",
+                spec.task,
+            )
+            if (
+                spec.cursor_field
+                and spec.cursor_field in spec.input_names
+                and spec.cursor_field not in {"start_date", "end_date"}
+            ):
+                return _run_date_slice(args, spec, provider, repository)
+            return _run_date_range(args, spec, provider, repository)
         raise ValueError(
             f"Tushare task={spec.task} 无可用代码池；请通过 codes 显式传入。文档：{spec.doc_url}"
         )
@@ -491,15 +509,18 @@ def _fetch_rows(
     provider: TushareProvider,
     params: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
-    fields = list(spec.output_names)
+    fields = list(spec.output_provider_names)
     for requested_field in args.fields.split(","):
         requested_field = requested_field.strip()
-        if requested_field and requested_field not in fields:
-            fields.append(requested_field)
+        provider_field = spec.provider_field_name(requested_field)
+        if provider_field and provider_field not in fields:
+            fields.append(provider_field)
     for required_field in (spec.code_field, spec.cursor_field):
-        if required_field and required_field not in fields:
-            fields.append(required_field)
-    return provider.query_all(
+        if required_field and required_field in spec.output_names:
+            provider_field = spec.provider_field_name(required_field)
+            if provider_field not in fields:
+                fields.append(provider_field)
+    rows = provider.query_all(
         spec.task,
         params=params,
         fields=fields,
@@ -507,6 +528,7 @@ def _fetch_rows(
         page_size=args.page_size,
         max_pages=args.max_pages,
     )
+    return [spec.normalize_output_row(row) for row in rows]
 
 
 def _resolve_universe(

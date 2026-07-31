@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
 CATALOG_PATH = Path(__file__).with_name("catalog.json")
@@ -19,6 +19,7 @@ SAFE_IDENTIFIER_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 @dataclass(frozen=True)
 class TushareFieldSpec:
     name: str
+    source_name: str = ""
     data_type: str = ""
     required_or_default: str = ""
     description: str = ""
@@ -26,6 +27,16 @@ class TushareFieldSpec:
     @property
     def required(self) -> bool:
         return self.required_or_default.strip().upper().startswith("Y")
+
+    @property
+    def provider_name(self) -> str:
+        if self.source_name:
+            return self.source_name
+        # Older catalogs prefixed leading-digit provider fields with f_ so
+        # they remained safe ClickHouse identifiers.
+        if self.name.startswith("f_") and self.name[2:3].isdigit():
+            return self.name[2:]
+        return self.name
 
 
 @dataclass(frozen=True)
@@ -55,6 +66,10 @@ class TushareTaskSpec:
         return tuple(field.name for field in self.output_fields)
 
     @property
+    def output_provider_names(self) -> tuple[str, ...]:
+        return tuple(field.provider_name for field in self.output_fields)
+
+    @property
     def required_input_names(self) -> tuple[str, ...]:
         return tuple(field.name for field in self.input_fields if field.required)
 
@@ -65,11 +80,26 @@ class TushareTaskSpec:
     @property
     def code_field(self) -> str:
         inputs = set(self.input_names)
-        outputs = set(self.output_names)
         for candidate in ("ts_code", "index_code", "code", "con_code", "symbol"):
-            if candidate in inputs and candidate in outputs:
+            if candidate in inputs:
                 return candidate
         return ""
+
+    def provider_field_name(self, field_name: str) -> str:
+        for field in self.output_fields:
+            if field.name == field_name or field.provider_name == field_name:
+                return field.provider_name
+        return field_name
+
+    def normalize_output_row(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        field_names = {
+            field.provider_name: field.name
+            for field in self.output_fields
+        }
+        return {
+            field_names.get(str(name), str(name)): value
+            for name, value in row.items()
+        }
 
     @property
     def category_root(self) -> str:
@@ -118,6 +148,7 @@ def load_tushare_task_specs() -> dict[str, TushareTaskSpec]:
 def _field_spec(raw: dict[str, Any]) -> TushareFieldSpec:
     return TushareFieldSpec(
         name=str(raw.get("name") or "").strip(),
+        source_name=str(raw.get("source_name") or "").strip(),
         data_type=str(raw.get("type") or "").strip(),
         required_or_default=str(raw.get("required_or_default") or "").strip(),
         description=str(raw.get("description") or "").strip(),

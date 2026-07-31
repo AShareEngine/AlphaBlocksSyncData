@@ -52,6 +52,17 @@ GLOBAL_RANGE_API_NAMES = frozenset(
         "ths_member",
     }
 )
+DATE_SLICE_API_NAMES = frozenset(
+    {
+        # These endpoints accept an optional security code, but their official
+        # examples recommend querying the whole market one date at a time.
+        # Date slices also prevent multi-day responses from hitting row limits.
+        "anns_d",
+        "irm_qa_sh",
+        "irm_qa_sz",
+        "research_report",
+    }
+)
 SNAPSHOT_API_NAMES = frozenset({"fut_basic"})
 STOPPED_TITLE_MARKERS = ("（停）", "(停)", "（旧）", "(旧)")
 DOCUMENT_ALIASES = {
@@ -75,6 +86,30 @@ SPECIAL_OUTPUT_FIELDS = {
         "amount",
         "adj_factor",
     )
+}
+DOCUMENT_ENDPOINT_VARIANTS = {
+    "420": (
+        {
+            "api_name": "rt_idx_min_daily",
+            "title": "指数实时分钟-日累计",
+            "description": "获取单个指数当日开盘以来的分钟数据。",
+        },
+    ),
+    "340": (
+        {
+            "api_name": "rt_fut_min_daily",
+            "title": "期货实时分钟-日累计",
+            "description": "获取单个期货合约当日开盘以来的分钟数据。",
+            "extra_input_fields": (
+                {
+                    "name": "date_str",
+                    "type": "str",
+                    "required_or_default": "N",
+                    "description": "回放日期（YYYY-MM-DD，默认为交易当日，支持回溯一天）",
+                },
+            ),
+        },
+    ),
 }
 
 
@@ -120,6 +155,28 @@ def main() -> int:
             else:
                 non_api_documents.append(document)
 
+    existing_api_names = {item["api_name"] for item in endpoints}
+    for endpoint in tuple(endpoints):
+        for variant in DOCUMENT_ENDPOINT_VARIANTS.get(endpoint["doc_id"], ()):
+            if variant["api_name"] in existing_api_names:
+                continue
+            cloned = {
+                **endpoint,
+                "api_name": variant["api_name"],
+                "title": variant["title"],
+                "description": variant["description"],
+                "table_name": f"ts_{variant['api_name']}",
+                "document_api_names": [
+                    *endpoint["document_api_names"],
+                    variant["api_name"],
+                ],
+                "input_fields": [
+                    *endpoint["input_fields"],
+                    *variant.get("extra_input_fields", ()),
+                ],
+            }
+            endpoints.append(cloned)
+            existing_api_names.add(variant["api_name"])
     endpoints.sort(key=lambda item: (item["category_path"], item["api_name"]))
     aliases = [
         {
@@ -262,6 +319,8 @@ def _parse_document(document: dict[str, Any], *, timeout: float) -> dict[str, An
     request_mode = _request_mode(input_fields, output_fields, cursor_field)
     if api_name in GLOBAL_RANGE_API_NAMES and {"start_date", "end_date"} <= set(input_names):
         request_mode = "date_range"
+    if api_name in DATE_SLICE_API_NAMES and cursor_field in input_names:
+        request_mode = "date_slice"
     if api_name in SNAPSHOT_API_NAMES:
         request_mode = "snapshot"
     stopped = any(marker in document["title"] for marker in STOPPED_TITLE_MARKERS)
@@ -314,7 +373,8 @@ def _parse_parameter_table(table: Tag) -> list[dict[str, str]]:
         values = [cell.get_text(" ", strip=True) for cell in row.find_all(["td", "th"])]
         if not values:
             continue
-        name = _safe_identifier(values[0])
+        source_name = values[0].strip()
+        name = _safe_identifier(source_name)
         if not name:
             continue
         item = {
@@ -323,6 +383,8 @@ def _parse_parameter_table(table: Tag) -> list[dict[str, str]]:
             "required_or_default": values[2].strip() if len(values) > 2 else "",
             "description": values[3].strip() if len(values) > 3 else "",
         }
+        if source_name != name:
+            item["source_name"] = source_name
         rows.append(item)
     return rows
 

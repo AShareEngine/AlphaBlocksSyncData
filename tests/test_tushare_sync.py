@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from program_bootstrap import install_sync_data_system_alias
@@ -17,8 +18,11 @@ from sync_data_system.providers.tushare.provider import (
 )
 from sync_data_system.providers.tushare.repository import TushareRepository
 from sync_data_system.providers.tushare.runner import (
+    UNIVERSE_DEFINITIONS,
     SyncArgs,
+    _fetch_rows,
     _run_code_range,
+    _run_date_slice,
     load_execution_plan_from_toml,
 )
 from sync_data_system.providers.tushare.specs import TUSHARE_TASK_SPECS
@@ -114,6 +118,68 @@ class FakeRangeRepository:
         return len(rows)
 
 
+class FakeDateSliceProvider:
+    def __init__(self):
+        self.config = TushareConfig(token="token", default_start_date="20100101")
+        self.calls = []
+
+    def query_all(self, api_name, **kwargs):
+        self.calls.append((api_name, kwargs))
+        params = kwargs["params"]
+        return [
+            {
+                "ann_date": params["ann_date"],
+                "ts_code": "000001.SZ",
+                "title": "公告",
+            }
+        ]
+
+
+class FakeDateSliceRepository:
+    def __init__(self):
+        self.saved = []
+
+    def load_latest_cursor(self, spec):
+        return None
+
+    def save_rows(self, spec, rows, *, scope_key):
+        self.saved.append((spec.task, list(rows), scope_key))
+        return len(rows)
+
+
+class EmptyUniverseProvider:
+    def __init__(self):
+        self.config = TushareConfig(token="token", default_start_date="20100101")
+        self.calls = []
+
+    def query_all(self, api_name, **kwargs):
+        self.calls.append((api_name, kwargs))
+        if api_name == "stock_basic":
+            return []
+        params = kwargs["params"]
+        return [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": params["trade_date"],
+                "close": "10",
+            }
+        ]
+
+
+class EmptyUniverseRepository(FakeRangeRepository):
+    def load_latest_cursor(self, spec):
+        return None
+
+
+class NumericFieldProvider:
+    def __init__(self):
+        self.calls = []
+
+    def query_all(self, api_name, **kwargs):
+        self.calls.append((api_name, kwargs))
+        return [{"date": "20260729", "1w": "1.23"}]
+
+
 def test_catalog_registers_every_read_only_document_api():
     manifest = load_provider_registry(PROJECT_ROOT).get("tushare")
     catalog = json.loads(
@@ -122,16 +188,149 @@ def test_catalog_registers_every_read_only_document_api():
         )
     )
 
-    assert len(TUSHARE_TASK_SPECS) == 237
-    assert len(manifest.tasks) == 237
+    assert len(TUSHARE_TASK_SPECS) == 239
+    assert len(manifest.tasks) == 239
     assert "p_save" not in TUSHARE_TASK_SPECS
     assert "p_delete" not in TUSHARE_TASK_SPECS
     assert all(spec.output_names for spec in TUSHARE_TASK_SPECS.values())
     assert catalog["navigation_document_count"] == 241
-    assert catalog["endpoint_count"] == 239
+    assert catalog["endpoint_count"] == 241
     assert catalog["non_api_documents"] == []
     assert catalog["document_aliases"][0]["doc_id"] == "146"
     assert catalog["unavailable_documents"][0]["doc_id"] == "314"
+
+
+def test_local_complete_document_matches_catalog_fields_and_embedded_interfaces():
+    document_path = PROJECT_ROOT / "docs" / "Tushare_数据接口完整文档.md"
+    if not document_path.exists():
+        return
+    markdown = document_path.read_text(encoding="utf-8")
+    catalog = json.loads(
+        (PROJECT_ROOT / "providers" / "tushare" / "catalog.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    endpoints = {item["api_name"]: item for item in catalog["endpoints"]}
+    compared = 0
+    for section in re.split(r'(?=^<a id="doc-\d+"></a>$)', markdown, flags=re.M):
+        match = re.search(
+            r"^接口[：:]\s*([A-Za-z][A-Za-z0-9_]*)",
+            section,
+            flags=re.M,
+        )
+        if match is None:
+            continue
+        api_name = match.group(1)
+        assert api_name in endpoints
+        compared += 1
+        for marker, catalog_key in (
+            ("输入参数", "input_fields"),
+            ("输出参数", "output_fields"),
+        ):
+            documented = _first_documented_field_table(section, marker)
+            catalog_fields = [
+                (
+                    field["name"],
+                    field["type"],
+                    field["required_or_default"],
+                )
+                for field in endpoints[api_name][catalog_key]
+            ]
+            assert documented == catalog_fields, (api_name, marker)
+    assert compared == 238
+
+    embedded_interfaces = set(
+        re.findall(r"接口名[：:]\s*([A-Za-z][A-Za-z0-9_]*)", markdown)
+    )
+    assert embedded_interfaces <= set(endpoints)
+
+
+def test_every_code_task_has_a_universe_or_safe_global_date_fallback():
+    for spec in TUSHARE_TASK_SPECS.values():
+        if spec.request_mode != "code_range":
+            continue
+        if spec.category_root in UNIVERSE_DEFINITIONS:
+            continue
+        assert spec.code_field not in spec.required_input_names
+        assert {"start_date", "end_date"} <= set(spec.input_names)
+
+
+def test_global_text_endpoints_use_date_slices_instead_of_security_universes():
+    assert {
+        task: TUSHARE_TASK_SPECS[task].request_mode
+        for task in ("anns_d", "irm_qa_sh", "irm_qa_sz", "research_report")
+    } == {
+        "anns_d": "date_slice",
+        "irm_qa_sh": "date_slice",
+        "irm_qa_sz": "date_slice",
+        "research_report": "date_slice",
+    }
+
+
+def test_anns_d_queries_each_calendar_date_without_a_stock_code():
+    provider = FakeDateSliceProvider()
+    repository = FakeDateSliceRepository()
+    args = SyncArgs(
+        task="anns_d",
+        begin_date="20260729",
+        end_date="20260730",
+    )
+
+    inserted = _run_date_slice(
+        args,
+        TUSHARE_TASK_SPECS["anns_d"],
+        provider,
+        repository,
+    )
+
+    assert inserted == 2
+    assert [call[1]["params"] for call in provider.calls] == [
+        {"ann_date": "20260729"},
+        {"ann_date": "20260730"},
+    ]
+    assert all("ts_code" not in call[1]["params"] for call in provider.calls)
+
+
+def test_empty_optional_code_universe_falls_back_to_global_date_slices():
+    provider = EmptyUniverseProvider()
+    repository = EmptyUniverseRepository()
+    args = SyncArgs(
+        task="daily",
+        begin_date="20260729",
+        end_date="20260730",
+    )
+
+    inserted = _run_code_range(
+        args,
+        TUSHARE_TASK_SPECS["daily"],
+        provider,
+        repository,
+        context=None,
+    )
+
+    assert inserted == 2
+    daily_calls = [kwargs for api_name, kwargs in provider.calls if api_name == "daily"]
+    assert [call["params"] for call in daily_calls] == [
+        {"trade_date": "20260729"},
+        {"trade_date": "20260730"},
+    ]
+
+
+def test_provider_field_names_are_mapped_back_to_safe_clickhouse_columns():
+    provider = NumericFieldProvider()
+    spec = TUSHARE_TASK_SPECS["shibor"]
+
+    rows = _fetch_rows(
+        SyncArgs(task="shibor"),
+        spec,
+        provider,
+        {"date": "20260729"},
+    )
+
+    requested_fields = provider.calls[0][1]["fields"]
+    assert "1w" in requested_fields
+    assert "f_1w" not in requested_fields
+    assert rows == [{"date": "20260729", "f_1w": "1.23"}]
 
 
 def test_sdk_provider_uses_configurable_token_url_and_all_documented_fields():
@@ -330,3 +529,52 @@ def test_generated_plans_are_executable_and_start_in_2010():
     assert all(task.begin_date == "20100101" for task in daily.tasks)
     assert all(task.begin_date == "20100101" for task in historical.tasks)
     assert len(historical.tasks) >= 200
+
+
+def _first_documented_field_table(
+    section: str,
+    marker: str,
+) -> list[tuple[str, str, str]]:
+    lines = section.splitlines()
+    for index, line in enumerate(lines):
+        heading = line.strip().lstrip("#").strip()
+        if heading.startswith("**") and heading.endswith("**"):
+            heading = heading[2:-2].strip()
+        elif not line.lstrip().startswith("#"):
+            continue
+        if not heading.endswith(marker):
+            continue
+        rows: list[tuple[str, str, str]] = []
+        started = False
+        for raw_line in lines[index + 1 :]:
+            stripped = raw_line.strip()
+            if stripped.startswith("|"):
+                started = True
+                cells = [
+                    cell.strip()
+                    for cell in stripped.strip("|").split("|")
+                ]
+                if (
+                    len(cells) >= 3
+                    and cells[0] != "名称"
+                    and not re.fullmatch(r"-+", cells[0] or "")
+                ):
+                    rows.append(
+                        (
+                            _documented_safe_identifier(cells[0]),
+                            cells[1].lower(),
+                            cells[2],
+                        )
+                    )
+            elif started or stripped:
+                break
+        return rows
+    raise AssertionError(f"missing documented field table: {marker}")
+
+
+def _documented_safe_identifier(value: str) -> str:
+    text = re.sub(r"[^0-9A-Za-z_]+", "_", value.strip())
+    text = re.sub(r"_+", "_", text).strip("_").lower()
+    if text and text[0].isdigit():
+        return f"f_{text}"
+    return text
