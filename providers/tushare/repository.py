@@ -4,11 +4,10 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
-from datetime import date, datetime, timezone
+from datetime import date
 from typing import Any, Mapping, Sequence
 
 from sync_data_system.providers.tushare.specs import TushareTaskSpec
@@ -21,19 +20,11 @@ logger = logging.getLogger(__name__)
 TS_SYNC_TASK_LOG_TABLE = "ts_sync_task_log"
 TS_SYNC_CHECKPOINT_TABLE = "ts_sync_checkpoint"
 SAFE_IDENTIFIER_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
-META_COLUMNS = (
+LEGACY_META_COLUMNS = (
     "_row_hash",
     "_scope_key",
     "_cursor_value",
     "_ingested_at",
-)
-TRANSIENT_REQUEST_FIELDS = frozenset(
-    {
-        "start_date",
-        "end_date",
-        "offset",
-        "limit",
-    }
 )
 
 
@@ -89,6 +80,7 @@ class TushareRepository:
         field_names = _dedupe_fields((*spec.output_names, *observed_fields))
         if spec.table_name not in self._ensured_tables:
             self.client.command(self._create_task_table_ddl(spec, field_names))
+            self._ensure_no_legacy_meta_columns(spec)
             self._ensured_tables.add(spec.table_name)
         for field in observed_fields:
             normalized = _safe_identifier(field)
@@ -112,30 +104,14 @@ class TushareRepository:
         )
         self.ensure_task_table(spec, observed_fields=observed_fields)
         columns = _dedupe_fields((*spec.output_names, *observed_fields))
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-        insert_columns = (*columns, *META_COLUMNS)
-        insert_rows: list[tuple[Any, ...]] = []
-        for row in rows:
-            values = tuple(_stringify(row.get(column)) for column in columns)
-            identity_scope = _stable_scope_key(scope_key)
-            canonical = json.dumps(
-                {
-                    "api_name": spec.task,
-                    "scope_key": identity_scope,
-                    "row": {column: value for column, value in zip(columns, values)},
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            row_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-            cursor_value = _stringify(row.get(spec.cursor_field)) if spec.cursor_field else ""
-            insert_rows.append(
-                (*values, row_hash, str(scope_key or ""), cursor_value, now)
-            )
+        del scope_key
+        insert_rows = [
+            tuple(_stringify(row.get(column)) for column in columns)
+            for row in rows
+        ]
         return self._insert_rows_in_batches(
             self._table_ref(spec.table_name),
-            insert_columns,
+            columns,
             insert_rows,
         )
 
@@ -283,6 +259,30 @@ class TushareRepository:
             f"{_quote_identifier(_safe_identifier(table_name))}"
         )
 
+    def _ensure_no_legacy_meta_columns(self, spec: TushareTaskSpec) -> None:
+        rows = self.client.query_rows(
+            """
+            SELECT name
+            FROM system.columns
+            WHERE database = {database:String}
+              AND table = {table:String}
+              AND name IN {columns:Array(String)}
+            """,
+            {
+                "database": self.database,
+                "table": spec.table_name,
+                "columns": list(LEGACY_META_COLUMNS),
+            },
+        )
+        found = sorted(str(row[0]) for row in rows if row)
+        if not found:
+            return
+        raise RuntimeError(
+            f"Tushare table {self.database}.{spec.table_name} still contains legacy "
+            f"internal columns: {', '.join(found)}. Run "
+            "`python3 scripts/migrate_tushare_remove_internal_columns.py` before syncing."
+        )
+
     def _create_task_table_ddl(
         self,
         spec: TushareTaskSpec,
@@ -292,22 +292,19 @@ class TushareRepository:
             f"{_quote_identifier(_safe_identifier(field))} String"
             for field in field_names
         ]
-        column_defs.extend(
-            (
-                "_row_hash FixedString(64)",
-                "_scope_key String",
-                "_cursor_value String",
-                "_ingested_at DateTime64(3, 'UTC')",
-            )
-        )
         columns_sql = ",\n            ".join(column_defs)
+        row_values = ", ".join(
+            _quote_identifier(_safe_identifier(field))
+            for field in field_names
+        )
         return f"""
         CREATE TABLE IF NOT EXISTS {self._table_ref(spec.table_name)}
         (
             {columns_sql}
         )
-        ENGINE = ReplacingMergeTree(_ingested_at)
-        ORDER BY (_row_hash)
+        ENGINE = ReplacingMergeTree()
+        PRIMARY KEY tuple()
+        ORDER BY sipHash128(tuple({row_values}))
         """
 
     def _create_sync_task_log_ddl(self) -> str:
@@ -356,8 +353,6 @@ def _dedupe_fields(fields: Sequence[str]) -> tuple[str, ...]:
     seen: set[str] = set()
     for field in fields:
         normalized = _safe_identifier(field)
-        if normalized in META_COLUMNS:
-            raise ValueError(f"Tushare output field conflicts with internal column: {normalized}")
         if normalized not in seen:
             seen.add(normalized)
             result.append(normalized)
@@ -385,41 +380,9 @@ def _stringify(value: Any) -> str:
     return str(value)
 
 
-def _stable_scope_key(scope_key: str) -> str:
-    text = str(scope_key or "")
-    marker = "|params="
-    if marker not in text:
-        return text
-    task_part, raw_params = text.split(marker, 1)
-    try:
-        params = json.loads(raw_params)
-    except json.JSONDecodeError:
-        return text
-    if not isinstance(params, dict):
-        return text
-    stable_params = {
-        str(key): value
-        for key, value in params.items()
-        if str(key) not in TRANSIENT_REQUEST_FIELDS
-    }
-    if not stable_params:
-        return task_part
-    return (
-        task_part
-        + marker
-        + json.dumps(
-            stable_params,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    )
-
-
 __all__ = [
-    "META_COLUMNS",
+    "LEGACY_META_COLUMNS",
     "TS_SYNC_CHECKPOINT_TABLE",
     "TS_SYNC_TASK_LOG_TABLE",
     "TushareRepository",
-    "TRANSIENT_REQUEST_FIELDS",
 ]

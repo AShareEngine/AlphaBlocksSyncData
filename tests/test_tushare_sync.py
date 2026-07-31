@@ -242,7 +242,7 @@ def test_request_budget_stops_before_exceeding_configured_limit():
     assert len(sdk.api.calls) == 1
 
 
-def test_replacing_merge_tree_uses_full_row_hash_instead_of_incomplete_business_key():
+def test_business_tables_only_store_tushare_fields_and_dedupe_exact_rows():
     client = FakeClickHouse()
     repository = TushareRepository(client)
     spec = TUSHARE_TASK_SPECS["daily"]
@@ -257,31 +257,32 @@ def test_replacing_merge_tree_uses_full_row_hash_instead_of_incomplete_business_
     )
 
     ddl = "\n".join(client.commands)
-    assert "ReplacingMergeTree(_ingested_at)" in ddl
-    assert "ORDER BY (_row_hash)" in ddl
+    assert "ReplacingMergeTree()" in ddl
+    assert "PRIMARY KEY tuple()" in ddl
+    assert "ORDER BY sipHash128(tuple(`ts_code`, `trade_date`" in ddl
+    for column in ("_row_hash", "_scope_key", "_cursor_value", "_ingested_at"):
+        assert column not in ddl
     inserted_rows = client.inserts[-1][2]
-    row_hash_index = client.inserts[-1][1].index("_row_hash")
-    assert inserted_rows[0][row_hash_index] != inserted_rows[1][row_hash_index]
+    assert client.inserts[-1][1] == spec.output_names
+    assert len(inserted_rows[0]) == len(spec.output_names)
 
-    repository.save_rows(
-        spec,
-        [{"ts_code": "000001.SZ", "trade_date": "20260729", "close": "10"}],
-        scope_key=(
-            'task=daily|params={"end_date":"20260729",'
-            '"start_date":"20100101","ts_code":"000001.SZ"}'
-        ),
-    )
-    first_window_hash = client.inserts[-1][2][0][row_hash_index]
-    repository.save_rows(
-        spec,
-        [{"ts_code": "000001.SZ", "trade_date": "20260729", "close": "10"}],
-        scope_key=(
-            'task=daily|params={"end_date":"20260730",'
-            '"start_date":"20260729","ts_code":"000001.SZ"}'
-        ),
-    )
-    overlapping_window_hash = client.inserts[-1][2][0][row_hash_index]
-    assert first_window_hash == overlapping_window_hash
+
+def test_legacy_internal_columns_must_be_migrated_before_sync():
+    class LegacyClickHouse(FakeClickHouse):
+        def query_rows(self, sql, parameters=None):
+            if "system.columns" in sql:
+                return [("_row_hash",), ("_ingested_at",)]
+            return []
+
+    repository = TushareRepository(LegacyClickHouse())
+    spec = TUSHARE_TASK_SPECS["daily"]
+
+    try:
+        repository.ensure_task_table(spec)
+    except RuntimeError as exc:
+        assert "migrate_tushare_remove_internal_columns.py" in str(exc)
+    else:
+        raise AssertionError("legacy Tushare schema should require migration")
 
 
 def test_code_incremental_uses_each_security_cursor_and_2010_for_missing_security():
