@@ -128,6 +128,69 @@ class TaskBatchTest(unittest.TestCase):
             self.assertEqual(runner.call_count, 1)
             context.close.assert_called_once_with()
 
+    def test_restart_resume_skips_tasks_already_completed_in_results_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            results_path = root / "results.json"
+            results_path.write_text(
+                json.dumps(
+                    {
+                        "job_id": "job_resume",
+                        "status": "running",
+                        "tasks": [
+                            {
+                                "task_id": "one",
+                                "name": "baostock.daily_kline",
+                                "provider": "baostock",
+                                "status": "success",
+                            },
+                            {
+                                "task_id": "two",
+                                "name": "amazingdata.daily_kline",
+                                "provider": "amazingdata",
+                                "status": "running",
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            payload = {
+                "job_id": "job_resume",
+                "resume_after_restart": True,
+                "continue_on_error": True,
+                "tasks": [
+                    {"id": "one", "name": "baostock.daily_kline", "enabled": True},
+                    {"id": "two", "name": "amazingdata.daily_kline", "enabled": True},
+                ],
+            }
+            context = Mock()
+            with (
+                patch(
+                    "sync_data_system.service.task_batch.run_registered_task",
+                    return_value=0,
+                ) as runner,
+                patch(
+                    "sync_data_system.service.task_batch.build_provider_context",
+                    return_value=context,
+                ),
+            ):
+                return_code = run_task_batch(
+                    payload,
+                    results_path=results_path,
+                    log_path=root / "batch.log",
+                )
+
+            results = json.loads(results_path.read_text(encoding="utf-8"))
+            self.assertEqual(return_code, 0)
+            self.assertEqual(
+                [item["status"] for item in results["tasks"]],
+                ["success", "success"],
+            )
+            runner.assert_called_once()
+            self.assertEqual(runner.call_args.args[0].task, "amazingdata.daily_kline")
+            context.close.assert_called_once_with()
+
     def test_amazingdata_tasks_share_one_context_across_batch(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

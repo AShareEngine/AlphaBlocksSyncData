@@ -210,6 +210,11 @@ python3 scripts/test_qmt_toml.py --dry-run config/sync/plans/run_sync.qmt.sample
 python3 scripts/run_api_service.py --host 127.0.0.1 --port 18080
 ```
 
+服务任务状态和队列保存在 `.service_state/`。服务重启后，尚未执行的任务会保持
+FIFO 顺序，重启时正在运行的任务会自动重新入队并启用 `resume`；批次内已经成功
+的任务不会重复执行。Linux 上检测到旧同步子进程仍在运行时，新服务会等待旧进程
+退出后再续跑，避免同一任务并发执行。
+
 常用接口：
 
 ```bash

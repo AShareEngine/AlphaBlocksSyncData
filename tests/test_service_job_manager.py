@@ -409,6 +409,138 @@ class SyncJobManagerTest(unittest.TestCase):
                 [item["status"] for item in result["tasks"]],
                 ["success", "failed"],
             )
+            self.assertIn(
+                "provider process exited with return code 1",
+                manager.get_job(parent.job_id).error,
+            )
+
+    def test_failed_job_persists_exception_summary_from_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            manager = SyncJobManager(root, state_dir=root / ".service_state")
+            log_path = root / "failed.log"
+            log_path.write_text(
+                "Traceback (most recent call last):\n"
+                "  File \"sync.py\", line 1, in <module>\n"
+                "ImportError: missing tables package\n",
+                encoding="utf-8",
+            )
+            job = JobRecord(
+                job_id="failed_job",
+                kind="provider_task",
+                status="running",
+                created_at="2026-01-01T00:00:00+00:00",
+                started_at="2026-01-01T00:00:00+00:00",
+                finished_at=None,
+                cwd=str(root),
+                command=["python"],
+                log_path=str(log_path),
+            )
+            manager._jobs[job.job_id] = job
+
+            with manager._lock:
+                manager._finish_executable_locked(job, 1)
+
+            persisted = json.loads(
+                (manager.jobs_dir / "failed_job.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(job.error, "ImportError: missing tables package")
+            self.assertEqual(
+                persisted["error"],
+                "ImportError: missing tables package",
+            )
+
+    def test_batch_failure_prefers_structured_task_error_over_log_tail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            manager = SyncJobManager(root, state_dir=root / ".service_state")
+            results_path = root / "results.json"
+            results_path.write_text(
+                json.dumps(
+                    {
+                        "tasks": [
+                            {
+                                "task_id": "daily",
+                                "name": "tushare.daily",
+                                "status": "failed",
+                                "error": "API rate limit exceeded",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            log_path = root / "failed.log"
+            log_path.write_text("RuntimeError: fallback error\n", encoding="utf-8")
+            job = JobRecord(
+                job_id="batch_failed",
+                kind="provider_batch",
+                status="running",
+                created_at="2026-01-01T00:00:00+00:00",
+                started_at="2026-01-01T00:00:00+00:00",
+                finished_at=None,
+                cwd=str(root),
+                command=["python"],
+                log_path=str(log_path),
+                task_results_path=str(results_path),
+            )
+            manager._jobs[job.job_id] = job
+
+            with manager._lock:
+                manager._finish_executable_locked(job, 1)
+
+            self.assertEqual(
+                job.error,
+                "tushare.daily: API rate limit exceeded",
+            )
+
+    def test_running_batch_exposes_completed_task_error_before_process_exits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            manager = SyncJobManager(root, state_dir=root / ".service_state")
+            results_path = root / "results.json"
+            results_path.write_text(
+                json.dumps(
+                    {
+                        "status": "running",
+                        "tasks": [
+                            {
+                                "task_id": "daily",
+                                "name": "tushare.daily",
+                                "status": "failed",
+                                "error": "permission denied",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            job = JobRecord(
+                job_id="running_batch",
+                kind="provider_batch",
+                status="running",
+                created_at="2026-01-01T00:00:00+00:00",
+                started_at="2026-01-01T00:00:00+00:00",
+                finished_at=None,
+                cwd=str(root),
+                command=["python"],
+                log_path=str(root / "running.log"),
+                task_results_path=str(results_path),
+            )
+            process = Mock()
+            process.poll.return_value = None
+            manager._jobs[job.job_id] = job
+            manager._processes[job.job_id] = process
+
+            refreshed = manager.get_job(job.job_id)
+
+            self.assertEqual(
+                refreshed.error,
+                "tushare.daily: permission denied",
+            )
 
     def test_max_parallel_provider_env_override_has_minimum_one(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -516,14 +648,29 @@ class SyncJobManagerTest(unittest.TestCase):
 
             self.assertTrue(popen.called)
             self.assertEqual(resumed.status, "success")
-            self.assertEqual(reloaded.get_job("blocker").status, "interrupted")
+            self.assertEqual(reloaded.get_job("blocker").status, "success")
+            self.assertEqual(reloaded.get_job("blocker").restart_count, 1)
 
-    def test_running_provider_child_is_interrupted_and_not_requeued_after_restart(self) -> None:
+    def test_running_provider_child_is_requeued_with_resume_after_restart(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "sync_project"
             root.mkdir()
             state_dir = root / ".service_state"
             manager = SyncJobManager(root, state_dir=state_dir)
+            payload_path = state_dir / "jobs" / "child.batch.json"
+            results_path = state_dir / "jobs" / "child.results.json"
+            log_path = state_dir / "logs" / "child.log"
+            payload = {
+                "job_id": "child",
+                "tasks": [
+                    {
+                        "id": "a",
+                        "name": "amazingdata.daily_kline",
+                        "parameters": {},
+                    }
+                ],
+            }
+            payload_path.write_text(json.dumps(payload), encoding="utf-8")
             parent = JobRecord(
                 job_id="parent",
                 kind="task_batch",
@@ -544,9 +691,20 @@ class SyncJobManagerTest(unittest.TestCase):
                 started_at=parent.started_at,
                 finished_at=None,
                 cwd=str(root),
-                command=["python"],
-                log_path=str(root / "child.log"),
+                command=[
+                    "python",
+                    str(root / "scripts" / "run_task_batch.py"),
+                    "--payload",
+                    str(payload_path),
+                    "--results",
+                    str(results_path),
+                    "--log-path",
+                    str(log_path),
+                ],
+                log_path=str(log_path),
                 source="amazingdata",
+                request_payload=payload,
+                task_results_path=str(results_path),
                 parent_job_id=parent.job_id,
             )
             manager._jobs = {"parent": parent, "child": child}
@@ -554,14 +712,25 @@ class SyncJobManagerTest(unittest.TestCase):
             manager._save_job(child)
             manager._save_queue()
 
+            process = ControlledProcess()
             with patch(
-                "sync_data_system.service.job_manager.subprocess.Popen"
+                "sync_data_system.service.job_manager.subprocess.Popen",
+                return_value=process,
             ) as popen:
                 reloaded = SyncJobManager(root, state_dir=state_dir)
 
-            self.assertEqual(reloaded.get_job("child").status, "interrupted")
-            self.assertEqual(reloaded.get_job("parent").status, "interrupted")
-            popen.assert_not_called()
+            self.assertEqual(reloaded.get_job("child").status, "running")
+            self.assertEqual(reloaded.get_job("child").restart_count, 1)
+            self.assertEqual(reloaded.get_job("parent").status, "running")
+            rewritten = json.loads(payload_path.read_text(encoding="utf-8"))
+            self.assertTrue(rewritten["resume_after_restart"])
+            self.assertTrue(rewritten["tasks"][0]["parameters"]["resume"])
+            popen.assert_called_once()
+            process.finish()
+            self.assertEqual(
+                wait_for_status(reloaded, "parent", {"success"}).status,
+                "success",
+            )
 
     def test_list_jobs_supports_filters(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

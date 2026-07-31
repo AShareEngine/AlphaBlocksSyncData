@@ -6,10 +6,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
+import time
 import uuid
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +26,7 @@ from sync_data_system.service.task_registry import TASK_REGISTRY
 
 
 DEFAULT_MAX_PARALLEL_PROVIDERS = 3
+ERROR_SUMMARY_MAX_CHARS = 2000
 ACTIVE_STATUSES = {"queued", "running", "cancelling"}
 PROCESS_ACTIVE_STATUSES = {"running", "cancelling"}
 TERMINAL_STATUSES = {
@@ -68,6 +72,8 @@ class JobRecord:
     trigger: Optional[str] = None
     parent_job_id: Optional[str] = None
     child_job_ids: list[str] = field(default_factory=list)
+    restart_count: int = 0
+    last_restarted_at: Optional[str] = None
 
 
 class SyncJobManager:
@@ -93,8 +99,10 @@ class SyncJobManager:
         self._processes: dict[str, subprocess.Popen] = {}
         # Only executable jobs live in this queue. Parent jobs aggregate child state.
         self._queue: list[str] = []
+        self._orphaned_job_ids: list[str] = []
         self._load_existing_jobs()
         self._load_queue()
+        self._start_orphan_watchers()
         self._dispatch_next()
 
     def list_jobs(
@@ -184,6 +192,8 @@ class SyncJobManager:
                         "finished_at": child.finished_at,
                         "return_code": child.return_code,
                         "error": child.error,
+                        "restart_count": child.restart_count,
+                        "last_restarted_at": child.last_restarted_at,
                     }
                 )
             return positions
@@ -767,6 +777,10 @@ class SyncJobManager:
             job.status = "cancelled"
         else:
             job.status = self._status_from_return_code(return_code)
+        if job.status in {"failed", "partial_success", "interrupted"}:
+            job.error = self._derive_job_error(job, return_code)
+        elif job.status == "success":
+            job.error = None
         self._processes.pop(job.job_id, None)
         self._save_job(job)
         if job.parent_job_id:
@@ -794,6 +808,13 @@ class SyncJobManager:
             for child in children
             if child.updated_at
         ]
+        parent.restart_count = sum(int(child.restart_count or 0) for child in children)
+        restarted_values = [
+            child.last_restarted_at
+            for child in children
+            if child.last_restarted_at
+        ]
+        parent.last_restarted_at = max(restarted_values) if restarted_values else None
         if started_values:
             parent.started_at = min(started_values)
         if any(status == "cancelling" for status in statuses):
@@ -817,16 +838,30 @@ class SyncJobManager:
             parent.finished_at = max(finished_values) if finished_values else utc_now_iso()
             parent.updated_at = parent.finished_at
             parent.return_code = self._return_code_from_status(status)
-            if status not in {"success", "partial_success"}:
-                failures = [
-                    f"{child.source}: {child.error or child.status}"
-                    for child in children
-                    if child.status not in {"success"}
-                ]
-                parent.error = "; ".join(failures) or parent.error
+            failures = [
+                f"{child.source or child.task or child.job_id}: "
+                f"{child.error or child.status}"
+                for child in children
+                if child.status != "success"
+            ]
+            parent.error = (
+                self._truncate_error("; ".join(failures))
+                if failures
+                else None
+            )
         else:
             parent.finished_at = None
             parent.return_code = None
+            live_failures = [
+                f"{child.source or child.task or child.job_id}: {child.error}"
+                for child in children
+                if child.error
+            ]
+            parent.error = (
+                self._truncate_error("; ".join(live_failures))
+                if live_failures
+                else None
+            )
         self._save_job(parent)
         if parent.task_results_path:
             self._write_parent_results_locked(parent)
@@ -898,15 +933,18 @@ class SyncJobManager:
             job = self._jobs.get(job_id)
             if job is None or job.status not in PROCESS_ACTIVE_STATUSES:
                 return
+            task_error = self._task_result_error(job)
             updated_at = (
                 self._log_updated_at(job)
                 or job.updated_at
                 or job.started_at
                 or job.created_at
             )
-            if updated_at == job.updated_at:
+            if updated_at == job.updated_at and (not task_error or task_error == job.error):
                 return
             job.updated_at = updated_at
+            if task_error:
+                job.error = task_error
             self._save_job(job)
             if job.parent_job_id:
                 parent = self._jobs.get(job.parent_job_id)
@@ -921,6 +959,83 @@ class SyncJobManager:
         except OSError:
             return None
 
+    def _derive_job_error(self, job: JobRecord, return_code: int) -> str:
+        task_error = self._task_result_error(job)
+        if task_error:
+            return task_error
+        log_error = self._log_error_summary(job)
+        if log_error:
+            return log_error
+        return f"provider process exited with return code {return_code}"
+
+    def _task_result_error(self, job: JobRecord) -> str:
+        path = Path(job.task_results_path) if job.task_results_path else None
+        if path is None or not path.exists():
+            return ""
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return ""
+        results = payload.get("tasks") if isinstance(payload, dict) else None
+        if not isinstance(results, list):
+            return ""
+        failures: list[str] = []
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("status") or "") not in {"failed", "partial_success"}:
+                continue
+            error = str(item.get("error") or "").strip()
+            if not error:
+                continue
+            label = str(item.get("name") or item.get("task_id") or "task").strip()
+            failures.append(f"{label}: {error}")
+        return self._truncate_error("; ".join(failures)) if failures else ""
+
+    def _log_error_summary(self, job: JobRecord) -> str:
+        text = self._read_log_tail(Path(job.log_path))
+        if not text:
+            return ""
+        lines = [
+            redact_sensitive_text(line).strip()
+            for line in text.splitlines()
+            if line.strip()
+        ]
+        exception_pattern = re.compile(
+            r"^(?:[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)|"
+            r"KeyboardInterrupt|SystemExit):\s*.+$"
+        )
+        for line in reversed(lines):
+            if exception_pattern.match(line):
+                return self._truncate_error(line)
+        for line in reversed(lines):
+            if re.search(r"(?:^|\s)(?:ERROR|CRITICAL)(?::|\s)", line):
+                return self._truncate_error(line)
+        for line in reversed(lines):
+            lowered = line.lower()
+            if " failed" in lowered or "失败" in line:
+                return self._truncate_error(line)
+        return self._truncate_error(lines[-1]) if lines else ""
+
+    @staticmethod
+    def _read_log_tail(path: Path, max_bytes: int = 256 * 1024) -> str:
+        try:
+            with path.open("rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                size = handle.tell()
+                handle.seek(max(0, size - max_bytes))
+                data = handle.read()
+        except OSError:
+            return ""
+        return data.decode("utf-8", errors="ignore")
+
+    @staticmethod
+    def _truncate_error(value: str) -> str:
+        text = redact_sensitive_text(str(value or "").strip())
+        if len(text) <= ERROR_SUMMARY_MAX_CHARS:
+            return text
+        return text[: ERROR_SUMMARY_MAX_CHARS - 1].rstrip() + "…"
+
     def _load_existing_jobs(self) -> None:
         loaded: dict[str, JobRecord] = {}
         for path in sorted(self.jobs_dir.glob("*.json")):
@@ -933,11 +1048,23 @@ class SyncJobManager:
         self._jobs = loaded
         for job in self._jobs.values():
             is_parent = bool(job.child_job_ids)
-            if job.status in PROCESS_ACTIVE_STATUSES and not is_parent:
-                job.status = "interrupted"
+            if job.status == "running" and not is_parent:
+                if self._recorded_process_is_running(job):
+                    self._orphaned_job_ids.append(job.job_id)
+                    continue
+                self._requeue_after_restart_locked(job)
+            elif job.status == "cancelling" and not is_parent:
+                job.status = "cancelled"
                 job.finished_at = job.finished_at or utc_now_iso()
                 job.updated_at = job.finished_at
-                job.error = job.error or "service restarted while provider job was running"
+                job.error = job.error or "cancelled because the service restarted"
+                self._save_job(job)
+            elif (
+                job.status in {"failed", "partial_success", "interrupted"}
+                and not is_parent
+                and not job.error
+            ):
+                job.error = self._derive_job_error(job, job.return_code or 1)
                 self._save_job(job)
             elif not job.updated_at:
                 job.updated_at = job.finished_at or job.started_at or job.created_at
@@ -945,6 +1072,122 @@ class SyncJobManager:
         for job in self._jobs.values():
             if job.child_job_ids:
                 self._refresh_parent_locked(job)
+
+    def _requeue_after_restart_locked(self, job: JobRecord) -> None:
+        restarted_at = utc_now_iso()
+        self._enable_resume_for_job_locked(job)
+        job.status = "queued"
+        job.started_at = None
+        job.finished_at = None
+        job.pid = None
+        job.return_code = None
+        job.error = None
+        job.updated_at = restarted_at
+        job.restart_count = int(job.restart_count or 0) + 1
+        job.last_restarted_at = restarted_at
+        self._save_job(job)
+        if job.parent_job_id:
+            parent = self._jobs.get(job.parent_job_id)
+            if parent is not None:
+                self._append_scheduler_log_locked(
+                    parent,
+                    f"provider={job.source} child={job.job_id} "
+                    "status=requeued reason=service_restart resume=true",
+                )
+
+    def _enable_resume_for_job_locked(self, job: JobRecord) -> None:
+        payload = deepcopy(job.request_payload or {})
+        if job.kind == "provider_batch":
+            payload["resume_after_restart"] = True
+            tasks = []
+            for raw_task in payload.get("tasks") or []:
+                task = deepcopy(raw_task)
+                parameters = dict(task.get("parameters") or {})
+                parameters["resume"] = True
+                task["parameters"] = parameters
+                tasks.append(task)
+            payload["tasks"] = tasks
+            payload_path = self._command_option(job.command, "--payload")
+            if payload_path:
+                self._write_json_atomic(Path(payload_path), payload)
+        elif job.kind == "provider_task":
+            payload["resume"] = True
+            if "--resume" not in job.command:
+                job.command.append("--resume")
+        job.request_payload = payload or job.request_payload
+
+    def _start_orphan_watchers(self) -> None:
+        for job_id in self._orphaned_job_ids:
+            watcher = threading.Thread(
+                target=self._watch_orphaned_process,
+                args=(job_id,),
+                daemon=True,
+            )
+            watcher.start()
+
+    def _watch_orphaned_process(self, job_id: str) -> None:
+        while True:
+            with self._lock:
+                job = self._jobs.get(job_id)
+                if job is None or job.status != "running":
+                    return
+                still_running = self._recorded_process_is_running(job)
+            if not still_running:
+                break
+            time.sleep(1)
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.status != "running":
+                return
+            self._requeue_after_restart_locked(job)
+            self._load_queue()
+            if job.parent_job_id:
+                parent = self._jobs.get(job.parent_job_id)
+                if parent is not None:
+                    self._refresh_parent_locked(parent)
+        self._dispatch_next()
+
+    @staticmethod
+    def _recorded_process_is_running(job: JobRecord) -> bool:
+        if not job.pid or job.pid <= 0 or not sys.platform.startswith("linux"):
+            return False
+        try:
+            os.kill(job.pid, 0)
+        except (OSError, ProcessLookupError):
+            return False
+        try:
+            command_line = Path(f"/proc/{job.pid}/cmdline").read_bytes().split(b"\0")
+        except OSError:
+            return False
+        actual = [
+            item.decode("utf-8", errors="ignore")
+            for item in command_line
+            if item
+        ]
+        if not actual:
+            return False
+        joined = "\0".join(actual)
+        return job.job_id in joined
+
+    @staticmethod
+    def _command_option(command: list[str], option: str) -> Optional[str]:
+        try:
+            index = command.index(option)
+        except ValueError:
+            return None
+        if index + 1 >= len(command):
+            return None
+        return command[index + 1]
+
+    @staticmethod
+    def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = path.with_suffix(path.suffix + ".tmp")
+        temp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temp_path.replace(path)
 
     def _load_queue(self) -> None:
         persisted: list[str] = []

@@ -71,15 +71,34 @@ def run_task_batch(payload: dict[str, Any], *, results_path: Path, log_path: Pat
     shared_contexts: dict[tuple[str, str], Any] = {}
     failed = 0
     completed = 0
+    previous_results = (
+        _load_previous_results(results_path)
+        if bool(payload.get("resume_after_restart"))
+        else {}
+    )
 
     _append_log(log_path, f"batch={job_id} status=started task_count={len(tasks)}")
     try:
         for index, task in enumerate(tasks, start=1):
             task_job_id = f"{job_id}:{index}"
+            task_id = str(task.get("id") or f"task_{index}")
+            previous = previous_results.get(task_id)
+            if previous and previous.get("status") in {"success", "skipped", "disabled"}:
+                results.append(previous)
+                if previous.get("status") != "disabled":
+                    completed += 1
+                _append_log(
+                    log_path,
+                    f"batch={job_id} task={previous.get('name') or task.get('name')} "
+                    f"progress={index}/{len(tasks)} status=resume_skipped "
+                    f"previous_status={previous.get('status')}",
+                )
+                _write_results(results_path, job_id, results, status="running")
+                continue
             metadata: dict[str, Any] = {}
             registered_task_started = False
             result = {
-                "task_id": str(task.get("id") or f"task_{index}"),
+                "task_id": task_id,
                 "name": str(task.get("name") or ""),
                 "provider": str(task.get("provider") or ""),
                 "database": str(task.get("database") or ""),
@@ -344,6 +363,21 @@ def _write_results(path: Path, job_id: str, tasks: list[dict[str, Any]], *, stat
     temp_path = path.with_suffix(".json.tmp")
     temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     temp_path.replace(path)
+
+
+def _load_previous_results(path: Path) -> dict[str, dict[str, Any]]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    results = payload.get("tasks") if isinstance(payload, dict) else None
+    if not isinstance(results, list):
+        return {}
+    return {
+        str(item.get("task_id")): item
+        for item in results
+        if isinstance(item, dict) and item.get("task_id")
+    }
 
 
 def _append_log(path: Path, message: str) -> None:
