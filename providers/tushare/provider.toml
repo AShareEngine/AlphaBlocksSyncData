@@ -1,13 +1,13 @@
 name = "tushare"
 display_name = "Tushare Pro"
-version = "0.1.0"
+version = "0.2.0"
 module = "sync_data_system.providers.tushare"
 runtime_config_key = "tushare"
 default_database = "tushare"
 plans_path = "plans"
 task_catalog = "catalog.json"
-dependencies = ["httpx", "clickhouse-connect", "tushare"]
-import_modules = ["httpx", "tushare"]
+dependencies = ["clickhouse-connect", "tushare>=1.4.29"]
+import_modules = ["tushare"]
 plan_fields = [
   "codes",
   "begin_date",

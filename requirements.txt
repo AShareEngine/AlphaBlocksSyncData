@@ -7,7 +7,7 @@ pandas
 tables
 pydantic
 PyYAML
-tushare
+tushare>=1.4.29
 uvicorn
 yfinance
 financedatabase

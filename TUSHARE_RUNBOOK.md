@@ -10,7 +10,9 @@ Tushare Provider 的任务目录由官方数据接口文档生成，当前目录
 - “A股复权行情”与“通用行情接口”实际都指向 SDK 的 `pro_bar`，合并为一个任务；
 - “期货 Tick 行情”官方明确不提供 API，只能单独购买 CSV 网盘交付，因此无法通过 Token 自动同步。
 
-完整机器可读目录在 `providers/tushare/catalog.json`。普通 HTTP 接口直接调用官方 JSON API；`pro_bar` 按官方要求通过 Python SDK 调用。
+完整机器可读目录在 `providers/tushare/catalog.json`。所有接口统一通过
+`tushare>=1.4.29` SDK 调用；Token 和 API 根地址均从运行时配置读取。
+`pro_bar` 按官方要求通过模块级函数并传入同一个已配置的 `api` 客户端。
 
 ## Linux 配置
 
@@ -18,6 +20,7 @@ Tushare Provider 的任务目录由官方数据接口文档生成，当前目录
 
 ```bash
 python3 -m pip install -r requirements.txt
+python3 -m pip install --upgrade 'tushare>=1.4.29'
 python3 scripts/install_provider_deps.py tushare --check
 ```
 
@@ -37,10 +40,23 @@ sync:
     max_requests_per_run: 50000
 ```
 
+使用兼容 Tushare SDK 的代理服务时，只需修改根地址：
+
+```yaml
+sync:
+  tushare:
+    token: YOUR_TUSHARE_TOKEN
+    base_url: http://jiaoch.site
+```
+
+SDK 会自动请求 `http://jiaoch.site/daily` 等接口路径，不要把 `/daily`
+写入 `base_url`。
+
 也可以不把 Token 写入文件：
 
 ```bash
 export TUSHARE_TOKEN='YOUR_TUSHARE_TOKEN'
+export TUSHARE_BASE_URL='http://jiaoch.site'
 ```
 
 `max_requests_per_run` 为 `0` 时不在本地限流。设置为正数后，达到预算会停止后续任务；已经按代码落库的数据会在下次运行时继续。

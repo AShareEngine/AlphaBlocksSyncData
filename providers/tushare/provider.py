@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Tushare Pro HTTP client.
-
-The official API is language-neutral JSON-over-HTTP. Using it directly keeps
-the provider independent from SDK release cadence and exposes every api_name.
-"""
+"""Tushare Pro SDK client with configurable token and API base URL."""
 
 from __future__ import annotations
 
@@ -16,8 +12,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
-
-import httpx
 
 from sync_data_system.config_paths import resolve_runtime_config_path
 from sync_data_system.runtime_config import load_runtime_config
@@ -67,14 +61,24 @@ class TushareConfig:
         runtime = load_runtime_config(resolve_runtime_config_path(runtime_path))
         config = runtime.sync.tushare
         token = str(os.environ.get("TUSHARE_TOKEN") or config.token or "").strip()
+        base_url = str(
+            os.environ.get("TUSHARE_BASE_URL")
+            or config.base_url
+            or "https://api.tushare.pro"
+        ).strip()
         if not token:
             raise ValueError(
                 "Tushare token 未配置：请设置环境变量 TUSHARE_TOKEN，"
                 "或在 runtime.local.yaml 的 sync.tushare.token 中填写。"
             )
+        if not base_url:
+            raise ValueError(
+                "Tushare API 地址未配置：请设置环境变量 TUSHARE_BASE_URL，"
+                "或在 runtime.local.yaml 的 sync.tushare.base_url 中填写。"
+            )
         return cls(
             token=token,
-            base_url=str(config.base_url or "https://api.tushare.pro").strip(),
+            base_url=base_url.rstrip("/"),
             timeout=max(1, int(config.timeout or 60)),
             retries=max(0, int(config.retries or 0)),
             retry_backoff_seconds=max(0.0, float(config.retry_backoff_seconds or 0.0)),
@@ -90,19 +94,18 @@ class TushareProvider:
         self,
         config: TushareConfig,
         *,
-        client: httpx.Client | None = None,
         sleep: Any = time.sleep,
         tushare_module: Any | None = None,
     ) -> None:
         self.config = config
-        self._owns_client = client is None
-        self._client = client or httpx.Client(
-            timeout=config.timeout,
-            follow_redirects=True,
-            headers={"User-Agent": "AlphaBlocksSyncData/tushare"},
-        )
         self._sleep = sleep
-        self._tushare_module = tushare_module
+        self._tushare_module = tushare_module or _load_tushare_module()
+        self._sdk_api = self._tushare_module.pro_api(config.token)
+        # Tushare 1.4.29+ appends /<api_name> to this configurable root URL.
+        # Explicitly set both private attributes to support compatible gateways.
+        self._sdk_api._DataApi__token = config.token
+        self._sdk_api._DataApi__http_url = str(config.base_url).rstrip("/")
+        self._sdk_api._DataApi__timeout = config.timeout
         self._request_lock = threading.Lock()
         self._last_request_at = 0.0
         self._request_count = 0
@@ -112,8 +115,7 @@ class TushareProvider:
         return self._request_count
 
     def close(self) -> None:
-        if self._owns_client:
-            self._client.close()
+        return None
 
     def query(
         self,
@@ -122,29 +124,31 @@ class TushareProvider:
         params: Mapping[str, Any] | None = None,
         fields: Iterable[str] | str = (),
     ) -> TushareResponse:
+        normalized_api_name = str(api_name).strip()
+        if not normalized_api_name:
+            raise ValueError("Tushare api_name 不能为空")
         field_text = fields if isinstance(fields, str) else ",".join(str(item) for item in fields)
-        payload = {
-            "api_name": str(api_name).strip(),
-            "token": self.config.token,
-            "params": _clean_params(params or {}),
-            "fields": str(field_text or "").strip(),
-        }
+        request_params = _clean_params(params or {})
         last_error: Exception | None = None
         for attempt in range(self.config.retries + 1):
+            self._before_request()
             try:
-                self._before_request()
-                response = self._client.post(self.config.base_url, json=payload)
-                response.raise_for_status()
-                body = response.json()
-                return _parse_response(api_name, body)
-            except (httpx.HTTPError, ValueError) as exc:
+                sdk_method = getattr(self._sdk_api, normalized_api_name)
+                frame = sdk_method(
+                    fields=str(field_text or "").strip(),
+                    **request_params,
+                )
+                return _frame_to_response(normalized_api_name, frame)
+            except TushareRequestBudgetExceeded:
+                raise
+            except Exception as exc:
                 last_error = exc
                 if attempt >= self.config.retries:
-                    raise
+                    break
                 delay = self.config.retry_backoff_seconds * (2**attempt) + random.uniform(0.0, 0.25)
                 logger.warning(
-                    "Tushare request retry api=%s attempt=%s/%s delay=%.2fs error=%s",
-                    api_name,
+                    "Tushare SDK request retry api=%s attempt=%s/%s delay=%.2fs error=%s",
+                    normalized_api_name,
                     attempt + 1,
                     self.config.retries,
                     delay,
@@ -152,7 +156,13 @@ class TushareProvider:
                 )
                 self._sleep(delay)
         assert last_error is not None
-        raise last_error
+        if isinstance(last_error, TushareAPIError):
+            raise last_error
+        raise TushareAPIError(
+            normalized_api_name,
+            -1,
+            str(last_error) or type(last_error).__name__,
+        ) from last_error
 
     def query_all(
         self,
@@ -185,18 +195,10 @@ class TushareProvider:
 
     def _query_pro_bar(self, params: Mapping[str, Any]) -> list[dict[str, Any]]:
         self._before_request()
-        module = self._tushare_module
-        if module is None:
-            try:
-                import tushare as module  # type: ignore[no-redef]
-            except ImportError as exc:
-                raise ImportError(
-                    "pro_bar 是 Tushare SDK 专用接口，请先执行 "
-                    "`python3 scripts/install_provider_deps.py tushare --install`。"
-                ) from exc
-            self._tushare_module = module
-        pro_api = module.pro_api(self.config.token)
-        frame = module.pro_bar(api=pro_api, **_clean_params(params))
+        frame = self._tushare_module.pro_bar(
+            api=self._sdk_api,
+            **_clean_params(params),
+        )
         if frame is None:
             return []
         if hasattr(frame, "reset_index"):
@@ -233,25 +235,47 @@ class TushareProvider:
             self._request_count += 1
 
 
-def _parse_response(api_name: str, payload: Any) -> TushareResponse:
-    if not isinstance(payload, dict):
-        raise ValueError(f"Tushare api={api_name} returned non-object JSON")
-    code = int(payload.get("code") or 0)
-    if code != 0:
-        raise TushareAPIError(api_name, code, str(payload.get("msg") or "unknown error"))
-    data = payload.get("data") or {}
-    fields = data.get("fields") or []
-    items = data.get("items") or []
-    if not isinstance(fields, list) or not isinstance(items, list):
-        raise ValueError(f"Tushare api={api_name} returned invalid data.fields/items")
-    normalized_items: list[tuple[Any, ...]] = []
-    for item in items:
-        if not isinstance(item, (list, tuple)):
-            raise ValueError(f"Tushare api={api_name} returned a non-array item")
-        normalized_items.append(tuple(item))
+def _load_tushare_module() -> Any:
+    try:
+        import tushare
+    except ImportError as exc:
+        raise ImportError(
+            "Tushare Provider 需要 tushare>=1.4.29，请执行 "
+            "`python3 scripts/install_provider_deps.py tushare --install --upgrade`。"
+        ) from exc
+    version = str(getattr(tushare, "__version__", "") or "").strip()
+    if version and _numeric_version(version) < (1, 4, 29):
+        raise ImportError(
+            f"Tushare SDK 版本过低：当前 {version}，需要 >=1.4.29。请执行 "
+            "`python3 -m pip install --upgrade 'tushare>=1.4.29'`。"
+        )
+    return tushare
+
+
+def _numeric_version(value: str) -> tuple[int, ...]:
+    parts = [int(part) for part in str(value).split(".") if part.isdigit()]
+    return tuple(parts or [0])
+
+
+def _frame_to_response(api_name: str, frame: Any) -> TushareResponse:
+    if frame is None:
+        return TushareResponse(fields=(), items=())
+    if not hasattr(frame, "to_dict"):
+        raise ValueError(f"Tushare api={api_name} returned a non-DataFrame result")
+    records = frame.to_dict(orient="records")
+    if not isinstance(records, list):
+        raise ValueError(f"Tushare api={api_name} returned invalid DataFrame records")
+    fields = tuple(str(column) for column in getattr(frame, "columns", ()))
+    if not fields and records:
+        fields = tuple(str(field) for field in records[0])
+    items = tuple(
+        tuple(row.get(field) for field in fields)
+        for row in records
+        if isinstance(row, Mapping)
+    )
     return TushareResponse(
-        fields=tuple(str(field).strip() for field in fields),
-        items=tuple(normalized_items),
+        fields=fields,
+        items=items,
     )
 
 

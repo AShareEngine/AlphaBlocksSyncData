@@ -140,10 +140,18 @@ def is_installed(requirement: str) -> bool:
     if not package_name:
         return False
     try:
-        importlib.metadata.version(package_name)
-        return True
+        installed_version = importlib.metadata.version(package_name)
     except importlib.metadata.PackageNotFoundError:
         return False
+    try:
+        from packaging.requirements import Requirement
+    except ImportError:
+        return True
+    parsed = Requirement(requirement)
+    return not parsed.specifier or parsed.specifier.contains(
+        installed_version,
+        prereleases=True,
+    )
 
 
 def is_importable(module_name: str) -> bool:

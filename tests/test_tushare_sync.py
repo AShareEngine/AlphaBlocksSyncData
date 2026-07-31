@@ -24,39 +24,43 @@ from sync_data_system.providers.tushare.runner import (
 from sync_data_system.providers.tushare.specs import TUSHARE_TASK_SPECS
 
 
-class FakeHTTPResponse:
-    def __init__(self, payload):
-        self.payload = payload
-
-    def raise_for_status(self):
-        return None
-
-    def json(self):
-        return self.payload
-
-
-class FakeHTTPClient:
-    def __init__(self, payloads):
-        self.payloads = list(payloads)
-        self.calls = []
-
-    def post(self, url, json):
-        self.calls.append((url, json))
-        return FakeHTTPResponse(self.payloads.pop(0))
-
-
 class FakeSDKFrame:
+    columns = ("ts_code", "trade_date", "close")
+
+    def __init__(self, records=None):
+        self.records = records or [
+            {"ts_code": "000001.SZ", "trade_date": "20260729", "close": 12.3}
+        ]
+
     def to_dict(self, orient):
         assert orient == "records"
-        return [{"ts_code": "000001.SZ", "trade_date": "20260729", "close": 12.3}]
+        return list(self.records)
+
+
+class FakeSDKApi:
+    def __init__(self, token):
+        self.created_with_token = token
+        self.calls = []
+        self._DataApi__token = ""
+        self._DataApi__http_url = ""
+        self._DataApi__timeout = 0
+
+    def __getattr__(self, api_name):
+        def call(**kwargs):
+            self.calls.append((api_name, kwargs))
+            return FakeSDKFrame()
+
+        return call
 
 
 class FakeTushareSDK:
     def __init__(self):
         self.calls = []
+        self.api = None
 
     def pro_api(self, token):
-        return f"pro:{token}"
+        self.api = FakeSDKApi(token)
+        return self.api
 
     def pro_bar(self, **kwargs):
         self.calls.append(kwargs)
@@ -130,23 +134,17 @@ def test_catalog_registers_every_read_only_document_api():
     assert catalog["unavailable_documents"][0]["doc_id"] == "314"
 
 
-def test_http_provider_uses_official_json_contract_and_all_documented_fields():
-    client = FakeHTTPClient(
-        [
-            {
-                "code": 0,
-                "msg": None,
-                "data": {
-                    "fields": ["ts_code", "trade_date", "close"],
-                    "items": [["000001.SZ", "20260729", 12.3]],
-                },
-            }
-        ]
-    )
+def test_sdk_provider_uses_configurable_token_url_and_all_documented_fields():
+    sdk = FakeTushareSDK()
     provider = TushareProvider(
-        TushareConfig(token="secret", request_interval_seconds=0),
-        client=client,
+        TushareConfig(
+            token="secret",
+            base_url="http://jiaoch.site/",
+            timeout=45,
+            request_interval_seconds=0,
+        ),
         sleep=lambda _: None,
+        tushare_module=sdk,
     )
 
     rows = provider.query_all(
@@ -156,21 +154,46 @@ def test_http_provider_uses_official_json_contract_and_all_documented_fields():
     )
 
     assert rows == [{"ts_code": "000001.SZ", "trade_date": "20260729", "close": 12.3}]
-    _, payload = client.calls[0]
-    assert payload == {
-        "api_name": "daily",
-        "token": "secret",
-        "params": {"ts_code": "000001.SZ", "start_date": "20260729"},
-        "fields": "ts_code,trade_date,close",
-    }
+    assert sdk.api.created_with_token == "secret"
+    assert sdk.api._DataApi__token == "secret"
+    assert sdk.api._DataApi__http_url == "http://jiaoch.site"
+    assert sdk.api._DataApi__timeout == 45
+    assert sdk.api.calls == [
+        (
+            "daily",
+            {
+                "ts_code": "000001.SZ",
+                "start_date": "20260729",
+                "fields": "ts_code,trade_date,close",
+            },
+        )
+    ]
 
 
-def test_sdk_only_pro_bar_is_supported_without_sending_it_to_http_api():
+def test_config_supports_environment_token_and_base_url(tmp_path, monkeypatch):
+    runtime_path = tmp_path / "runtime.local.yaml"
+    runtime_path.write_text(
+        """
+sync:
+  tushare:
+    token: yaml-token
+    base_url: https://api.tushare.pro
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TUSHARE_TOKEN", "env-token")
+    monkeypatch.setenv("TUSHARE_BASE_URL", "http://jiaoch.site/")
+
+    config = TushareConfig.from_env(runtime_path)
+
+    assert config.token == "env-token"
+    assert config.base_url == "http://jiaoch.site"
+
+
+def test_sdk_only_pro_bar_reuses_configured_sdk_api():
     sdk = FakeTushareSDK()
-    client = FakeHTTPClient([])
     provider = TushareProvider(
         TushareConfig(token="secret", request_interval_seconds=0),
-        client=client,
         sleep=lambda _: None,
         tushare_module=sdk,
     )
@@ -188,28 +211,25 @@ def test_sdk_only_pro_bar_is_supported_without_sending_it_to_http_api():
     assert rows[0]["trade_date"] == "20260729"
     assert sdk.calls == [
         {
-            "api": "pro:secret",
+            "api": sdk.api,
             "ts_code": "000001.SZ",
             "start_date": "20260701",
             "end_date": "20260729",
             "adj": "qfq",
         }
     ]
-    assert client.calls == []
 
 
 def test_request_budget_stops_before_exceeding_configured_limit():
-    client = FakeHTTPClient(
-        [{"code": 0, "data": {"fields": [], "items": []}}]
-    )
+    sdk = FakeTushareSDK()
     provider = TushareProvider(
         TushareConfig(
             token="secret",
             request_interval_seconds=0,
             max_requests_per_run=1,
         ),
-        client=client,
         sleep=lambda _: None,
+        tushare_module=sdk,
     )
 
     provider.query("stock_basic")
@@ -219,7 +239,7 @@ def test_request_budget_stops_before_exceeding_configured_limit():
         pass
     else:
         raise AssertionError("second request should exceed the configured budget")
-    assert len(client.calls) == 1
+    assert len(sdk.api.calls) == 1
 
 
 def test_replacing_merge_tree_uses_full_row_hash_instead_of_incomplete_business_key():

@@ -156,7 +156,7 @@ PROVIDER_CONFIG_SCHEMAS: dict[str, list[dict[str, Any]]] = {
     ],
     "tushare": [
         {"key": "token", "label": "Token", "type": "password", "required": True, "sensitive": True},
-        {"key": "base_url", "label": "API 地址", "type": "text", "required": True},
+        {"key": "base_url", "label": "SDK API 根地址", "type": "text", "required": True},
         {"key": "timeout", "label": "超时秒数", "type": "number", "required": False},
         {"key": "retries", "label": "重试次数", "type": "number", "required": False},
         {

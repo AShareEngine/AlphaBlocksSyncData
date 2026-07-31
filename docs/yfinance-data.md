@@ -122,7 +122,7 @@ python3 scripts/run_provider_sync.py --config providers/yfinance/plans/fundament
 ```
 
 `fundamentals.toml` 包含 8 个逐股基本面任务，没有加入 `daily.toml`。完整股票池有数千只股票，
-首次运行可能持续数小时并遇到部分证券无数据；建议先用 `--limit 10` 或 `--codes` 验证代理和
+按默认 2 秒请求间隔完整运行可能持续一天以上，并遇到部分证券无数据；建议先用 `--limit 10` 或 `--codes` 验证代理和
 yfinance 版本。逐股异常会写入网页日志，任务继续处理其他股票，结束时若存在请求失败会保留已写入
 行数并将任务标记失败；正常返回空数据的证券只记录汇总警告。
 
