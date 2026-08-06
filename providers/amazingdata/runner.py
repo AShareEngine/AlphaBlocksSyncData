@@ -3,7 +3,7 @@
 """正式同步入口.
 
 行情主线使用历史证券代码池：
-- 股票、指数、ETF、可转债均来自 `ad_hist_code_daily`
+- 股票、指数、ETF、ETF 期权、可转债均来自 `ad_hist_code_daily`
 - 不做批量调度，按证券代码顺序同步
 
 正式任务：
@@ -85,6 +85,7 @@ MARKET_KLINE_HIST_SECURITY_TYPES = (
     ("stock", SecurityType.EXTRA_STOCK_A),
     ("index", SecurityType.EXTRA_INDEX_A),
     ("etf", SecurityType.EXTRA_ETF),
+    ("etf_option", SecurityType.EXTRA_ETF_OP),
     ("kzz", SecurityType.EXTRA_KZZ),
 )
 DEFAULT_RUNTIME_PATH = str(resolve_runtime_config_path(PROJECT_ROOT))
@@ -2096,7 +2097,7 @@ def resolve_backward_factor_code_list(
 
 def resolve_task_security_type(task: str) -> str:
     if task in {"daily_kline", "minute_kline"}:
-        return "EXTRA_STOCK_A+EXTRA_INDEX_A+EXTRA_ETF+EXTRA_KZZ"
+        return "EXTRA_STOCK_A+EXTRA_INDEX_A+EXTRA_ETF+EXTRA_ETF_OP+EXTRA_KZZ"
     if task == "hist_code_list":
         return DEFAULT_SYNC_SECURITY_TYPE
     if task == "bj_code_mapping":

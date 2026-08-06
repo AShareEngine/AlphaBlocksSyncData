@@ -55,6 +55,7 @@ class _FakeBaseData:
             "EXTRA_STOCK_A": ["000001.SZ", "600000.SH"],
             "EXTRA_INDEX_A": ["000300.SH"],
             "EXTRA_ETF": ["510300.SH"],
+            "EXTRA_ETF_OP": ["10000001.SH", "10000002.SH"],
             "EXTRA_KZZ": ["110030.SH"],
         }[security_type]
 
@@ -357,35 +358,46 @@ class RunSyncResumeTest(unittest.TestCase):
             ],
         )
 
-    def test_daily_kline_uses_historical_stock_index_etf_kzz_universes(self) -> None:
-        context = self._build_context()
+    def test_market_kline_uses_historical_stock_index_etf_option_kzz_universes(self) -> None:
+        for task in ("daily_kline", "minute_kline"):
+            with self.subTest(task=task):
+                context = self._build_context()
 
-        result = resolve_code_list(
-            base_data=context.base_data,
-            task="daily_kline",
-            raw_codes="",
-            limit=0,
-            local_path="/tmp/amazing_data_cache",
-            begin_date=20100101,
-            end_date=20240131,
-        )
+                result = resolve_code_list(
+                    base_data=context.base_data,
+                    task=task,
+                    raw_codes="",
+                    limit=0,
+                    local_path="/tmp/amazing_data_cache",
+                    begin_date=20100101,
+                    end_date=20240131,
+                )
 
-        self.assertEqual(
-            result,
-            ["000001.SZ", "600000.SH", "000300.SH", "510300.SH", "110030.SH"],
-        )
-        self.assertEqual(
-            context.base_data.hist_code_calls,
-            [
-                ("EXTRA_STOCK_A", 20100101, 20240131, "/tmp/amazing_data_cache"),
-                ("EXTRA_INDEX_A", 20100101, 20240131, "/tmp/amazing_data_cache"),
-                ("EXTRA_ETF", 20100101, 20240131, "/tmp/amazing_data_cache"),
-                ("EXTRA_KZZ", 20100101, 20240131, "/tmp/amazing_data_cache"),
-            ],
-        )
-        self.assertEqual(context.base_data.stock_universe_calls, [])
-        self.assertEqual(context.base_data.index_universe_calls, [])
-        self.assertEqual(context.base_data.etf_universe_calls, [])
+                self.assertEqual(
+                    result,
+                    [
+                        "000001.SZ",
+                        "600000.SH",
+                        "000300.SH",
+                        "510300.SH",
+                        "10000001.SH",
+                        "10000002.SH",
+                        "110030.SH",
+                    ],
+                )
+                self.assertEqual(
+                    context.base_data.hist_code_calls,
+                    [
+                        ("EXTRA_STOCK_A", 20100101, 20240131, "/tmp/amazing_data_cache"),
+                        ("EXTRA_INDEX_A", 20100101, 20240131, "/tmp/amazing_data_cache"),
+                        ("EXTRA_ETF", 20100101, 20240131, "/tmp/amazing_data_cache"),
+                        ("EXTRA_ETF_OP", 20100101, 20240131, "/tmp/amazing_data_cache"),
+                        ("EXTRA_KZZ", 20100101, 20240131, "/tmp/amazing_data_cache"),
+                    ],
+                )
+                self.assertEqual(context.base_data.stock_universe_calls, [])
+                self.assertEqual(context.base_data.index_universe_calls, [])
+                self.assertEqual(context.base_data.etf_universe_calls, [])
 
     def test_hist_code_list_syncs_all_market_asset_types(self) -> None:
         calls = []
@@ -405,7 +417,13 @@ class RunSyncResumeTest(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(
             [call["security_type"] for call in calls],
-            ["EXTRA_STOCK_A", "EXTRA_INDEX_A", "EXTRA_ETF", "EXTRA_KZZ"],
+            [
+                "EXTRA_STOCK_A",
+                "EXTRA_INDEX_A",
+                "EXTRA_ETF",
+                "EXTRA_ETF_OP",
+                "EXTRA_KZZ",
+            ],
         )
 
     def test_default_config_resume_applies_to_all_tasks(self) -> None:

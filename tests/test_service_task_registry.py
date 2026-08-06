@@ -18,6 +18,7 @@ class _FakeBaseData:
             "EXTRA_STOCK_A": ["000001.SZ", "600000.SH", "000005.SZ"],
             "EXTRA_INDEX_A": ["000300.SH"],
             "EXTRA_ETF": ["510300.SH"],
+            "EXTRA_ETF_OP": ["10000001.SH"],
             "EXTRA_KZZ": ["110030.SH"],
         }[security_type]
 
@@ -147,6 +148,7 @@ class ServiceTaskRegistryTest(unittest.TestCase):
                 "000005.SZ",
                 "000300.SH",
                 "510300.SH",
+                "10000001.SH",
                 "110030.SH",
             ],
         )
