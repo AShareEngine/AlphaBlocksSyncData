@@ -61,6 +61,39 @@ def wait_for_status(
 
 
 class SyncJobManagerTest(unittest.TestCase):
+    def test_create_task_batch_job_accepts_wide_table_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            manager = SyncJobManager(root, state_dir=root / ".service_state")
+            fake_process = ControlledProcess()
+            tasks = [
+                {
+                    "id": "wide_one",
+                    "kind": "wide_table",
+                    "name": "wide_table.stock_daily_real",
+                    "provider": "wide_table",
+                    "enabled": True,
+                    "payload": {"wide_table": {"name": "stock_daily_real"}},
+                }
+            ]
+
+            with patch(
+                "sync_data_system.service.job_manager.subprocess.Popen",
+                return_value=fake_process,
+            ):
+                job = manager.create_task_batch_job(name="宽表同步", tasks=tasks)
+
+            children = manager.get_child_jobs(job.job_id)
+            self.assertEqual(len(children), 1)
+            self.assertEqual(children[0].source, "wide_table")
+            self.assertEqual(children[0].request_payload["tasks"], tasks)
+            fake_process.finish()
+            self.assertEqual(
+                wait_for_status(manager, job.job_id, {"success"}).status,
+                "success",
+            )
+
     def test_list_registered_tasks_returns_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "sync_project"

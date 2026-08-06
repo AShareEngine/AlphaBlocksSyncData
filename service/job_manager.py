@@ -22,6 +22,10 @@ from sync_data_system.config_paths import resolve_runtime_config_path
 from sync_data_system.core.providers import load_provider_registry
 from sync_data_system.runtime_config import load_runtime_config
 from sync_data_system.service.log_redaction import redact_sensitive_text
+from sync_data_system.service.sync_config_manager import (
+    WIDE_TABLE_TASK_KIND,
+    WIDE_TABLE_TASK_PROVIDER,
+)
 from sync_data_system.service.task_registry import TASK_REGISTRY
 
 
@@ -1411,6 +1415,16 @@ class SyncJobManager:
             )
 
     def _task_provider(self, task: dict[str, Any]) -> str:
+        if str(task.get("kind") or "").strip() == WIDE_TABLE_TASK_KIND:
+            if not isinstance(task.get("payload"), dict):
+                raise ValueError("wide table sync task payload is required")
+            supplied = str(task.get("provider") or task.get("source") or "").strip()
+            if supplied and supplied != WIDE_TABLE_TASK_PROVIDER:
+                raise ValueError(
+                    "wide table task belongs to provider "
+                    f"{WIDE_TABLE_TASK_PROVIDER}, not {supplied}"
+                )
+            return WIDE_TABLE_TASK_PROVIDER
         name = str(task.get("name") or task.get("task") or "").strip()
         if not name:
             raise ValueError("task name is required")

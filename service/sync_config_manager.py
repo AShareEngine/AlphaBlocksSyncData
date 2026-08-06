@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from sync_data_system.service.task_registry import TASK_REGISTRY
+from sync_data_system.wide_table_sync import build_wide_table_metadata
 
 
 CONFIG_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -21,6 +22,8 @@ TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
 DATE_MODES = {"incremental", "fixed", "provider_default"}
 SCHEDULE_FREQUENCIES = {"daily", "weekly", "interval"}
 DEFAULT_WEEKDAYS = ["1", "2", "3", "4", "5"]
+WIDE_TABLE_TASK_KIND = "wide_table"
+WIDE_TABLE_TASK_PROVIDER = "wide_table"
 
 
 def utc_now_iso() -> str:
@@ -214,6 +217,8 @@ class SyncConfigManager:
     def _normalize_task(self, payload: Any) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ValueError("sync config task must be an object")
+        if self._clean_text(payload.get("kind")) == WIDE_TABLE_TASK_KIND:
+            return self._normalize_wide_table_task(payload)
         task_name = self._clean_text(payload.get("name") or payload.get("task"))
         if not task_name:
             raise ValueError("sync config task name is required")
@@ -251,6 +256,50 @@ class SyncConfigManager:
             "date_mode": date_mode,
             "parameters": deepcopy(parameters),
             "entity_assets": clean_assets,
+        }
+
+    def _normalize_wide_table_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        inline_payload = payload.get("payload")
+        if not isinstance(inline_payload, dict):
+            raise ValueError("wide table sync task payload is required")
+        requested_name = self._clean_text(payload.get("wide_table_name"))
+        spec_path = f"inline://{requested_name or 'wide_table'}.yaml"
+        metadata = build_wide_table_metadata(inline_payload, spec_path=spec_path)
+        wide_table_name = self._clean_text(metadata.spec_name or requested_name)
+        if not wide_table_name:
+            raise ValueError("wide table sync task name is required")
+        task_name = self._clean_text(payload.get("name") or payload.get("task"))
+        if not task_name:
+            task_name = f"wide_table.{wide_table_name}"
+        supplied_provider = self._clean_text(payload.get("provider") or payload.get("source"))
+        if supplied_provider and supplied_provider != WIDE_TABLE_TASK_PROVIDER:
+            raise ValueError(
+                f"wide table task belongs to provider {WIDE_TABLE_TASK_PROVIDER}, not {supplied_provider}"
+            )
+        entity_assets = payload.get("entity_assets") or []
+        if not isinstance(entity_assets, list):
+            entity_assets = [entity_assets]
+        return {
+            "id": self._clean_id(
+                payload.get("id") or f"sync_task_{uuid.uuid4().hex[:12]}",
+                label="task id",
+            ),
+            "kind": WIDE_TABLE_TASK_KIND,
+            "name": task_name,
+            "provider": WIDE_TABLE_TASK_PROVIDER,
+            "database": self._clean_text(metadata.target.database),
+            "target": self._clean_text(metadata.target.table),
+            "enabled": self._coerce_bool(payload.get("enabled"), default=True),
+            "date_mode": "provider_default",
+            "parameters": {},
+            "entity_assets": [
+                self._clean_text(item) for item in entity_assets if self._clean_text(item)
+            ],
+            "wide_table_id": self._clean_text(metadata.wide_table_id),
+            "wide_table_name": wide_table_name,
+            "payload": deepcopy(inline_payload),
+            "state_database": self._clean_text(payload.get("state_database")) or None,
+            "runtime_path": self._clean_text(payload.get("runtime_path")) or None,
         }
 
     def _ensure_unique_name(self, name: str, *, exclude_id: str | None = None) -> None:
@@ -301,4 +350,10 @@ class SyncConfigManager:
         return clean_value
 
 
-__all__ = ["DATE_MODES", "SyncConfigManager", "utc_now_iso"]
+__all__ = [
+    "DATE_MODES",
+    "WIDE_TABLE_TASK_KIND",
+    "WIDE_TABLE_TASK_PROVIDER",
+    "SyncConfigManager",
+    "utc_now_iso",
+]

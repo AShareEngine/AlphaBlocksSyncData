@@ -16,8 +16,13 @@ from zoneinfo import ZoneInfo
 from sync_data_system.clickhouse_client import ClickHouseConfig, create_clickhouse_client
 from sync_data_system.scripts.run_provider_sync import run_registered_task
 from sync_data_system.service.log_redaction import redact_sensitive_text
+from sync_data_system.service.sync_config_manager import WIDE_TABLE_TASK_KIND
 from sync_data_system.service.table_check_state import TableCheckStateStore
 from sync_data_system.service.task_registry import TASK_REGISTRY, build_provider_context
+from sync_data_system.wide_table_sync import (
+    build_wide_table_metadata,
+    run_wide_table_sync_payloads_with_clickhouse,
+)
 
 
 DATE_FIELD_CANDIDATES = (
@@ -121,6 +126,16 @@ def run_task_batch(payload: dict[str, Any], *, results_path: Path, log_path: Pat
                 f"batch={job_id} task={result['name']} progress={index}/{len(tasks)} status=started",
             )
             try:
+                if str(task.get("kind") or "").strip() == WIDE_TABLE_TASK_KIND:
+                    _run_wide_table_task(
+                        task,
+                        result=result,
+                        batch_runtime_path=runtime_path,
+                    )
+                    result["status"] = "success"
+                    completed += 1
+                    _append_log(log_path, f"batch={job_id} task={result['name']} status=success")
+                    continue
                 metadata = TASK_REGISTRY.get_task_metadata(result["name"])
                 parameters = deepcopy(task.get("parameters") or {})
                 if str(task.get("date_mode") or "provider_default") == "incremental":
@@ -209,6 +224,42 @@ def run_task_batch(payload: dict[str, Any], *, results_path: Path, log_path: Pat
     _write_results(results_path, job_id, results, status=status)
     _append_log(log_path, f"batch={job_id} status={status} completed={completed} failed={failed}")
     return return_code
+
+
+def _run_wide_table_task(
+    task: dict[str, Any],
+    *,
+    result: dict[str, Any],
+    batch_runtime_path: str | None,
+) -> None:
+    inline_payload = task.get("payload")
+    if not isinstance(inline_payload, dict):
+        raise ValueError("wide table sync task payload is required")
+    wide_table_name = str(
+        task.get("wide_table_name")
+        or ((inline_payload.get("wide_table") or {}).get("name"))
+        or result.get("name")
+        or "wide_table"
+    ).strip()
+    spec_path = f"inline://{wide_table_name}.yaml"
+    metadata = build_wide_table_metadata(inline_payload, spec_path=spec_path)
+    runtime_path = str(task.get("runtime_path") or batch_runtime_path or "").strip() or None
+    state_database = str(task.get("state_database") or "").strip() or None
+    result["effective_parameters"] = {
+        "wide_table_id": metadata.wide_table_id,
+        "wide_table_name": metadata.spec_name,
+        "state_database": state_database,
+        "runtime_path": runtime_path,
+    }
+    results = run_wide_table_sync_payloads_with_clickhouse(
+        {spec_path: inline_payload},
+        {spec_path: metadata},
+        config=ClickHouseConfig.from_env(runtime_path=runtime_path),
+        state_database=state_database,
+    )
+    failures = [item.message for item in results if item.status != "success"]
+    if failures:
+        raise RuntimeError("; ".join(failures))
 
 
 def _record_batch_table_check(

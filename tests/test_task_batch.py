@@ -11,9 +11,71 @@ from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 from sync_data_system.service.task_batch import _resolve_incremental_parameters, run_task_batch
+from sync_data_system.wide_table_sync import WideTableRunResult
 
 
 class TaskBatchTest(unittest.TestCase):
+    def test_batch_executes_wide_table_task_through_managed_job_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            results_path = root / "results.json"
+            inline_payload = {
+                "wide_table": {
+                    "id": "wide::stock_daily_real",
+                    "name": "stock_daily_real",
+                    "source_node": "stock_daily_real",
+                    "target": {
+                        "database": "baostock",
+                        "table": "stock_daily_real",
+                        "engine": "Memory",
+                    },
+                    "fields": ["code", "date"],
+                    "key_fields": ["code", "date"],
+                }
+            }
+            payload = {
+                "job_id": "job_wide_table",
+                "tasks": [
+                    {
+                        "id": "wide_one",
+                        "kind": "wide_table",
+                        "name": "wide_table.stock_daily_real",
+                        "provider": "wide_table",
+                        "database": "baostock",
+                        "target": "stock_daily_real",
+                        "payload": inline_payload,
+                        "state_database": "alphablocks",
+                    }
+                ],
+            }
+
+            with patch(
+                "sync_data_system.service.task_batch.run_wide_table_sync_payloads_with_clickhouse",
+                return_value=[
+                    WideTableRunResult(
+                        wide_table_name="stock_daily_real",
+                        action="sync",
+                        status="success",
+                        message="done",
+                    )
+                ],
+            ) as runner:
+                return_code = run_task_batch(
+                    payload,
+                    results_path=results_path,
+                    log_path=root / "batch.log",
+                )
+
+            results = json.loads(results_path.read_text(encoding="utf-8"))
+            self.assertEqual(return_code, 0)
+            self.assertEqual(results["status"], "success")
+            self.assertEqual(results["tasks"][0]["status"], "success")
+            self.assertEqual(
+                results["tasks"][0]["effective_parameters"]["wide_table_name"],
+                "stock_daily_real",
+            )
+            runner.assert_called_once()
+
     def test_code_scoped_incremental_keeps_per_code_floor_instead_of_table_max(self) -> None:
         connection = Mock()
         metadata = {

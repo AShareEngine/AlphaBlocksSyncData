@@ -11,6 +11,45 @@ from sync_data_system.service.sync_config_manager import SyncConfigManager
 
 
 class SyncConfigManagerTest(unittest.TestCase):
+    def test_wide_table_task_is_persisted_as_a_scheduled_config_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SyncConfigManager(Path(tmpdir))
+            inline_payload = {
+                "wide_table": {
+                    "id": "wide::stock_daily_real",
+                    "name": "stock_daily_real",
+                    "source_node": "stock_daily_real",
+                    "target": {
+                        "database": "baostock",
+                        "table": "stock_daily_real",
+                        "engine": "Memory",
+                    },
+                    "fields": ["code", "date"],
+                    "key_fields": ["code", "date"],
+                }
+            }
+
+            config = manager.create_config(
+                {
+                    "name": "宽表定时同步",
+                    "tasks": [
+                        {
+                            "kind": "wide_table",
+                            "name": "wide_table.stock_daily_real",
+                            "payload": inline_payload,
+                            "state_database": "alphablocks",
+                        }
+                    ],
+                }
+            )
+
+            task = config["tasks"][0]
+            self.assertEqual(task["kind"], "wide_table")
+            self.assertEqual(task["provider"], "wide_table")
+            self.assertEqual(task["database"], "baostock")
+            self.assertEqual(task["target"], "stock_daily_real")
+            self.assertEqual(task["payload"], inline_payload)
+
     def test_cross_provider_tasks_are_derived_and_duplicates_are_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
