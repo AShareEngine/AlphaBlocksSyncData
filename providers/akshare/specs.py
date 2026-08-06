@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""AKShare US market task definitions."""
+"""AKShare task definitions."""
 
 from __future__ import annotations
 
@@ -60,6 +60,22 @@ AKSHARE_TASK_SPECS: dict[str, AkshareTaskSpec] = {
         "ak_us_index_daily",
         cursor_field="trade_date",
         kind="index",
+    ),
+    "stock_board_concept_name_ths": AkshareTaskSpec(
+        "stock_board_concept_name_ths",
+        "ak_stock_board_concept_name_ths",
+    ),
+    "stock_board_concept_index_ths": AkshareTaskSpec(
+        "stock_board_concept_index_ths",
+        "ak_stock_board_concept_index_ths",
+        cursor_field="trade_date",
+        uses_codes=True,
+        kind="index",
+    ),
+    "stock_board_concept_info_ths": AkshareTaskSpec(
+        "stock_board_concept_info_ths",
+        "ak_stock_board_concept_info_ths",
+        uses_codes=True,
     ),
 }
 

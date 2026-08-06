@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""AKShare US market -> ClickHouse sync runner."""
+"""AKShare -> ClickHouse sync runner."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from sync_data_system.config_paths import resolve_config_candidate
 from sync_data_system.providers.akshare.provider import (
     AkshareUSConfig,
     AkshareUSProvider,
+    normalize_ths_concept_list,
     normalize_us_symbol_list,
 )
 from sync_data_system.providers.akshare.repository import AkshareUSRepository
@@ -238,6 +239,35 @@ def _execute_task(
         return repository.save_frame("us_spot", provider.fetch_us_spot(limit=args.limit))
     if args.task == "us_index_daily":
         return _run_index_task(args, provider, repository, request_meta)
+    if args.task == "stock_board_concept_name_ths":
+        return repository.save_frame(
+            args.task,
+            provider.fetch_ths_concept_names(limit=args.limit),
+        )
+    if args.task in {
+        "stock_board_concept_index_ths",
+        "stock_board_concept_info_ths",
+    }:
+        concepts = _resolve_ths_concepts(args, provider, repository)
+        if not concepts:
+            raise ValueError("未获取到同花顺概念板块目录。")
+        if args.task == "stock_board_concept_index_ths":
+            return _run_ths_concept_index_task(
+                args,
+                provider,
+                repository,
+                concepts,
+                request_meta,
+            )
+        return _run_per_concept(
+            args,
+            repository,
+            concepts,
+            lambda item: provider.fetch_ths_concept_info(
+                item["concept_name"],
+                item["concept_code"],
+            ),
+        )
 
     require_em_code = args.task in {"us_daily_kline", "us_minute_kline"}
     symbols = _resolve_symbols(args, provider, repository, require_em_code=require_em_code)
@@ -385,6 +415,37 @@ def _resolve_symbols(
     )
 
 
+def _resolve_ths_concepts(
+    args: SyncArgs,
+    provider: AkshareUSProvider,
+    repository: AkshareUSRepository,
+) -> list[dict[str, str]]:
+    requested = (
+        normalize_ths_concept_list(args.codes_raw.split(","))
+        if args.codes_raw
+        else []
+    )
+    saved = repository.load_ths_concepts()
+    if saved:
+        try:
+            return provider.resolve_ths_concepts(
+                requested,
+                limit=args.limit,
+                directory=saved,
+            )
+        except ValueError:
+            if not requested:
+                raise
+            logger.info("refreshing THS concept directory for explicitly requested concepts")
+    directory = provider.fetch_ths_concept_names()
+    repository.save_frame("stock_board_concept_name_ths", directory)
+    return provider.resolve_ths_concepts(
+        requested,
+        limit=args.limit,
+        directory=directory,
+    )
+
+
 def _run_daily_task(
     args: SyncArgs,
     provider: AkshareUSProvider,
@@ -465,6 +526,41 @@ def _run_per_symbol(
     return total
 
 
+def _run_per_concept(
+    args: SyncArgs,
+    repository: AkshareUSRepository,
+    concepts: Iterable[dict[str, str]],
+    fetcher: Callable[[dict[str, str]], Any],
+) -> int:
+    total = 0
+    succeeded = 0
+    failures: list[str] = []
+    consecutive_failures = 0
+    for item in concepts:
+        concept_name = item["concept_name"]
+        try:
+            total += repository.save_frame(args.task, fetcher(item))
+            succeeded += 1
+            consecutive_failures = 0
+        except Exception as exc:
+            if not args.continue_on_error:
+                raise
+            failures.append(f"{concept_name}: {exc}")
+            consecutive_failures += 1
+            logger.exception(
+                "AKShare THS concept failed task=%s concept=%s",
+                args.task,
+                concept_name,
+            )
+            _raise_if_failure_circuit_open(
+                args.task,
+                consecutive_failures=consecutive_failures,
+                failures=failures,
+            )
+    _raise_if_all_failed(args.task, succeeded=succeeded, failures=failures)
+    return total
+
+
 def _raise_if_failure_circuit_open(
     task: str,
     *,
@@ -526,6 +622,62 @@ def _run_index_task(
     return total
 
 
+def _run_ths_concept_index_task(
+    args: SyncArgs,
+    provider: AkshareUSProvider,
+    repository: AkshareUSRepository,
+    concepts: Iterable[dict[str, str]],
+    request_meta: dict[str, str | None],
+) -> int:
+    start = str(request_meta["start_date"])
+    end = str(request_meta["end_date"])
+    total = 0
+    succeeded = 0
+    failures: list[str] = []
+    consecutive_failures = 0
+    for item in concepts:
+        concept_code = item["concept_code"]
+        concept_name = item["concept_name"]
+        cursor_key = concept_code or concept_name
+        effective_start = _effective_start(
+            start,
+            repository.load_latest_cursor(args.task, symbol=cursor_key),
+            force=args.force,
+        )
+        if effective_start > end:
+            continue
+        try:
+            frame = provider.fetch_ths_concept_index(
+                concept_name,
+                concept_code,
+                start_date=effective_start,
+                end_date=end,
+            )
+            total += repository.save_frame(args.task, frame)
+            cursor = dict(frame.attrs.get("coverage_by_symbol", {})).get(cursor_key)
+            if cursor is not None:
+                repository.upsert_task_cursor(args.task, cursor_key, cursor)
+            succeeded += 1
+            consecutive_failures = 0
+        except Exception as exc:
+            if not args.continue_on_error:
+                raise
+            failures.append(f"{concept_name}: {exc}")
+            consecutive_failures += 1
+            logger.exception(
+                "AKShare THS concept index failed concept=%s code=%s",
+                concept_name,
+                concept_code,
+            )
+            _raise_if_failure_circuit_open(
+                args.task,
+                consecutive_failures=consecutive_failures,
+                failures=failures,
+            )
+    _raise_if_all_failed(args.task, succeeded=succeeded, failures=failures)
+    return total
+
+
 def _raise_if_all_failed(
     task: str,
     *,
@@ -573,7 +725,8 @@ def _scope_key(args: SyncArgs, request_meta: dict[str, str | None]) -> str:
         digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
         parts.append(f"codes={digest}")
     else:
-        parts.append("universe=us")
+        universe = "ths_concept" if args.task.startswith("stock_board_concept_") else "us"
+        parts.append(f"universe={universe}")
     if args.index_code:
         parts.append(f"index={args.index_code}")
     if args.period:

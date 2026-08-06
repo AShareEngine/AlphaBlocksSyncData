@@ -1,6 +1,6 @@
 name = "akshare"
-display_name = "AKShare US Market"
-version = "0.1.0"
+display_name = "AKShare"
+version = "0.2.0"
 module = "sync_data_system.providers.akshare"
 runtime_config_key = "akshare"
 default_database = "akshare"
@@ -75,3 +75,25 @@ supports_incremental = true
 cursor_field = "trade_date"
 incremental_scope = "code"
 request_fields = ["name", "index_code", "begin_date", "end_date", "force", "log_level"]
+
+[[tasks]]
+name = "stock_board_concept_name_ths"
+target = "ak_stock_board_concept_name_ths"
+supports_incremental = false
+freshness_mode = "daily"
+request_fields = ["name", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "stock_board_concept_index_ths"
+target = "ak_stock_board_concept_index_ths"
+supports_incremental = true
+cursor_field = "trade_date"
+incremental_scope = "code"
+request_fields = ["name", "codes", "begin_date", "end_date", "limit", "force", "log_level"]
+
+[[tasks]]
+name = "stock_board_concept_info_ths"
+target = "ak_stock_board_concept_info_ths"
+supports_incremental = false
+freshness_mode = "daily"
+request_fields = ["name", "codes", "limit", "force", "log_level"]

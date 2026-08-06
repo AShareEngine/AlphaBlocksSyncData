@@ -33,7 +33,7 @@ AlphaBlocksSyncData 把数据同步拆成三层：统一同步框架、独立 pr
 | AmazingData | `providers/amazingdata/` | 主行情、基础信息、指数、ETF、可转债、期权、龙虎榜、融资融券、分红配股等 | 真实同步建议在 Linux / Windows 执行 |
 | BaoStock | `providers/baostock/` | 交易日、股票基础信息、日线行情等公开数据 | 适合补充基础公开数据 |
 | QMT | `providers/qmt/` | 通过 HTTP API 获取 QMT K 线数据 | 需要配置 QMT 服务地址和 API Key |
-| AKShare US | `providers/akshare/` | 美股实时、日线、分钟、公司资料、财报、财务指标、估值和指数 | 无 API Key；聚合公开网页接口 |
+| AKShare | `providers/akshare/` | 美股行情与基本面、同花顺概念板块目录/指数/简介 | 无 API Key；聚合公开网页接口 |
 | US Market Free | `providers/yfinance/` | 美股证券主表、日线、公司行动、行业、板块和概念 ETF | 无 API Key；行情来自 yfinance，主数据来自 FinanceDatabase |
 
 ## 同步链路
@@ -266,6 +266,7 @@ providers/<name>/
 | [Tushare 说明](TUSHARE_RUNBOOK.md) | Tushare 全接口目录、增量、配额和建表说明 |
 | [QMT 接入说明](docs/qmt-data.md) | QMT HTTP API 和 TOML 测试说明 |
 | [AKShare 美股数据说明](docs/akshare-us-data.md) | AKShare 美股任务、表、配置和使用边界 |
+| [AKShare 同花顺概念板块说明](docs/akshare-ths-concept-data.md) | 概念目录、指数日线、板块简介任务及增量规则 |
 | [免费美股数据说明](docs/yfinance-data.md) | yfinance / FinanceDatabase 任务、表和使用边界 |
 | [Provider 开发文档](docs/provider-development.md) | provider 目录、声明文件和任务配置说明 |
 

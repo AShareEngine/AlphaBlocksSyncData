@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""ClickHouse persistence for AKShare US market data."""
+"""ClickHouse persistence for AKShare market data."""
 
 from __future__ import annotations
 
@@ -17,6 +17,9 @@ from sync_data_system.providers.akshare.provider import (
     MINUTE_COLUMNS,
     PROFILE_COLUMNS,
     SPOT_COLUMNS,
+    THS_CONCEPT_INDEX_COLUMNS,
+    THS_CONCEPT_INFO_COLUMNS,
+    THS_CONCEPT_NAME_COLUMNS,
     VALUATION_COLUMNS,
 )
 from sync_data_system.providers.akshare.specs import AKSHARE_TASK_SPECS
@@ -37,6 +40,9 @@ TASK_COLUMNS: dict[str, tuple[str, ...]] = {
     "us_financial_indicator": FINANCIAL_INDICATOR_COLUMNS,
     "us_valuation": VALUATION_COLUMNS,
     "us_index_daily": INDEX_COLUMNS,
+    "stock_board_concept_name_ths": THS_CONCEPT_NAME_COLUMNS,
+    "stock_board_concept_index_ths": THS_CONCEPT_INDEX_COLUMNS,
+    "stock_board_concept_info_ths": THS_CONCEPT_INFO_COLUMNS,
 }
 
 STRING_COLUMNS = frozenset(
@@ -63,6 +69,8 @@ STRING_COLUMNS = frozenset(
         "period",
         "index_code",
         "index_name",
+        "concept_code",
+        "concept_name",
     }
 )
 
@@ -148,6 +156,36 @@ class AkshareUSRepository:
             str(row[0]).strip()
             for row in self.client.query_rows(sql)
             if row and str(row[0]).strip()
+        ]
+
+    def load_ths_concepts(
+        self,
+        *,
+        snapshot_date: date | None = None,
+        limit: int = 0,
+    ) -> list[dict[str, str]]:
+        limit_sql = f"LIMIT {int(limit)}" if limit > 0 else ""
+        table = self._table_ref(
+            AKSHARE_TASK_SPECS["stock_board_concept_name_ths"].table_name
+        )
+        sql = f"""
+        SELECT concept_code, argMax(concept_name, fetched_at) AS concept_name
+        FROM {table}
+        WHERE snapshot_date = {{snapshot_date:Date}}
+        GROUP BY concept_code
+        ORDER BY concept_name, concept_code
+        {limit_sql}
+        """
+        return [
+            {
+                "concept_code": str(row[0]).strip(),
+                "concept_name": str(row[1]).strip(),
+            }
+            for row in self.client.query_rows(
+                sql,
+                {"snapshot_date": snapshot_date or date.today()},
+            )
+            if len(row) >= 2 and str(row[0]).strip() and str(row[1]).strip()
         ]
 
     def load_latest_cursor(self, task: str, *, symbol: str) -> str | None:
@@ -508,6 +546,56 @@ class AkshareUSRepository:
             ENGINE = ReplacingMergeTree(fetched_at)
             PARTITION BY toYYYYMM(trade_date)
             ORDER BY (index_code, trade_date)
+            """
+        if task == "stock_board_concept_name_ths":
+            return f"""
+            CREATE TABLE IF NOT EXISTS {table}
+            (
+                snapshot_date Date,
+                concept_code String,
+                concept_name String,
+                source String,
+                fetched_at DateTime64(3)
+            )
+            ENGINE = ReplacingMergeTree(fetched_at)
+            PARTITION BY toYYYYMM(snapshot_date)
+            ORDER BY (snapshot_date, concept_code)
+            """
+        if task == "stock_board_concept_index_ths":
+            return f"""
+            CREATE TABLE IF NOT EXISTS {table}
+            (
+                concept_code String,
+                concept_name String,
+                trade_date Date,
+                open Nullable(Float64),
+                high Nullable(Float64),
+                low Nullable(Float64),
+                close Nullable(Float64),
+                volume Nullable(Float64),
+                amount Nullable(Float64),
+                source String,
+                fetched_at DateTime64(3)
+            )
+            ENGINE = ReplacingMergeTree(fetched_at)
+            PARTITION BY toYYYYMM(trade_date)
+            ORDER BY (concept_code, trade_date)
+            """
+        if task == "stock_board_concept_info_ths":
+            return f"""
+            CREATE TABLE IF NOT EXISTS {table}
+            (
+                snapshot_date Date,
+                concept_code String,
+                concept_name String,
+                item String,
+                value String,
+                source String,
+                fetched_at DateTime64(3)
+            )
+            ENGINE = ReplacingMergeTree(fetched_at)
+            PARTITION BY toYYYYMM(snapshot_date)
+            ORDER BY (snapshot_date, concept_code, item)
             """
         raise KeyError(task)
 

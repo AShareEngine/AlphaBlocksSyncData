@@ -215,6 +215,50 @@ class _FakeAkshare:
             ]
         )
 
+    def stock_board_concept_name_ths(self):
+        self.calls.append(("stock_board_concept_name_ths", {}))
+        return pd.DataFrame(
+            [
+                {"name": "阿里巴巴概念", "code": "301558"},
+                {"name": "机器人概念", "code": "301100"},
+            ]
+        )
+
+    def stock_board_concept_index_ths(self, **kwargs):
+        self.calls.append(("stock_board_concept_index_ths", kwargs))
+        return pd.DataFrame(
+            [
+                {
+                    "日期": "2024-01-02",
+                    "开盘价": 1105.43,
+                    "最高价": 1133.391,
+                    "最低价": 1100.0,
+                    "收盘价": 1130.28,
+                    "成交量": 1_867_106_700,
+                    "成交额": 2.270406e10,
+                },
+                {
+                    "日期": "2024-01-03",
+                    "开盘价": 1133.673,
+                    "最高价": 1143.881,
+                    "最低价": 1120.0,
+                    "收盘价": 1140.087,
+                    "成交量": 1_734_555_400,
+                    "成交额": 2.049213e10,
+                },
+            ]
+        )
+
+    def stock_board_concept_info_ths(self, **kwargs):
+        self.calls.append(("stock_board_concept_info_ths", kwargs))
+        return pd.DataFrame(
+            [
+                {"项目": "今开", "值": 1825.71},
+                {"项目": "板块涨幅", "值": "-4.96%"},
+                {"项目": "涨幅排名", "值": "317/396"},
+            ]
+        )
+
 
 class _FakeClickHouseClient:
     def __init__(self) -> None:
@@ -511,6 +555,35 @@ class AkshareUSProviderTest(unittest.TestCase):
         self.assertEqual(valuation.iloc[0]["trade_date"], date(2024, 1, 3))
         self.assertEqual(index.iloc[0]["index_code"], ".INX")
 
+    def test_ths_concept_directory_index_and_info_are_normalized(self) -> None:
+        directory = self.provider.fetch_ths_concept_names(snapshot_date=date(2024, 1, 5))
+        concepts = self.provider.resolve_ths_concepts(
+            ["301558"],
+            directory=directory,
+        )
+        index = self.provider.fetch_ths_concept_index(
+            concepts[0]["concept_name"],
+            concepts[0]["concept_code"],
+            start_date="20240101",
+            end_date="20240103",
+        )
+        info = self.provider.fetch_ths_concept_info(
+            concepts[0]["concept_name"],
+            concepts[0]["concept_code"],
+            snapshot_date=date(2024, 1, 5),
+        )
+
+        self.assertEqual(directory["concept_name"].tolist(), ["机器人概念", "阿里巴巴概念"])
+        self.assertEqual(concepts, [{"concept_code": "301558", "concept_name": "阿里巴巴概念"}])
+        self.assertEqual(index["trade_date"].max(), date(2024, 1, 3))
+        self.assertEqual(index.iloc[0]["close"], 1130.28)
+        self.assertEqual(info.set_index("item").loc["板块涨幅", "value"], "-4.96%")
+        self.assertEqual(info.set_index("item").loc["涨幅排名", "value"], "317/396")
+        index_call = next(item for item in self.ak.calls if item[0] == "stock_board_concept_index_ths")[1]
+        self.assertEqual(index_call["symbol"], "阿里巴巴概念")
+        self.assertEqual(index_call["start_date"], "20240101")
+        self.assertEqual(index_call["end_date"], "20240103")
+
 
 class AkshareUSRepositoryTest(unittest.TestCase):
     def test_ensure_tables_creates_all_business_and_state_tables(self) -> None:
@@ -524,6 +597,9 @@ class AkshareUSRepositoryTest(unittest.TestCase):
         self.assertIn("ak_us_daily_kline", ddl)
         self.assertIn("ak_us_financial_statement", ddl)
         self.assertIn("ak_us_index_daily", ddl)
+        self.assertIn("ak_stock_board_concept_name_ths", ddl)
+        self.assertIn("ak_stock_board_concept_index_ths", ddl)
+        self.assertIn("ak_stock_board_concept_info_ths", ddl)
         self.assertIn("ak_sync_task_log", ddl)
         self.assertIn("ak_symbol_cursor", ddl)
 
@@ -690,6 +766,72 @@ class AkshareUSRunnerTest(unittest.TestCase):
         self.assertEqual([task.task for task in plan.tasks], ["us_daily_kline", "us_valuation"])
         self.assertEqual(plan.tasks[0].codes_raw, "AAPL,MSFT")
         self.assertEqual(plan.tasks[1].fields, "总市值,市净率")
+
+    def test_ths_concept_index_task_uses_directory_and_writes_per_concept_cursor(self) -> None:
+        provider = AkshareUSProvider(
+            AkshareUSConfig(request_interval_seconds=0, retries=0),
+            akshare_module=_FakeAkshare(),
+        )
+        client = _FakeClickHouseClient()
+        repository = AkshareUSRepository(client, database="akshare")
+        args = SyncArgs(
+            task="stock_board_concept_index_ths",
+            codes_raw="阿里巴巴概念",
+            begin_date="20240101",
+            end_date="20240103",
+            index_code="",
+            period="",
+            fields="",
+            limit=0,
+            force=True,
+            continue_on_error=False,
+            runtime_path=None,
+            database="akshare",
+            log_level="INFO",
+        )
+
+        inserted = run_sync_args(args, provider, repository)
+
+        self.assertEqual(inserted, 2)
+        tables = [call[0] for call in client.insert_calls]
+        self.assertIn("akshare.ak_stock_board_concept_name_ths", tables)
+        self.assertIn("akshare.ak_stock_board_concept_index_ths", tables)
+        cursor_call = next(call for call in client.insert_calls if call[0].endswith("ak_symbol_cursor"))
+        self.assertEqual(cursor_call[2][0][1], "301558")
+        self.assertEqual(cursor_call[2][0][2], date(2024, 1, 3))
+
+    def test_ths_concept_info_task_supports_all_concepts_with_limit(self) -> None:
+        provider = AkshareUSProvider(
+            AkshareUSConfig(request_interval_seconds=0, retries=0),
+            akshare_module=_FakeAkshare(),
+        )
+        client = _FakeClickHouseClient()
+        repository = AkshareUSRepository(client, database="akshare")
+        args = SyncArgs(
+            task="stock_board_concept_info_ths",
+            codes_raw="",
+            begin_date="",
+            end_date="",
+            index_code="",
+            period="",
+            fields="",
+            limit=1,
+            force=True,
+            continue_on_error=False,
+            runtime_path=None,
+            database="akshare",
+            log_level="INFO",
+        )
+
+        inserted = run_sync_args(args, provider, repository)
+
+        self.assertEqual(inserted, 3)
+        info_calls = [
+            item for item in provider._akshare_module.calls
+            if item[0] == "stock_board_concept_info_ths"
+        ]
+        self.assertEqual(len(info_calls), 1)
+        self.assertEqual(info_calls[0][1]["symbol"], "机器人概念")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""AKShare US market data normalization."""
+"""AKShare market data normalization."""
 
 from __future__ import annotations
 
@@ -160,6 +160,38 @@ INDEX_COLUMNS = (
     "fetched_at",
 )
 
+THS_CONCEPT_NAME_COLUMNS = (
+    "snapshot_date",
+    "concept_code",
+    "concept_name",
+    "source",
+    "fetched_at",
+)
+
+THS_CONCEPT_INDEX_COLUMNS = (
+    "concept_code",
+    "concept_name",
+    "trade_date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "amount",
+    "source",
+    "fetched_at",
+)
+
+THS_CONCEPT_INFO_COLUMNS = (
+    "snapshot_date",
+    "concept_code",
+    "concept_name",
+    "item",
+    "value",
+    "source",
+    "fetched_at",
+)
+
 
 @dataclass(frozen=True)
 class AkshareUSConfig:
@@ -203,9 +235,160 @@ class AkshareUSProvider:
         self._request_lock = threading.Lock()
         self._last_request_at = 0.0
         self._spot_cache: pd.DataFrame | None = None
+        self._ths_concept_cache: pd.DataFrame | None = None
 
     def close(self) -> None:
         self._spot_cache = None
+        self._ths_concept_cache = None
+
+    def fetch_ths_concept_names(
+        self,
+        *,
+        limit: int = 0,
+        snapshot_date: date | None = None,
+    ) -> pd.DataFrame:
+        raw = self._run_call(
+            "stock_board_concept_name_ths",
+            self._akshare.stock_board_concept_name_ths,
+        )
+        frame = _as_dataframe(raw)
+        if frame.empty:
+            return _empty_frame(THS_CONCEPT_NAME_COLUMNS)
+        fetched_at = _utcnow()
+        result = pd.DataFrame(index=frame.index)
+        result["snapshot_date"] = snapshot_date or date.today()
+        result["concept_code"] = _text_series(frame, "code", "代码", "板块代码")
+        result["concept_name"] = _text_series(frame, "name", "名称", "板块名称")
+        result["source"] = "akshare:stock_board_concept_name_ths"
+        result["fetched_at"] = fetched_at
+        result = result[(result["concept_code"] != "") & (result["concept_name"] != "")]
+        result = result.drop_duplicates(subset=["concept_code"], keep="first")
+        result = result.sort_values(["concept_name", "concept_code"])
+        if limit > 0:
+            result = result.head(limit)
+        normalized = result.loc[:, list(THS_CONCEPT_NAME_COLUMNS)].reset_index(drop=True)
+        if limit <= 0:
+            self._ths_concept_cache = normalized.copy()
+        return normalized
+
+    def resolve_ths_concepts(
+        self,
+        values: Iterable[Any] = (),
+        *,
+        limit: int = 0,
+        directory: pd.DataFrame | None = None,
+    ) -> list[dict[str, str]]:
+        requested = normalize_ths_concept_list(values)
+        if directory is None:
+            directory = (
+                self._ths_concept_cache.copy()
+                if self._ths_concept_cache is not None
+                else self.fetch_ths_concept_names()
+            )
+        frame = _as_dataframe(directory)
+        concepts = [
+            {
+                "concept_code": str(row.concept_code).strip(),
+                "concept_name": str(row.concept_name).strip(),
+            }
+            for row in frame.itertuples(index=False)
+            if str(getattr(row, "concept_code", "")).strip()
+            and str(getattr(row, "concept_name", "")).strip()
+        ]
+        if requested:
+            by_code = {item["concept_code"].casefold(): item for item in concepts}
+            by_name = {item["concept_name"].casefold(): item for item in concepts}
+            resolved: list[dict[str, str]] = []
+            missing: list[str] = []
+            for value in requested:
+                item = by_code.get(value.casefold()) or by_name.get(value.casefold())
+                if item is None:
+                    missing.append(value)
+                elif item not in resolved:
+                    resolved.append(item)
+            if missing:
+                raise ValueError(f"未找到同花顺概念板块: {missing[:10]}")
+            concepts = resolved
+        return concepts[:limit] if limit > 0 else concepts
+
+    def fetch_ths_concept_index(
+        self,
+        concept_name: str,
+        concept_code: str,
+        *,
+        start_date: str | date,
+        end_date: str | date,
+    ) -> pd.DataFrame:
+        start = _date_value(start_date)
+        end = _date_value(end_date)
+        raw = self._run_call(
+            f"stock_board_concept_index_ths:{concept_name}",
+            lambda: self._akshare.stock_board_concept_index_ths(
+                symbol=concept_name,
+                start_date=start.strftime("%Y%m%d"),
+                end_date=end.strftime("%Y%m%d"),
+            ),
+        )
+        frame = _as_dataframe(raw)
+        if frame.empty:
+            return _empty_frame(THS_CONCEPT_INDEX_COLUMNS)
+        fetched_at = _utcnow()
+        result = pd.DataFrame(index=frame.index)
+        result["concept_code"] = concept_code
+        result["concept_name"] = concept_name
+        result["trade_date"] = pd.to_datetime(
+            _value_series(frame, "日期", "date"), errors="coerce"
+        ).dt.date
+        result["open"] = _number_series(frame, "开盘价", "开盘", "open")
+        result["high"] = _number_series(frame, "最高价", "最高", "high")
+        result["low"] = _number_series(frame, "最低价", "最低", "low")
+        result["close"] = _number_series(frame, "收盘价", "收盘", "close")
+        result["volume"] = _number_series(frame, "成交量", "volume")
+        result["amount"] = _number_series(frame, "成交额", "amount")
+        result["source"] = "akshare:stock_board_concept_index_ths"
+        result["fetched_at"] = fetched_at
+        result = result[result["trade_date"].notna()].copy()
+        result = result[(result["trade_date"] >= start) & (result["trade_date"] <= end)]
+        normalized = result.loc[:, list(THS_CONCEPT_INDEX_COLUMNS)]
+        normalized = normalized.sort_values("trade_date").reset_index(drop=True)
+        if not normalized.empty:
+            normalized.attrs["coverage_by_symbol"] = {
+                concept_code or concept_name: normalized["trade_date"].max()
+            }
+        return normalized
+
+    def fetch_ths_concept_info(
+        self,
+        concept_name: str,
+        concept_code: str,
+        *,
+        snapshot_date: date | None = None,
+    ) -> pd.DataFrame:
+        raw = self._run_call(
+            f"stock_board_concept_info_ths:{concept_name}",
+            lambda: self._akshare.stock_board_concept_info_ths(symbol=concept_name),
+        )
+        frame = _as_dataframe(raw)
+        if frame.empty:
+            return _empty_frame(THS_CONCEPT_INFO_COLUMNS)
+        item = _text_series(frame, "项目", "item", "指标")
+        value = _text_series(frame, "值", "value", "内容")
+        if (item == "").all() and len(frame.columns) >= 2:
+            item = frame.iloc[:, 0].fillna("").astype(str).str.strip()
+            value = frame.iloc[:, 1].fillna("").astype(str).str.strip()
+        result = pd.DataFrame(
+            {
+                "snapshot_date": snapshot_date or date.today(),
+                "concept_code": concept_code,
+                "concept_name": concept_name,
+                "item": item,
+                "value": value,
+                "source": "akshare:stock_board_concept_info_ths",
+                "fetched_at": _utcnow(),
+            }
+        )
+        result = result[result["item"] != ""]
+        return result.loc[:, list(THS_CONCEPT_INFO_COLUMNS)].reset_index(drop=True)
 
     def fetch_us_spot(
         self,
@@ -759,6 +942,19 @@ def normalize_us_symbol_list(values: Iterable[Any]) -> list[str]:
     return result
 
 
+def normalize_ths_concept_list(values: Iterable[Any]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        concept = str(value or "").strip()
+        key = concept.casefold()
+        if not concept or key in seen:
+            continue
+        seen.add(key)
+        result.append(concept)
+    return result
+
+
 @contextmanager
 def _configured_proxy(proxy: str):
     normalized = str(proxy or "").strip()
@@ -997,7 +1193,11 @@ __all__ = [
     "MINUTE_COLUMNS",
     "PROFILE_COLUMNS",
     "SPOT_COLUMNS",
+    "THS_CONCEPT_INDEX_COLUMNS",
+    "THS_CONCEPT_INFO_COLUMNS",
+    "THS_CONCEPT_NAME_COLUMNS",
     "VALUATION_COLUMNS",
+    "normalize_ths_concept_list",
     "normalize_us_symbol",
     "normalize_us_symbol_list",
 ]

@@ -81,6 +81,17 @@ class ServiceTaskRegistryTest(unittest.TestCase):
         self.assertIn("codes", metadata["qmt.kline_history"]["request_fields"])
         self.assertIn("period", metadata["qmt.kline_history"]["request_fields"])
 
+    def test_registry_metadata_contains_akshare_ths_concept_tasks(self) -> None:
+        metadata = {item["name"]: item for item in TASK_REGISTRY.list_task_metadata()}
+        index = metadata["akshare.stock_board_concept_index_ths"]
+        info = metadata["akshare.stock_board_concept_info_ths"]
+
+        self.assertEqual(index["target"], "ak_stock_board_concept_index_ths")
+        self.assertEqual(index["incremental_scope"], "code")
+        self.assertEqual(index["cursor_field"], "trade_date")
+        self.assertIn("codes", index["request_fields"])
+        self.assertEqual(info["target"], "ak_stock_board_concept_info_ths")
+
     def test_manifest_provider_task_handler_uses_provider_runner(self) -> None:
         probe = create_probe(
             task_name="qmt.kline_history",
