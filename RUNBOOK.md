@@ -365,7 +365,8 @@ export SYNC_MAX_PARALLEL_PROVIDERS=3
 
 - 通过 `python scripts/run_provider_sync.py amazingdata.hist_code_list ...` 触发
 - 数据落到 `ad_hist_code_daily`
-- 当前默认按 `EXTRA_STOCK_A` 同步历史代码表
+- 当前默认按 `EXTRA_STOCK_A`、`EXTRA_INDEX_A`、`EXTRA_ETF`、`EXTRA_KZZ`
+  同步历史代码表
 - 会按表里已有最新 `trade_date` 做增量
 
 ### stock_basic
@@ -510,9 +511,9 @@ export SYNC_MAX_PARALLEL_PROVIDERS=3
 
 ### daily_kline
 
-- 先获取 A 股代码池
-- 按单只股票逐个同步
-- 每只股票同步前先查 `ad_market_kline_daily` 中该股票最新日期
+- 从 `ad_hist_code_daily` 获取请求区间内的股票、指数、ETF、可转债代码池
+- 按单只证券逐个同步
+- 每只证券同步前先查 `ad_market_kline_daily` 中该证券最新日期
 - 如果没有历史数据，则从传入 `begin_date` 开始
 
 补充说明：
@@ -522,9 +523,9 @@ export SYNC_MAX_PARALLEL_PROVIDERS=3
 
 ### minute_kline
 
-- 先获取 A 股代码池
-- 按单只股票逐个同步
-- 每只股票同步前先查 `ad_market_kline_minute` 中该股票最新日期
+- 从 `ad_hist_code_daily` 获取请求区间内的股票、指数、ETF、可转债代码池
+- 按单只证券逐个同步
+- 每只证券同步前先查 `ad_market_kline_minute` 中该证券最新日期
 - 仅同步 1 分钟 K 线
 
 ### market_snapshot

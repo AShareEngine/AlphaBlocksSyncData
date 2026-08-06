@@ -16,6 +16,7 @@ from sync_data_system.providers.amazingdata.runner import (
     build_resume_scope_pairs,
     filter_code_list_for_resume,
     resolve_code_list,
+    run_hist_code_list,
 )
 
 
@@ -50,7 +51,12 @@ class _FakeBaseData:
 
     def get_hist_code_list(self, security_type: str, start_date: int, end_date: int, local_path: str):
         self.hist_code_calls.append((security_type, start_date, end_date, local_path))
-        return ["10000001.SH", "10000002.SH"]
+        return {
+            "EXTRA_STOCK_A": ["000001.SZ", "600000.SH"],
+            "EXTRA_INDEX_A": ["000300.SH"],
+            "EXTRA_ETF": ["510300.SH"],
+            "EXTRA_KZZ": ["110030.SH"],
+        }[security_type]
 
     def get_option_code_list(self, security_type: str, force: bool = False):
         self.option_code_calls.append((security_type, force))
@@ -335,21 +341,6 @@ class RunSyncResumeTest(unittest.TestCase):
 
         self.assertEqual(result, ["m3", "m6", "y1", "y10", "y2", "y20", "y3", "y30", "y5", "y7"])
 
-    def test_daily_kline_uses_stock_index_etf_universes(self) -> None:
-        context = self._build_context()
-
-        result = resolve_code_list(
-            base_data=context.base_data,
-            task="daily_kline",
-            raw_codes="",
-            limit=0,
-        )
-
-        self.assertEqual(result, ["000001.SZ", "600000.SH", "000300.SH", "510300.SH"])
-        self.assertEqual(context.base_data.stock_universe_calls, [("EXTRA_STOCK_A", False)])
-        self.assertEqual(context.base_data.index_universe_calls, [("EXTRA_INDEX_A", False)])
-        self.assertEqual(context.base_data.etf_universe_calls, [("EXTRA_ETF", False)])
-
         pairs = build_resume_scope_pairs(
             context=context,
             task="treasury_yield",
@@ -364,6 +355,57 @@ class RunSyncResumeTest(unittest.TestCase):
                 ("m3", "info:get_treasury_yield:m3:2024-01-01:2024-01-31", "get_treasury_yield"),
                 ("y10", "info:get_treasury_yield:y10:2024-01-01:2024-01-31", "get_treasury_yield"),
             ],
+        )
+
+    def test_daily_kline_uses_historical_stock_index_etf_kzz_universes(self) -> None:
+        context = self._build_context()
+
+        result = resolve_code_list(
+            base_data=context.base_data,
+            task="daily_kline",
+            raw_codes="",
+            limit=0,
+            local_path="/tmp/amazing_data_cache",
+            begin_date=20100101,
+            end_date=20240131,
+        )
+
+        self.assertEqual(
+            result,
+            ["000001.SZ", "600000.SH", "000300.SH", "510300.SH", "110030.SH"],
+        )
+        self.assertEqual(
+            context.base_data.hist_code_calls,
+            [
+                ("EXTRA_STOCK_A", 20100101, 20240131, "/tmp/amazing_data_cache"),
+                ("EXTRA_INDEX_A", 20100101, 20240131, "/tmp/amazing_data_cache"),
+                ("EXTRA_ETF", 20100101, 20240131, "/tmp/amazing_data_cache"),
+                ("EXTRA_KZZ", 20100101, 20240131, "/tmp/amazing_data_cache"),
+            ],
+        )
+        self.assertEqual(context.base_data.stock_universe_calls, [])
+        self.assertEqual(context.base_data.index_universe_calls, [])
+        self.assertEqual(context.base_data.etf_universe_calls, [])
+
+    def test_hist_code_list_syncs_all_market_asset_types(self) -> None:
+        calls = []
+
+        class _HistBaseData:
+            def sync_hist_code_list(self, **kwargs):
+                calls.append(kwargs)
+                return 1
+
+        result = run_hist_code_list(
+            base_data=_HistBaseData(),
+            begin_date=20100101,
+            end_date=20240131,
+            force=False,
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            [call["security_type"] for call in calls],
+            ["EXTRA_STOCK_A", "EXTRA_INDEX_A", "EXTRA_ETF", "EXTRA_KZZ"],
         )
 
     def test_default_config_resume_applies_to_all_tasks(self) -> None:

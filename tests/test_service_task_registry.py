@@ -13,6 +13,14 @@ from sync_data_system.service.task_registry import TASK_REGISTRY, create_probe
 
 
 class _FakeBaseData:
+    def get_hist_code_list(self, security_type: str, start_date: int, end_date: int, local_path: str):
+        return {
+            "EXTRA_STOCK_A": ["000001.SZ", "600000.SH", "000005.SZ"],
+            "EXTRA_INDEX_A": ["000300.SH"],
+            "EXTRA_ETF": ["510300.SH"],
+            "EXTRA_KZZ": ["110030.SH"],
+        }[security_type]
+
     def get_stock_universe(self, security_type: str, force: bool = False):
         return ["000001.SZ", "600000.SH"]
 
@@ -113,13 +121,24 @@ class ServiceTaskRegistryTest(unittest.TestCase):
             probe.context = SimpleNamespace(
                 base_data=_FakeBaseData(),
                 provider=_FakeProvider(),
+                sdk_config=SimpleNamespace(local_path="/tmp/amazing_data_cache"),
             )
 
             TASK_REGISTRY.resolve_inputs(probe)
 
         self.assertEqual(probe.begin_date, 20240101)
         self.assertEqual(probe.end_date, 20240131)
-        self.assertEqual(probe.codes, ["000001.SZ", "600000.SH", "000300.SH", "510300.SH"])
+        self.assertEqual(
+            probe.codes,
+            [
+                "000001.SZ",
+                "600000.SH",
+                "000005.SZ",
+                "000300.SH",
+                "510300.SH",
+                "110030.SH",
+            ],
+        )
 
     def test_historical_market_resolver_defers_code_pool_to_provider_runner(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

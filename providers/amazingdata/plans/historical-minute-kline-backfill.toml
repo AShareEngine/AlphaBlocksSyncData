@@ -1,8 +1,8 @@
 # AmazingData 历史股票 1 分钟 K 线逐股票增量回补
 #
 # 规则：
-# - 股票池来自 starlight.ad_hist_code_daily，security_type 仅限 stock，不包含指数和 ETF。
-# - 同时合并当前股票池，确保上市与退市股票都不会遗漏。
+# - 代码池来自 starlight.ad_hist_code_daily，包含股票、指数、ETF、可转债。
+# - 请求区间内出现过的历史证券都会进入增量回补。
 # - 每只股票先查询 starlight.ad_market_kline_minute 的 max(trade_time)。
 # - 没有数据的股票从 20100101 开始；已有数据的股票从最新日期下一天开始。
 # - 请求结束日期留空，运行时自动使用最新交易日。

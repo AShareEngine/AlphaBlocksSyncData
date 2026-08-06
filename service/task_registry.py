@@ -378,6 +378,7 @@ def resolve_run_sync_defaults(probe: SyncTaskProbe) -> None:
                 raw_codes=",".join(probe.input_codes),
                 limit=probe.limit,
                 local_path=probe.context.sdk_config.local_path,
+                begin_date=begin_date,
                 end_date=end_date,
             )
         task_spec = amazingdata_runner.TaskRunSpec(
@@ -426,6 +427,9 @@ def resolve_market_kline_defaults(probe: SyncTaskProbe) -> None:
             base_data=probe.context.base_data,
             task=_provider_task_name(probe.name, probe.source),
             limit=probe.limit,
+            local_path=probe.context.sdk_config.local_path,
+            begin_date=probe.begin_date,
+            end_date=probe.end_date,
         )
     task_name = _provider_task_name(probe.name, probe.source)
     task_spec = amazingdata_runner.TaskRunSpec(

@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """正式同步入口.
 
-当前版本只服务一条主线：
-- 只同步 `EXTRA_STOCK_A`
-- 不做批量调度，直接逐股顺序同步
+行情主线使用历史证券代码池：
+- 股票、指数、ETF、可转债均来自 `ad_hist_code_daily`
+- 不做批量调度，按证券代码顺序同步
 
 正式任务：
 - `code_info`
@@ -81,6 +81,12 @@ DEFAULT_SYNC_SECURITY_TYPE = SecurityType.EXTRA_STOCK_A
 DEFAULT_INDEX_SYNC_SECURITY_TYPE = SecurityType.EXTRA_INDEX_A_SH_SZ
 DEFAULT_ETF_SYNC_SECURITY_TYPE = SecurityType.EXTRA_ETF
 DEFAULT_KZZ_SYNC_SECURITY_TYPE = SecurityType.EXTRA_KZZ
+MARKET_KLINE_HIST_SECURITY_TYPES = (
+    ("stock", SecurityType.EXTRA_STOCK_A),
+    ("index", SecurityType.EXTRA_INDEX_A),
+    ("etf", SecurityType.EXTRA_ETF),
+    ("kzz", SecurityType.EXTRA_KZZ),
+)
 DEFAULT_RUNTIME_PATH = str(resolve_runtime_config_path(PROJECT_ROOT))
 DEFAULT_LOG_LEVEL = "INFO"
 OPTION_SYNC_CODE_BATCH_SIZE = 500
@@ -723,6 +729,7 @@ def execute_task_spec(context: SyncExecutionContext, task_spec: TaskRunSpec) -> 
                 raw_codes=task_spec.codes_raw,
                 limit=task_spec.limit,
                 local_path=context.sdk_config.local_path,
+                begin_date=begin_date,
                 end_date=end_date,
             )
         code_list = filter_code_list_for_resume(
@@ -1199,19 +1206,29 @@ def run_hist_code_list(
     end_date: int,
     force: bool,
 ) -> int:
-    logger.info(
-        "hist_code_list start security_type=%s begin_date=%s end_date=%s",
-        DEFAULT_SYNC_SECURITY_TYPE,
-        begin_date,
-        end_date,
-    )
-    inserted = base_data.sync_hist_code_list(
-        security_type=DEFAULT_SYNC_SECURITY_TYPE,
-        begin_date=begin_date,
-        end_date=end_date,
-        force=force,
-    )
-    logger.info("hist_code_list finished inserted_rows=%s", inserted)
+    total_inserted = 0
+    for label, security_type in MARKET_KLINE_HIST_SECURITY_TYPES:
+        logger.info(
+            "hist_code_list start asset_type=%s security_type=%s begin_date=%s end_date=%s",
+            label,
+            security_type,
+            begin_date,
+            end_date,
+        )
+        inserted = base_data.sync_hist_code_list(
+            security_type=security_type,
+            begin_date=begin_date,
+            end_date=end_date,
+            force=force,
+        )
+        total_inserted += int(inserted)
+        logger.info(
+            "hist_code_list asset_type=%s security_type=%s finished inserted_rows=%s",
+            label,
+            security_type,
+            inserted,
+        )
+    logger.info("hist_code_list finished inserted_rows=%s", total_inserted)
     return 0
 
 
@@ -1877,11 +1894,19 @@ def resolve_code_list(
     raw_codes: str,
     limit: int,
     local_path: str | None = None,
+    begin_date: int | None = None,
     end_date: int | None = None,
 ) -> list[str]:
     codes = parse_codes(raw_codes)
     if task in {"daily_kline", "minute_kline"} and not codes:
-        codes = resolve_market_kline_code_list(base_data=base_data, task=task, limit=limit)
+        codes = resolve_market_kline_code_list(
+            base_data=base_data,
+            task=task,
+            limit=limit,
+            local_path=local_path,
+            begin_date=begin_date,
+            end_date=end_date,
+        )
         if not codes:
             raise RuntimeError("未获取到可同步的行情代码。")
         logger.info("resolved code_list count=%s", len(codes))
@@ -1997,30 +2022,37 @@ def resolve_market_kline_code_list(
     base_data: BaseData,
     task: str,
     limit: int,
+    local_path: str | None,
+    begin_date: int | None,
+    end_date: int | None,
 ) -> list[str]:
+    if begin_date is None or end_date is None:
+        raise ValueError(f"{task} 获取历史证券代码池时必须提供 begin_date 和 end_date。")
+    if not str(local_path or "").strip():
+        raise ValueError(f"{task} 获取历史证券代码池时必须配置 AmazingData local_path。")
+
     raw_codes: list[str] = []
-    sources = (
-        ("stock", SecurityType.EXTRA_STOCK_A, base_data.get_stock_universe),
-        ("index", SecurityType.EXTRA_INDEX_A, base_data.get_index_universe),
-        ("etf", SecurityType.EXTRA_ETF, base_data.get_etf_universe),
-    )
-    for label, security_type, loader in sources:
+    for label, security_type in MARKET_KLINE_HIST_SECURITY_TYPES:
         try:
-            fetched = loader(security_type=security_type, force=False)
-        except BaseDataCacheMissError as exc:
-            logger.warning(
-                "%s code_list source=%s security_type=%s failed: %s",
-                task,
-                label,
-                security_type,
-                exc,
+            fetched = base_data.get_hist_code_list(
+                security_type=security_type,
+                start_date=begin_date,
+                end_date=end_date,
+                local_path=str(local_path),
             )
-            continue
+        except BaseDataCacheMissError as exc:
+            raise RuntimeError(
+                f"{task} 未获取到请求区间内的 {label} 历史代码；"
+                "请先同步 amazingdata.hist_code_list。"
+            ) from exc
         logger.info(
-            "%s code_list source=%s security_type=%s raw_count=%s",
+            "%s code_list source=ad_hist_code_daily asset_type=%s security_type=%s "
+            "begin_date=%s end_date=%s raw_count=%s",
             task,
             label,
             security_type,
+            begin_date,
+            end_date,
             len(fetched),
         )
         raw_codes.extend(fetched)
@@ -2064,7 +2096,7 @@ def resolve_backward_factor_code_list(
 
 def resolve_task_security_type(task: str) -> str:
     if task in {"daily_kline", "minute_kline"}:
-        return "EXTRA_STOCK_A+EXTRA_INDEX_A+EXTRA_ETF"
+        return "EXTRA_STOCK_A+EXTRA_INDEX_A+EXTRA_ETF+EXTRA_KZZ"
     if task == "hist_code_list":
         return DEFAULT_SYNC_SECURITY_TYPE
     if task == "bj_code_mapping":
@@ -2210,6 +2242,7 @@ def resolve_historical_code_list(
         raw_codes="",
         limit=0,
         local_path=context.sdk_config.local_path,
+        begin_date=begin_date,
         end_date=end_date,
     )
     rows = context.base_data.repository.client.query_rows(

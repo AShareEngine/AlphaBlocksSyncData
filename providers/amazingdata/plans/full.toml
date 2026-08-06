@@ -291,11 +291,13 @@ task = "margin_summary"
 enabled = true
 
 # 47. 同步日线 K 线
+# 股票、指数、ETF、可转债代码池均来自请求区间内的 ad_hist_code_daily。
 [[tasks]]
 task = "daily_kline"
 enabled = true
 
 # 48. 同步 1 分钟 K 线
+# 股票、指数、ETF、可转债代码池均来自请求区间内的 ad_hist_code_daily。
 [[tasks]]
 task = "minute_kline"
 enabled = true
