@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 import pandas as pd
+import requests
 
 from sync_data_system.config_paths import resolve_runtime_config_path
 from sync_data_system.runtime_config import load_runtime_config
@@ -25,6 +26,31 @@ from sync_data_system.runtime_config import load_runtime_config
 logger = logging.getLogger(__name__)
 _PROXY_ENV_LOCK = threading.RLock()
 _PROXY_ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+_EASTMONEY_DIRECT_URLS: set[str] = set()
+_EASTMONEY_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Referer": "https://quote.eastmoney.com/center/boardlist.html",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    ),
+}
+_EASTMONEY_CLIST_FALLBACK_URLS = (
+    "https://push2.eastmoney.com/api/qt/clist/get",
+    "https://17.push2.eastmoney.com/api/qt/clist/get",
+    "https://79.push2.eastmoney.com/api/qt/clist/get",
+    "https://29.push2.eastmoney.com/api/qt/clist/get",
+    "http://push2.eastmoney.com/api/qt/clist/get",
+    "http://17.push2.eastmoney.com/api/qt/clist/get",
+    "http://79.push2.eastmoney.com/api/qt/clist/get",
+    "http://29.push2.eastmoney.com/api/qt/clist/get",
+)
+_EASTMONEY_HIST_FALLBACK_URLS = (
+    "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+    "https://91.push2his.eastmoney.com/api/qt/stock/kline/get",
+    "http://push2his.eastmoney.com/api/qt/stock/kline/get",
+    "http://91.push2his.eastmoney.com/api/qt/stock/kline/get",
+)
 
 SPOT_COLUMNS = (
     "snapshot_date",
@@ -289,6 +315,9 @@ class AkshareUSProvider:
         self._spot_cache: pd.DataFrame | None = None
         self._ths_concept_cache: pd.DataFrame | None = None
         self._em_concept_cache: pd.DataFrame | None = None
+        self._prefer_em_fallback = False
+        self._em_clist_fallback_url = ""
+        self._em_hist_fallback_url = ""
 
     def close(self) -> None:
         self._spot_cache = None
@@ -301,9 +330,10 @@ class AkshareUSProvider:
         limit: int = 0,
         snapshot_date: date | None = None,
     ) -> pd.DataFrame:
-        raw = self._run_call(
+        raw = self._run_em_call_with_fallback(
             "stock_board_concept_name_em",
             self._akshare.stock_board_concept_name_em,
+            self._fetch_em_concept_names_fallback,
         )
         frame = _as_dataframe(raw)
         if frame.empty:
@@ -372,9 +402,10 @@ class AkshareUSProvider:
         snapshot_date: date | None = None,
     ) -> pd.DataFrame:
         symbol = concept_code or concept_name
-        raw = self._run_call(
+        raw = self._run_em_call_with_fallback(
             f"stock_board_concept_cons_em:{symbol}",
             lambda: self._akshare.stock_board_concept_cons_em(symbol=symbol),
+            lambda: self._fetch_em_concept_constituents_fallback(symbol),
         )
         frame = _as_dataframe(raw)
         if frame.empty:
@@ -428,13 +459,24 @@ class AkshareUSProvider:
         start = _date_value(start_date)
         end = _date_value(end_date)
         symbol = concept_code or concept_name
-        raw = self._run_call(
-            f"stock_board_concept_hist_em:{symbol}:{normalized_period}:{normalized_adjust or 'none'}",
+        label = (
+            f"stock_board_concept_hist_em:{symbol}:"
+            f"{normalized_period}:{normalized_adjust or 'none'}"
+        )
+        raw = self._run_em_call_with_fallback(
+            label,
             lambda: self._akshare.stock_board_concept_hist_em(
                 symbol=symbol,
                 period=normalized_period,
                 start_date=start.strftime("%Y%m%d"),
                 end_date=end.strftime("%Y%m%d"),
+                adjust=normalized_adjust,
+            ),
+            lambda: self._fetch_em_concept_history_fallback(
+                symbol,
+                period=normalized_period,
+                start_date=start,
+                end_date=end,
                 adjust=normalized_adjust,
             ),
         )
@@ -465,6 +507,130 @@ class AkshareUSProvider:
         result = result[(result["trade_date"] >= start) & (result["trade_date"] <= end)]
         normalized = result.loc[:, list(EM_CONCEPT_HIST_COLUMNS)]
         return normalized.sort_values("trade_date").reset_index(drop=True)
+
+    def _fetch_em_concept_names_fallback(self) -> pd.DataFrame:
+        params = {
+            "pn": "1",
+            "pz": "100",
+            "po": "1",
+            "np": "1",
+            "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+            "fltt": "2",
+            "invt": "2",
+            "fid": "f12",
+            "fs": "m:90 t:3 f:!50",
+            "fields": (
+                "f2,f3,f4,f8,f12,f14,f15,f16,f17,f18,f20,f21,f24,f25,"
+                "f22,f33,f11,f62,f128,f124,f107,f104,f105,f136"
+            ),
+        }
+        frame = _fetch_eastmoney_paginated_frame(
+            params,
+            preferred_url=self._em_clist_fallback_url,
+            request_interval_seconds=self.config.request_interval_seconds,
+        )
+        self._em_clist_fallback_url = str(frame.attrs.get("eastmoney_url") or "")
+        return pd.DataFrame(
+            {
+                "板块代码": _text_series(frame, "f12"),
+                "板块名称": _text_series(frame, "f14"),
+            }
+        )
+
+    def _fetch_em_concept_constituents_fallback(self, concept_code: str) -> pd.DataFrame:
+        normalized_code = str(concept_code or "").strip().upper()
+        if not re.fullmatch(r"BK\d+", normalized_code):
+            raise ValueError("东方财富成份股备用请求需要 BK 开头的板块代码。")
+        params = {
+            "pn": "1",
+            "pz": "100",
+            "po": "1",
+            "np": "1",
+            "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+            "fltt": "2",
+            "invt": "2",
+            "fid": "f12",
+            "fs": f"b:{normalized_code} f:!50",
+            "fields": (
+                "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,"
+                "f17,f18,f20,f21,f23,f24,f25,f22,f11,f62,f128,f136,f115,f152,f45"
+            ),
+        }
+        frame = _fetch_eastmoney_paginated_frame(
+            params,
+            preferred_url=self._em_clist_fallback_url,
+            request_interval_seconds=self.config.request_interval_seconds,
+        )
+        self._em_clist_fallback_url = str(frame.attrs.get("eastmoney_url") or "")
+        return pd.DataFrame(
+            {
+                "序号": range(1, len(frame) + 1),
+                "代码": _text_series(frame, "f12"),
+                "名称": _text_series(frame, "f14"),
+                "最新价": _number_series(frame, "f2"),
+                "涨跌幅": _number_series(frame, "f3"),
+                "涨跌额": _number_series(frame, "f4"),
+                "成交量": _number_series(frame, "f5"),
+                "成交额": _number_series(frame, "f6"),
+                "振幅": _number_series(frame, "f7"),
+                "最高": _number_series(frame, "f15"),
+                "最低": _number_series(frame, "f16"),
+                "今开": _number_series(frame, "f17"),
+                "昨收": _number_series(frame, "f18"),
+                "换手率": _number_series(frame, "f8"),
+                "市盈率-动态": _number_series(frame, "f9"),
+                "市净率": _number_series(frame, "f23"),
+            }
+        )
+
+    def _fetch_em_concept_history_fallback(
+        self,
+        concept_code: str,
+        *,
+        period: str,
+        start_date: date,
+        end_date: date,
+        adjust: str,
+    ) -> pd.DataFrame:
+        normalized_code = str(concept_code or "").strip().upper()
+        if not re.fullmatch(r"BK\d+", normalized_code):
+            raise ValueError("东方财富历史行情备用请求需要 BK 开头的板块代码。")
+        params = {
+            "secid": f"90.{normalized_code}",
+            "fields1": "f1,f2,f3,f4,f5,f6",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+            "klt": {"daily": "101", "weekly": "102", "monthly": "103"}[period],
+            "fqt": {"": "0", "qfq": "1", "hfq": "2"}[adjust],
+            "beg": start_date.strftime("%Y%m%d"),
+            "end": end_date.strftime("%Y%m%d"),
+            "smplmt": "10000",
+            "lmt": "1000000",
+        }
+        payload, used_url = _fetch_eastmoney_json(
+            _EASTMONEY_HIST_FALLBACK_URLS,
+            params,
+            preferred_url=self._em_hist_fallback_url,
+        )
+        self._em_hist_fallback_url = used_url
+        data = payload.get("data") or {}
+        klines = data.get("klines") or []
+        rows = [str(item).split(",") for item in klines]
+        columns = [
+            "日期",
+            "开盘",
+            "收盘",
+            "最高",
+            "最低",
+            "成交量",
+            "成交额",
+            "振幅",
+            "涨跌幅",
+            "涨跌额",
+            "换手率",
+        ]
+        if not rows:
+            return pd.DataFrame(columns=columns)
+        return pd.DataFrame(rows, columns=columns)
 
     def fetch_ths_concept_names(
         self,
@@ -1125,6 +1291,33 @@ class AkshareUSProvider:
                     self._last_request_at = time.monotonic()
         raise RuntimeError(f"AKShare request exhausted retries: {label}")
 
+    def _run_em_call_with_fallback(
+        self,
+        label: str,
+        sdk_operation: Callable[[], Any],
+        fallback_operation: Callable[[], Any],
+    ) -> Any:
+        if self._prefer_em_fallback:
+            try:
+                return self._run_call(f"{label}:fallback", fallback_operation)
+            except RuntimeError:
+                logger.warning(
+                    "Eastmoney preferred fallback failed request=%s; retrying AKShare SDK path",
+                    label,
+                )
+                self._prefer_em_fallback = False
+        try:
+            return self._run_call(label, sdk_operation)
+        except RuntimeError:
+            logger.warning(
+                "AKShare Eastmoney request failed request=%s; "
+                "trying browser-header fallback",
+                label,
+            )
+            result = self._run_call(f"{label}:fallback", fallback_operation)
+            self._prefer_em_fallback = True
+            return result
+
     def _run_optional_call(self, label: str, operation: Callable[[], Any]) -> Any:
         try:
             return self._run_call(label, operation)
@@ -1287,6 +1480,139 @@ def _as_dataframe(value: Any) -> pd.DataFrame:
     if isinstance(value, pd.DataFrame):
         return value.copy()
     return pd.DataFrame(value)
+
+
+def _fetch_eastmoney_paginated_frame(
+    params: dict[str, str],
+    *,
+    preferred_url: str = "",
+    request_interval_seconds: float = 0.0,
+) -> pd.DataFrame:
+    last_exception: Exception | None = None
+    page_size = max(1, int(params.get("pz", "100")))
+    for url in _preferred_urls(_EASTMONEY_CLIST_FALLBACK_URLS, preferred_url):
+        rows: list[dict[str, Any]] = []
+        try:
+            for page in range(1, 201):
+                page_params = dict(params)
+                page_params["pn"] = str(page)
+                payload = _fetch_eastmoney_url_json(url, page_params)
+                data = payload.get("data")
+                if not isinstance(data, dict):
+                    raise ValueError(f"东方财富返回缺少 data: {url}")
+                diff = data.get("diff") or []
+                if isinstance(diff, dict):
+                    diff = list(diff.values())
+                if not isinstance(diff, list):
+                    raise ValueError(f"东方财富返回 diff 类型非法: {url}")
+                page_rows = [item for item in diff if isinstance(item, dict)]
+                rows.extend(page_rows)
+                total = int(data.get("total") or 0)
+                if not page_rows or (total > 0 and len(rows) >= total) or len(page_rows) < page_size:
+                    break
+                time.sleep(max(0.2, min(2.0, float(request_interval_seconds))))
+            if rows:
+                result = pd.DataFrame(rows)
+                result.attrs["eastmoney_url"] = url
+                return result
+            raise ValueError(f"东方财富返回空列表: {url}")
+        except Exception as exc:
+            last_exception = exc
+            logger.warning(
+                "Eastmoney fallback endpoint failed url=%s error_type=%s",
+                url,
+                type(exc).__name__,
+            )
+    if last_exception is not None:
+        raise last_exception
+    return pd.DataFrame()
+
+
+def _fetch_eastmoney_json(
+    urls: Sequence[str],
+    params: dict[str, str],
+    *,
+    preferred_url: str = "",
+) -> tuple[dict[str, Any], str]:
+    last_exception: Exception | None = None
+    for url in _preferred_urls(urls, preferred_url):
+        try:
+            payload = _fetch_eastmoney_url_json(url, params)
+            if not isinstance(payload.get("data"), dict):
+                raise ValueError(f"东方财富返回缺少 data: {url}")
+            return payload, url
+        except Exception as exc:
+            last_exception = exc
+            logger.warning(
+                "Eastmoney fallback endpoint failed url=%s error_type=%s",
+                url,
+                type(exc).__name__,
+            )
+    if last_exception is not None:
+        raise last_exception
+    return {}, ""
+
+
+def _preferred_urls(urls: Sequence[str], preferred_url: str) -> tuple[str, ...]:
+    preferred = str(preferred_url or "").strip()
+    ordered = ([preferred] if preferred else []) + [url for url in urls if url != preferred]
+    return tuple(ordered)
+
+
+def _fetch_eastmoney_url_json(
+    url: str,
+    params: dict[str, str],
+) -> dict[str, Any]:
+    if url in _EASTMONEY_DIRECT_URLS:
+        try:
+            return _request_eastmoney_url_json(url, params, trust_env=False)
+        except Exception:
+            _EASTMONEY_DIRECT_URLS.discard(url)
+    try:
+        return _request_eastmoney_url_json(url, params, trust_env=True)
+    except Exception as proxied_error:
+        if not any(os.environ.get(key) for key in _PROXY_ENV_KEYS):
+            raise
+        logger.warning(
+            "Eastmoney request through configured proxy failed url=%s; "
+            "retrying direct without proxy",
+            url,
+        )
+        try:
+            payload = _request_eastmoney_url_json(url, params, trust_env=False)
+        except Exception as direct_error:
+            raise direct_error from proxied_error
+        _EASTMONEY_DIRECT_URLS.add(url)
+        return payload
+
+
+def _request_eastmoney_url_json(
+    url: str,
+    params: dict[str, str],
+    *,
+    trust_env: bool,
+) -> dict[str, Any]:
+    if trust_env:
+        response = requests.get(
+            url,
+            params=params,
+            headers=_EASTMONEY_HEADERS,
+            timeout=20,
+        )
+    else:
+        with requests.Session() as session:
+            session.trust_env = False
+            response = session.get(
+                url,
+                params=params,
+                headers=_EASTMONEY_HEADERS,
+                timeout=20,
+            )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError(f"东方财富返回不是 JSON 对象: {url}")
+    return payload
 
 
 def _empty_frame(columns: Sequence[str]) -> pd.DataFrame:

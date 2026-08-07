@@ -5,8 +5,8 @@ module = "sync_data_system.providers.akshare"
 runtime_config_key = "akshare"
 default_database = "akshare"
 plans_path = "plans"
-dependencies = ["akshare", "pandas", "clickhouse-connect"]
-import_modules = ["akshare"]
+dependencies = ["akshare>=1.18.59", "pandas", "requests", "clickhouse-connect"]
+import_modules = ["akshare", "requests"]
 plan_fields = ["codes", "begin_date", "end_date", "index_code", "period", "fields", "limit", "force", "continue_on_error"]
 
 [entrypoints]

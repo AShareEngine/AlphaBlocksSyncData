@@ -40,3 +40,18 @@ python3 scripts/run_provider_sync.py --config providers/akshare/plans/concept-em
 成份股和历史行情都需要逐个板块请求东方财富。首次全量运行建议先使用 `--limit 3`
 验证网络与表结构，再取消限制；请求间隔、重试和代理继续使用 `runtime.local.yaml` 的
 `sync.akshare.request_interval_seconds`、`retries`、`retry_backoff_seconds` 和 `proxy`。
+
+项目要求 `akshare>=1.18.59`，该版本开始支持历史行情直接传入 `BK` 板块代码。可用下面的命令
+检查并升级实际运行任务的 Python 环境：
+
+```bash
+python3 scripts/install_provider_deps.py akshare --install --upgrade
+python3 -c 'import sys, akshare; print(sys.executable, akshare.__version__)'
+```
+
+当 AKShare 自带请求被东方财富断开时，provider 会自动使用携带浏览器请求头的备用入口，并依次
+尝试 HTTPS、HTTP 及无编号域名。如果配置代理的请求失败，还会自动绕过代理直连东方财富，成功后
+同一批任务会复用该线路；分页请求继续服从 `request_interval_seconds`，降低触发断连限流的概率。
+`py_mini_racer` 输出的 `pkg_resources is deprecated`
+属于依赖弃用警告，不是同步失败原因；真正的失败信息应查看其后的 `ConnectionError` 或
+`ProxyError`。

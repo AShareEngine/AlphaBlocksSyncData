@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
+import requests
 
 from sync_data_system.providers.akshare.provider import AkshareUSConfig, AkshareUSProvider
 from sync_data_system.providers.akshare.repository import AkshareUSRepository
@@ -325,6 +326,32 @@ class _FakeAkshare:
                 },
             ]
         )
+
+
+class _FakeResponse:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class _FakeSession:
+    def __init__(self, response: _FakeResponse) -> None:
+        self.response = response
+        self.trust_env = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        return None
+
+    def get(self, *args, **kwargs) -> _FakeResponse:
+        return self.response
 
 
 class _FakeClickHouseClient:
@@ -683,6 +710,104 @@ class AkshareUSProviderTest(unittest.TestCase):
         self.assertEqual(hist_call["start_date"], "20240101")
         self.assertEqual(hist_call["end_date"], "20240103")
         self.assertEqual(hist_call["adjust"], "qfq")
+
+    def test_em_concept_directory_uses_browser_header_fallback(self) -> None:
+        response = _FakeResponse(
+            {
+                "data": {
+                    "total": 2,
+                    "diff": [
+                        {"f12": "BK0655", "f14": "融资融券"},
+                        {"f12": "BK0715", "f14": "绿色电力"},
+                    ],
+                }
+            }
+        )
+        with patch.object(
+            self.ak,
+            "stock_board_concept_name_em",
+            side_effect=requests.ConnectionError("connection aborted"),
+        ), patch(
+            "sync_data_system.providers.akshare.provider.requests.get",
+            return_value=response,
+        ) as request_get:
+            directory = self.provider.fetch_em_concept_names()
+
+        self.assertEqual(set(directory["concept_code"]), {"BK0655", "BK0715"})
+        request_kwargs = request_get.call_args.kwargs
+        self.assertIn("User-Agent", request_kwargs["headers"])
+        self.assertEqual(request_kwargs["timeout"], 20)
+
+    def test_em_concept_fallback_bypasses_broken_environment_proxy(self) -> None:
+        response = _FakeResponse(
+            {
+                "data": {
+                    "total": 1,
+                    "diff": [{"f12": "BK0655", "f14": "融资融券"}],
+                }
+            }
+        )
+        session = _FakeSession(response)
+        with patch.dict(
+            os.environ,
+            {"HTTP_PROXY": "http://broken.proxy", "HTTPS_PROXY": "http://broken.proxy"},
+            clear=False,
+        ), patch.object(
+            self.ak,
+            "stock_board_concept_name_em",
+            side_effect=requests.ConnectionError("connection aborted"),
+        ), patch(
+            "sync_data_system.providers.akshare.provider.requests.get",
+            side_effect=requests.ConnectionError("proxy disconnected"),
+        ), patch(
+            "sync_data_system.providers.akshare.provider.requests.Session",
+            return_value=session,
+        ), patch(
+            "sync_data_system.providers.akshare.provider._EASTMONEY_DIRECT_URLS",
+            set(),
+        ):
+            directory = self.provider.fetch_em_concept_names()
+
+        self.assertEqual(directory.iloc[0]["concept_code"], "BK0655")
+        self.assertFalse(session.trust_env)
+
+    def test_em_concept_data_tasks_use_direct_fallback_after_sdk_failure(self) -> None:
+        constituents_raw = self.ak.stock_board_concept_cons_em(symbol="BK0655")
+        history_raw = self.ak.stock_board_concept_hist_em(symbol="BK0715")
+        with patch.object(
+            self.ak,
+            "stock_board_concept_cons_em",
+            side_effect=requests.ConnectionError("connection aborted"),
+        ), patch.object(
+            self.ak,
+            "stock_board_concept_hist_em",
+            side_effect=requests.ConnectionError("connection aborted"),
+        ) as history_sdk, patch.object(
+            self.provider,
+            "_fetch_em_concept_constituents_fallback",
+            return_value=constituents_raw,
+        ) as constituents_fallback, patch.object(
+            self.provider,
+            "_fetch_em_concept_history_fallback",
+            return_value=history_raw,
+        ) as history_fallback:
+            constituents = self.provider.fetch_em_concept_constituents(
+                "融资融券",
+                "BK0655",
+            )
+            history = self.provider.fetch_em_concept_history(
+                "绿色电力",
+                "BK0715",
+                period="daily",
+                start_date="20240101",
+                end_date="20240103",
+            )
+
+        self.assertEqual(constituents.iloc[0]["symbol"], "000001")
+        self.assertEqual(history["trade_date"].max(), date(2024, 1, 3))
+        constituents_fallback.assert_called_once_with("BK0655")
+        history_fallback.assert_called_once()
+        history_sdk.assert_not_called()
 
 
 class AkshareUSRepositoryTest(unittest.TestCase):
