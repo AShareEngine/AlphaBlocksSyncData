@@ -55,3 +55,7 @@ python3 -c 'import sys, akshare; print(sys.executable, akshare.__version__)'
 `py_mini_racer` 输出的 `pkg_resources is deprecated`
 属于依赖弃用警告，不是同步失败原因；真正的失败信息应查看其后的 `ConnectionError` 或
 `ProxyError`。
+
+如果 `sync.akshare.proxy` 为空，provider 会在 AKShare 请求期间主动清除进程继承的
+`HTTP_PROXY`、`HTTPS_PROXY` 和 `ALL_PROXY`（包括小写变量），请求完成后再恢复。
+因此可以让 AKShare 完全直连，同时保留 `sync.yfinance.proxy` 给 yfinance 单独使用。

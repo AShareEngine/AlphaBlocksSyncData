@@ -531,6 +531,42 @@ class AkshareUSProviderTest(unittest.TestCase):
             },
         )
 
+    def test_blank_akshare_proxy_clears_inherited_proxy_during_request(self) -> None:
+        observed: dict[str, str | None] = {}
+        original_fetch = self.ak.stock_us_spot_em
+
+        def fetch_with_environment_snapshot():
+            observed.update(
+                {
+                    key: os.environ.get(key)
+                    for key in (
+                        "HTTP_PROXY",
+                        "HTTPS_PROXY",
+                        "http_proxy",
+                        "https_proxy",
+                        "ALL_PROXY",
+                        "all_proxy",
+                    )
+                }
+            )
+            return original_fetch()
+
+        inherited = {
+            "HTTP_PROXY": "http://inherited.proxy",
+            "HTTPS_PROXY": "http://inherited.proxy",
+            "ALL_PROXY": "socks5://inherited.proxy",
+        }
+        with patch.dict(os.environ, inherited, clear=False), patch.object(
+            self.ak,
+            "stock_us_spot_em",
+            side_effect=fetch_with_environment_snapshot,
+        ):
+            self.provider.fetch_us_spot()
+            self.assertTrue(all(value is None for value in observed.values()))
+            self.assertEqual(os.environ["HTTP_PROXY"], inherited["HTTP_PROXY"])
+            self.assertEqual(os.environ["HTTPS_PROXY"], inherited["HTTPS_PROXY"])
+            self.assertEqual(os.environ["ALL_PROXY"], inherited["ALL_PROXY"])
+
     def test_daily_uses_eastmoney_code_and_requested_date_range(self) -> None:
         frame = self.provider.fetch_us_daily(
             em_code="105.AAPL",
@@ -739,6 +775,14 @@ class AkshareUSProviderTest(unittest.TestCase):
         self.assertEqual(request_kwargs["timeout"], 20)
 
     def test_em_concept_fallback_bypasses_broken_environment_proxy(self) -> None:
+        provider = AkshareUSProvider(
+            AkshareUSConfig(
+                proxy="http://broken.proxy",
+                request_interval_seconds=0,
+                retries=0,
+            ),
+            akshare_module=self.ak,
+        )
         response = _FakeResponse(
             {
                 "data": {
@@ -766,10 +810,36 @@ class AkshareUSProviderTest(unittest.TestCase):
             "sync_data_system.providers.akshare.provider._EASTMONEY_DIRECT_URLS",
             set(),
         ):
-            directory = self.provider.fetch_em_concept_names()
+            directory = provider.fetch_em_concept_names()
 
         self.assertEqual(directory.iloc[0]["concept_code"], "BK0655")
         self.assertFalse(session.trust_env)
+
+    def test_em_concept_prefers_fallback_when_akshare_proxy_is_configured(self) -> None:
+        provider = AkshareUSProvider(
+            AkshareUSConfig(
+                proxy="http://127.0.0.1:7890",
+                request_interval_seconds=0,
+                retries=0,
+            ),
+            akshare_module=self.ak,
+        )
+        fallback_frame = pd.DataFrame(
+            [{"板块代码": "BK0655", "板块名称": "融资融券"}]
+        )
+        with patch.object(
+            self.ak,
+            "stock_board_concept_name_em",
+        ) as sdk_call, patch.object(
+            provider,
+            "_fetch_em_concept_names_fallback",
+            return_value=fallback_frame,
+        ) as fallback_call:
+            directory = provider.fetch_em_concept_names()
+
+        self.assertEqual(directory.iloc[0]["concept_code"], "BK0655")
+        fallback_call.assert_called_once()
+        sdk_call.assert_not_called()
 
     def test_em_concept_data_tasks_use_direct_fallback_after_sdk_failure(self) -> None:
         constituents_raw = self.ak.stock_board_concept_cons_em(symbol="BK0655")

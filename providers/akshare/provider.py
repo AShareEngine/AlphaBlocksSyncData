@@ -25,7 +25,14 @@ from sync_data_system.runtime_config import load_runtime_config
 
 logger = logging.getLogger(__name__)
 _PROXY_ENV_LOCK = threading.RLock()
-_PROXY_ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+_PROXY_ENV_KEYS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+)
 _EASTMONEY_DIRECT_URLS: set[str] = set()
 _EASTMONEY_HEADERS = {
     "Accept": "application/json, text/plain, */*",
@@ -315,7 +322,10 @@ class AkshareUSProvider:
         self._spot_cache: pd.DataFrame | None = None
         self._ths_concept_cache: pd.DataFrame | None = None
         self._em_concept_cache: pd.DataFrame | None = None
-        self._prefer_em_fallback = False
+        # Eastmoney's domestic endpoints frequently reject overseas/proxy exits.
+        # When AKShare has a global proxy configured (usually for US endpoints),
+        # prefer the browser-header path which can transparently retry direct.
+        self._prefer_em_fallback = bool(config.proxy)
         self._em_clist_fallback_url = ""
         self._em_hist_fallback_url = ""
 
@@ -1381,14 +1391,15 @@ def _normalize_cn_stock_symbol(value: Any) -> str:
 @contextmanager
 def _configured_proxy(proxy: str):
     normalized = str(proxy or "").strip()
-    if not normalized:
-        yield
-        return
     with _PROXY_ENV_LOCK:
         previous = {key: os.environ.get(key) for key in _PROXY_ENV_KEYS}
         try:
-            for key in _PROXY_ENV_KEYS:
-                os.environ[key] = normalized
+            if normalized:
+                for key in _PROXY_ENV_KEYS:
+                    os.environ[key] = normalized
+            else:
+                for key in _PROXY_ENV_KEYS:
+                    os.environ.pop(key, None)
             yield
         finally:
             for key, value in previous.items():
