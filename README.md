@@ -33,7 +33,7 @@ AlphaBlocksSyncData 把数据同步拆成三层：统一同步框架、独立 pr
 | AmazingData | `providers/amazingdata/` | 主行情、基础信息、指数、ETF、可转债、期权、龙虎榜、融资融券、分红配股等 | 真实同步建议在 Linux / Windows 执行 |
 | BaoStock | `providers/baostock/` | 交易日、股票基础信息、日线行情等公开数据 | 适合补充基础公开数据 |
 | QMT | `providers/qmt/` | 通过 HTTP API 获取 QMT K 线数据 | 需要配置 QMT 服务地址和 API Key |
-| AKShare | `providers/akshare/` | 美股行情与基本面、同花顺概念板块目录/指数/简介 | 无 API Key；聚合公开网页接口 |
+| AKShare | `providers/akshare/` | 美股行情与基本面、同花顺及东方财富概念板块数据 | 无 API Key；聚合公开网页接口 |
 | US Market Free | `providers/yfinance/` | 美股证券主表、日线、公司行动、行业、板块和概念 ETF | 无 API Key；行情来自 yfinance，主数据来自 FinanceDatabase |
 
 ## 同步链路
@@ -96,6 +96,7 @@ cp config/runtime.example.yaml config/runtime.local.yaml
 | `providers/akshare/plans/full.toml` | AKShare 美股首次全量同步计划 |
 | `providers/akshare/plans/daily.toml` | AKShare 美股日常增量同步计划 |
 | `providers/akshare/plans/enrichment.sample.toml` | AKShare 美股资料、财务和估值示例 |
+| `providers/akshare/plans/concept-em.toml` | AKShare 东方财富概念目录、成份股和历史行情同步计划 |
 | `providers/tushare/plans/daily.toml` | Tushare 核心日常增量同步计划 |
 | `providers/tushare/plans/all-historical.toml` | Tushare 全部历史只读接口计划 |
 | `providers/<name>/provider.toml` | provider 声明、依赖、任务和入口 |
@@ -267,6 +268,7 @@ providers/<name>/
 | [QMT 接入说明](docs/qmt-data.md) | QMT HTTP API 和 TOML 测试说明 |
 | [AKShare 美股数据说明](docs/akshare-us-data.md) | AKShare 美股任务、表、配置和使用边界 |
 | [AKShare 同花顺概念板块说明](docs/akshare-ths-concept-data.md) | 概念目录、指数日线、板块简介任务及增量规则 |
+| [AKShare 东方财富概念板块说明](docs/akshare-em-concept-data.md) | 概念目录、成份股快照和板块历史行情任务 |
 | [免费美股数据说明](docs/yfinance-data.md) | yfinance / FinanceDatabase 任务、表和使用边界 |
 | [Provider 开发文档](docs/provider-development.md) | provider 目录、声明文件和任务配置说明 |
 

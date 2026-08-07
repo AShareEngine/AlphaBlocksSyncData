@@ -1,0 +1,21 @@
+source = "akshare"
+runtime_path = "config/runtime.local.yaml"
+database = "akshare"
+log_level = "INFO"
+continue_on_error = true
+
+[defaults]
+limit = 0
+force = false
+continue_on_error = true
+
+[[tasks]]
+task = "stock_board_concept_name_em"
+
+[[tasks]]
+task = "stock_board_concept_cons_em"
+
+[[tasks]]
+task = "stock_board_concept_hist_em"
+begin_date = 20100101
+period = "daily"

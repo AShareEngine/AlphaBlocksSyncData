@@ -192,6 +192,58 @@ THS_CONCEPT_INFO_COLUMNS = (
     "fetched_at",
 )
 
+EM_CONCEPT_NAME_COLUMNS = (
+    "snapshot_date",
+    "concept_code",
+    "concept_name",
+    "source",
+    "fetched_at",
+)
+
+EM_CONCEPT_CONS_COLUMNS = (
+    "snapshot_date",
+    "concept_code",
+    "concept_name",
+    "rank",
+    "symbol",
+    "name",
+    "last",
+    "change_percent",
+    "change_amount",
+    "volume",
+    "amount",
+    "amplitude",
+    "high",
+    "low",
+    "open",
+    "previous_close",
+    "turnover_rate",
+    "pe_dynamic",
+    "pb",
+    "source",
+    "fetched_at",
+)
+
+EM_CONCEPT_HIST_COLUMNS = (
+    "concept_code",
+    "concept_name",
+    "period",
+    "adjust",
+    "trade_date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "change_percent",
+    "change_amount",
+    "volume",
+    "amount",
+    "amplitude",
+    "turnover_rate",
+    "source",
+    "fetched_at",
+)
+
 
 @dataclass(frozen=True)
 class AkshareUSConfig:
@@ -236,10 +288,183 @@ class AkshareUSProvider:
         self._last_request_at = 0.0
         self._spot_cache: pd.DataFrame | None = None
         self._ths_concept_cache: pd.DataFrame | None = None
+        self._em_concept_cache: pd.DataFrame | None = None
 
     def close(self) -> None:
         self._spot_cache = None
         self._ths_concept_cache = None
+        self._em_concept_cache = None
+
+    def fetch_em_concept_names(
+        self,
+        *,
+        limit: int = 0,
+        snapshot_date: date | None = None,
+    ) -> pd.DataFrame:
+        raw = self._run_call(
+            "stock_board_concept_name_em",
+            self._akshare.stock_board_concept_name_em,
+        )
+        frame = _as_dataframe(raw)
+        if frame.empty:
+            return _empty_frame(EM_CONCEPT_NAME_COLUMNS)
+        result = pd.DataFrame(index=frame.index)
+        result["snapshot_date"] = snapshot_date or date.today()
+        result["concept_code"] = _text_series(frame, "板块代码", "代码", "code")
+        result["concept_name"] = _text_series(frame, "板块名称", "名称", "name")
+        result["source"] = "akshare:stock_board_concept_name_em"
+        result["fetched_at"] = _utcnow()
+        result = result[(result["concept_code"] != "") & (result["concept_name"] != "")]
+        result = result.drop_duplicates(subset=["concept_code"], keep="first")
+        result = result.sort_values(["concept_name", "concept_code"])
+        if limit > 0:
+            result = result.head(limit)
+        normalized = result.loc[:, list(EM_CONCEPT_NAME_COLUMNS)].reset_index(drop=True)
+        if limit <= 0:
+            self._em_concept_cache = normalized.copy()
+        return normalized
+
+    def resolve_em_concepts(
+        self,
+        values: Iterable[Any] = (),
+        *,
+        limit: int = 0,
+        directory: pd.DataFrame | Sequence[dict[str, str]] | None = None,
+    ) -> list[dict[str, str]]:
+        requested = normalize_ths_concept_list(values)
+        if directory is None:
+            directory = (
+                self._em_concept_cache.copy()
+                if self._em_concept_cache is not None
+                else self.fetch_em_concept_names()
+            )
+        frame = _as_dataframe(directory)
+        concepts = [
+            {
+                "concept_code": str(row.concept_code).strip(),
+                "concept_name": str(row.concept_name).strip(),
+            }
+            for row in frame.itertuples(index=False)
+            if str(getattr(row, "concept_code", "")).strip()
+            and str(getattr(row, "concept_name", "")).strip()
+        ]
+        if requested:
+            by_code = {item["concept_code"].casefold(): item for item in concepts}
+            by_name = {item["concept_name"].casefold(): item for item in concepts}
+            resolved: list[dict[str, str]] = []
+            missing: list[str] = []
+            for value in requested:
+                item = by_code.get(value.casefold()) or by_name.get(value.casefold())
+                if item is None:
+                    missing.append(value)
+                elif item not in resolved:
+                    resolved.append(item)
+            if missing:
+                raise ValueError(f"未找到东方财富概念板块: {missing[:10]}")
+            concepts = resolved
+        return concepts[:limit] if limit > 0 else concepts
+
+    def fetch_em_concept_constituents(
+        self,
+        concept_name: str,
+        concept_code: str,
+        *,
+        snapshot_date: date | None = None,
+    ) -> pd.DataFrame:
+        symbol = concept_code or concept_name
+        raw = self._run_call(
+            f"stock_board_concept_cons_em:{symbol}",
+            lambda: self._akshare.stock_board_concept_cons_em(symbol=symbol),
+        )
+        frame = _as_dataframe(raw)
+        if frame.empty:
+            return _empty_frame(EM_CONCEPT_CONS_COLUMNS)
+        result = pd.DataFrame(index=frame.index)
+        result["snapshot_date"] = snapshot_date or date.today()
+        result["concept_code"] = concept_code
+        result["concept_name"] = concept_name
+        result["rank"] = pd.to_numeric(
+            _value_series(frame, "序号", "排名", "rank"), errors="coerce"
+        ).astype("Int64")
+        result["symbol"] = _text_series(frame, "代码", "symbol", "code").map(
+            _normalize_cn_stock_symbol
+        )
+        result["name"] = _text_series(frame, "名称", "name")
+        result["last"] = _number_series(frame, "最新价", "last")
+        result["change_percent"] = _number_series(frame, "涨跌幅", "change_percent")
+        result["change_amount"] = _number_series(frame, "涨跌额", "change_amount")
+        result["volume"] = _number_series(frame, "成交量", "volume")
+        result["amount"] = _number_series(frame, "成交额", "amount")
+        result["amplitude"] = _number_series(frame, "振幅", "amplitude")
+        result["high"] = _number_series(frame, "最高", "high")
+        result["low"] = _number_series(frame, "最低", "low")
+        result["open"] = _number_series(frame, "今开", "开盘", "open")
+        result["previous_close"] = _number_series(frame, "昨收", "previous_close")
+        result["turnover_rate"] = _number_series(frame, "换手率", "turnover_rate")
+        result["pe_dynamic"] = _number_series(frame, "市盈率-动态", "pe_dynamic")
+        result["pb"] = _number_series(frame, "市净率", "pb")
+        result["source"] = "akshare:stock_board_concept_cons_em"
+        result["fetched_at"] = _utcnow()
+        result = result[result["symbol"] != ""].copy()
+        result = result.drop_duplicates(subset=["symbol"], keep="first")
+        return result.loc[:, list(EM_CONCEPT_CONS_COLUMNS)].reset_index(drop=True)
+
+    def fetch_em_concept_history(
+        self,
+        concept_name: str,
+        concept_code: str,
+        *,
+        period: str,
+        start_date: str | date,
+        end_date: str | date,
+        adjust: str = "",
+    ) -> pd.DataFrame:
+        normalized_period = str(period or "daily").strip().lower()
+        if normalized_period not in {"daily", "weekly", "monthly"}:
+            raise ValueError("东方财富概念历史周期只能是 daily、weekly 或 monthly。")
+        normalized_adjust = str(adjust or "").strip().lower()
+        if normalized_adjust not in {"", "qfq", "hfq"}:
+            raise ValueError("东方财富概念历史复权只能是空字符串、qfq 或 hfq。")
+        start = _date_value(start_date)
+        end = _date_value(end_date)
+        symbol = concept_code or concept_name
+        raw = self._run_call(
+            f"stock_board_concept_hist_em:{symbol}:{normalized_period}:{normalized_adjust or 'none'}",
+            lambda: self._akshare.stock_board_concept_hist_em(
+                symbol=symbol,
+                period=normalized_period,
+                start_date=start.strftime("%Y%m%d"),
+                end_date=end.strftime("%Y%m%d"),
+                adjust=normalized_adjust,
+            ),
+        )
+        frame = _as_dataframe(raw)
+        if frame.empty:
+            return _empty_frame(EM_CONCEPT_HIST_COLUMNS)
+        result = pd.DataFrame(index=frame.index)
+        result["concept_code"] = concept_code
+        result["concept_name"] = concept_name
+        result["period"] = normalized_period
+        result["adjust"] = normalized_adjust
+        result["trade_date"] = pd.to_datetime(
+            _value_series(frame, "日期", "date"), errors="coerce"
+        ).dt.date
+        result["open"] = _number_series(frame, "开盘", "open")
+        result["high"] = _number_series(frame, "最高", "high")
+        result["low"] = _number_series(frame, "最低", "low")
+        result["close"] = _number_series(frame, "收盘", "close")
+        result["change_percent"] = _number_series(frame, "涨跌幅", "change_percent")
+        result["change_amount"] = _number_series(frame, "涨跌额", "change_amount")
+        result["volume"] = _number_series(frame, "成交量", "volume")
+        result["amount"] = _number_series(frame, "成交额", "amount")
+        result["amplitude"] = _number_series(frame, "振幅", "amplitude")
+        result["turnover_rate"] = _number_series(frame, "换手率", "turnover_rate")
+        result["source"] = "akshare:stock_board_concept_hist_em"
+        result["fetched_at"] = _utcnow()
+        result = result[result["trade_date"].notna()].copy()
+        result = result[(result["trade_date"] >= start) & (result["trade_date"] <= end)]
+        normalized = result.loc[:, list(EM_CONCEPT_HIST_COLUMNS)]
+        return normalized.sort_values("trade_date").reset_index(drop=True)
 
     def fetch_ths_concept_names(
         self,
@@ -955,6 +1180,11 @@ def normalize_ths_concept_list(values: Iterable[Any]) -> list[str]:
     return result
 
 
+def _normalize_cn_stock_symbol(value: Any) -> str:
+    symbol = str(value or "").strip()
+    return symbol.zfill(6) if symbol.isdigit() and len(symbol) < 6 else symbol
+
+
 @contextmanager
 def _configured_proxy(proxy: str):
     normalized = str(proxy or "").strip()
@@ -1187,6 +1417,9 @@ __all__ = [
     "AkshareUSConfig",
     "AkshareUSProvider",
     "DAILY_COLUMNS",
+    "EM_CONCEPT_CONS_COLUMNS",
+    "EM_CONCEPT_HIST_COLUMNS",
+    "EM_CONCEPT_NAME_COLUMNS",
     "FINANCIAL_INDICATOR_COLUMNS",
     "FINANCIAL_STATEMENT_COLUMNS",
     "INDEX_COLUMNS",

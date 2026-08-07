@@ -259,6 +259,73 @@ class _FakeAkshare:
             ]
         )
 
+    def stock_board_concept_name_em(self):
+        self.calls.append(("stock_board_concept_name_em", {}))
+        return pd.DataFrame(
+            [
+                {"板块名称": "融资融券", "板块代码": "BK0655"},
+                {"板块名称": "绿色电力", "板块代码": "BK0715"},
+            ]
+        )
+
+    def stock_board_concept_cons_em(self, **kwargs):
+        self.calls.append(("stock_board_concept_cons_em", kwargs))
+        return pd.DataFrame(
+            [
+                {
+                    "序号": 1,
+                    "代码": "000001",
+                    "名称": "平安银行",
+                    "最新价": 10.5,
+                    "涨跌幅": 1.2,
+                    "涨跌额": 0.12,
+                    "成交量": 1000,
+                    "成交额": 10500,
+                    "振幅": 2.1,
+                    "最高": 10.7,
+                    "最低": 10.3,
+                    "今开": 10.4,
+                    "昨收": 10.38,
+                    "换手率": 0.8,
+                    "市盈率-动态": 6.5,
+                    "市净率": 0.7,
+                }
+            ]
+        )
+
+    def stock_board_concept_hist_em(self, **kwargs):
+        self.calls.append(("stock_board_concept_hist_em", kwargs))
+        return pd.DataFrame(
+            [
+                {
+                    "日期": "2024-01-02",
+                    "开盘": 1100.0,
+                    "收盘": 1110.0,
+                    "最高": 1120.0,
+                    "最低": 1090.0,
+                    "涨跌幅": 0.9,
+                    "涨跌额": 10.0,
+                    "成交量": 100000,
+                    "成交额": 2.5e9,
+                    "振幅": 2.7,
+                    "换手率": 1.1,
+                },
+                {
+                    "日期": "2024-01-03",
+                    "开盘": 1110.0,
+                    "收盘": 1125.0,
+                    "最高": 1130.0,
+                    "最低": 1105.0,
+                    "涨跌幅": 1.35,
+                    "涨跌额": 15.0,
+                    "成交量": 120000,
+                    "成交额": 2.9e9,
+                    "振幅": 2.25,
+                    "换手率": 1.3,
+                },
+            ]
+        )
+
 
 class _FakeClickHouseClient:
     def __init__(self) -> None:
@@ -584,6 +651,39 @@ class AkshareUSProviderTest(unittest.TestCase):
         self.assertEqual(index_call["start_date"], "20240101")
         self.assertEqual(index_call["end_date"], "20240103")
 
+    def test_em_concept_directory_constituents_and_history_are_normalized(self) -> None:
+        directory = self.provider.fetch_em_concept_names(snapshot_date=date(2024, 1, 5))
+        concepts = self.provider.resolve_em_concepts(["BK0655"], directory=directory)
+        constituents = self.provider.fetch_em_concept_constituents(
+            concepts[0]["concept_name"],
+            concepts[0]["concept_code"],
+            snapshot_date=date(2024, 1, 5),
+        )
+        history = self.provider.fetch_em_concept_history(
+            concepts[0]["concept_name"],
+            concepts[0]["concept_code"],
+            period="daily",
+            start_date="20240101",
+            end_date="20240103",
+            adjust="qfq",
+        )
+
+        self.assertEqual(directory["concept_code"].tolist(), ["BK0715", "BK0655"])
+        self.assertEqual(concepts, [{"concept_code": "BK0655", "concept_name": "融资融券"}])
+        self.assertEqual(constituents.iloc[0]["symbol"], "000001")
+        self.assertEqual(constituents.iloc[0]["pe_dynamic"], 6.5)
+        self.assertEqual(history["trade_date"].max(), date(2024, 1, 3))
+        self.assertEqual(history.iloc[0]["period"], "daily")
+        self.assertEqual(history.iloc[0]["adjust"], "qfq")
+        cons_call = next(item for item in self.ak.calls if item[0] == "stock_board_concept_cons_em")[1]
+        hist_call = next(item for item in self.ak.calls if item[0] == "stock_board_concept_hist_em")[1]
+        self.assertEqual(cons_call["symbol"], "BK0655")
+        self.assertEqual(hist_call["symbol"], "BK0655")
+        self.assertEqual(hist_call["period"], "daily")
+        self.assertEqual(hist_call["start_date"], "20240101")
+        self.assertEqual(hist_call["end_date"], "20240103")
+        self.assertEqual(hist_call["adjust"], "qfq")
+
 
 class AkshareUSRepositoryTest(unittest.TestCase):
     def test_ensure_tables_creates_all_business_and_state_tables(self) -> None:
@@ -600,6 +700,9 @@ class AkshareUSRepositoryTest(unittest.TestCase):
         self.assertIn("ak_stock_board_concept_name_ths", ddl)
         self.assertIn("ak_stock_board_concept_index_ths", ddl)
         self.assertIn("ak_stock_board_concept_info_ths", ddl)
+        self.assertIn("ak_stock_board_concept_name_em", ddl)
+        self.assertIn("ak_stock_board_concept_cons_em", ddl)
+        self.assertIn("ak_stock_board_concept_hist_em", ddl)
         self.assertIn("ak_sync_task_log", ddl)
         self.assertIn("ak_symbol_cursor", ddl)
 
@@ -832,6 +935,79 @@ class AkshareUSRunnerTest(unittest.TestCase):
         ]
         self.assertEqual(len(info_calls), 1)
         self.assertEqual(info_calls[0][1]["symbol"], "机器人概念")
+
+    def test_em_concept_constituents_task_writes_directory_and_snapshot(self) -> None:
+        provider = AkshareUSProvider(
+            AkshareUSConfig(request_interval_seconds=0, retries=0),
+            akshare_module=_FakeAkshare(),
+        )
+        client = _FakeClickHouseClient()
+        repository = AkshareUSRepository(client, database="akshare")
+        args = SyncArgs(
+            task="stock_board_concept_cons_em",
+            codes_raw="融资融券",
+            begin_date="",
+            end_date="",
+            index_code="",
+            period="",
+            fields="",
+            limit=0,
+            force=True,
+            continue_on_error=False,
+            runtime_path=None,
+            database="akshare",
+            log_level="INFO",
+        )
+
+        inserted = run_sync_args(args, provider, repository)
+
+        self.assertEqual(inserted, 1)
+        tables = [call[0] for call in client.insert_calls]
+        self.assertIn("akshare.ak_stock_board_concept_name_em", tables)
+        self.assertIn("akshare.ak_stock_board_concept_cons_em", tables)
+        cons_call = next(
+            item for item in provider._akshare_module.calls
+            if item[0] == "stock_board_concept_cons_em"
+        )
+        self.assertEqual(cons_call[1]["symbol"], "BK0655")
+
+    def test_em_concept_history_task_separates_period_and_adjust_cursor(self) -> None:
+        provider = AkshareUSProvider(
+            AkshareUSConfig(request_interval_seconds=0, retries=0, adjust="qfq"),
+            akshare_module=_FakeAkshare(),
+        )
+        client = _FakeClickHouseClient()
+        repository = AkshareUSRepository(client, database="akshare")
+        args = SyncArgs(
+            task="stock_board_concept_hist_em",
+            codes_raw="BK0715",
+            begin_date="20240101",
+            end_date="20240103",
+            index_code="",
+            period="weekly",
+            fields="",
+            limit=0,
+            force=True,
+            continue_on_error=False,
+            runtime_path=None,
+            database="akshare",
+            log_level="INFO",
+        )
+
+        inserted = run_sync_args(args, provider, repository)
+
+        self.assertEqual(inserted, 2)
+        tables = [call[0] for call in client.insert_calls]
+        self.assertIn("akshare.ak_stock_board_concept_hist_em", tables)
+        cursor_call = next(call for call in client.insert_calls if call[0].endswith("ak_symbol_cursor"))
+        self.assertEqual(cursor_call[2][0][1], "BK0715|WEEKLY|QFQ")
+        self.assertEqual(cursor_call[2][0][2], date(2024, 1, 3))
+        hist_call = next(
+            item for item in provider._akshare_module.calls
+            if item[0] == "stock_board_concept_hist_em"
+        )
+        self.assertEqual(hist_call[1]["period"], "weekly")
+        self.assertEqual(hist_call[1]["adjust"], "qfq")
 
 
 if __name__ == "__main__":

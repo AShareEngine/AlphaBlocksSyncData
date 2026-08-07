@@ -11,6 +11,9 @@ import pandas as pd
 
 from sync_data_system.providers.akshare.provider import (
     DAILY_COLUMNS,
+    EM_CONCEPT_CONS_COLUMNS,
+    EM_CONCEPT_HIST_COLUMNS,
+    EM_CONCEPT_NAME_COLUMNS,
     FINANCIAL_INDICATOR_COLUMNS,
     FINANCIAL_STATEMENT_COLUMNS,
     INDEX_COLUMNS,
@@ -43,6 +46,9 @@ TASK_COLUMNS: dict[str, tuple[str, ...]] = {
     "stock_board_concept_name_ths": THS_CONCEPT_NAME_COLUMNS,
     "stock_board_concept_index_ths": THS_CONCEPT_INDEX_COLUMNS,
     "stock_board_concept_info_ths": THS_CONCEPT_INFO_COLUMNS,
+    "stock_board_concept_name_em": EM_CONCEPT_NAME_COLUMNS,
+    "stock_board_concept_cons_em": EM_CONCEPT_CONS_COLUMNS,
+    "stock_board_concept_hist_em": EM_CONCEPT_HIST_COLUMNS,
 }
 
 STRING_COLUMNS = frozenset(
@@ -167,6 +173,36 @@ class AkshareUSRepository:
         limit_sql = f"LIMIT {int(limit)}" if limit > 0 else ""
         table = self._table_ref(
             AKSHARE_TASK_SPECS["stock_board_concept_name_ths"].table_name
+        )
+        sql = f"""
+        SELECT concept_code, argMax(concept_name, fetched_at) AS concept_name
+        FROM {table}
+        WHERE snapshot_date = {{snapshot_date:Date}}
+        GROUP BY concept_code
+        ORDER BY concept_name, concept_code
+        {limit_sql}
+        """
+        return [
+            {
+                "concept_code": str(row[0]).strip(),
+                "concept_name": str(row[1]).strip(),
+            }
+            for row in self.client.query_rows(
+                sql,
+                {"snapshot_date": snapshot_date or date.today()},
+            )
+            if len(row) >= 2 and str(row[0]).strip() and str(row[1]).strip()
+        ]
+
+    def load_em_concepts(
+        self,
+        *,
+        snapshot_date: date | None = None,
+        limit: int = 0,
+    ) -> list[dict[str, str]]:
+        limit_sql = f"LIMIT {int(limit)}" if limit > 0 else ""
+        table = self._table_ref(
+            AKSHARE_TASK_SPECS["stock_board_concept_name_em"].table_name
         )
         sql = f"""
         SELECT concept_code, argMax(concept_name, fetched_at) AS concept_name
@@ -596,6 +632,76 @@ class AkshareUSRepository:
             ENGINE = ReplacingMergeTree(fetched_at)
             PARTITION BY toYYYYMM(snapshot_date)
             ORDER BY (snapshot_date, concept_code, item)
+            """
+        if task == "stock_board_concept_name_em":
+            return f"""
+            CREATE TABLE IF NOT EXISTS {table}
+            (
+                snapshot_date Date,
+                concept_code String,
+                concept_name String,
+                source String,
+                fetched_at DateTime64(3)
+            )
+            ENGINE = ReplacingMergeTree(fetched_at)
+            PARTITION BY toYYYYMM(snapshot_date)
+            ORDER BY (snapshot_date, concept_code)
+            """
+        if task == "stock_board_concept_cons_em":
+            return f"""
+            CREATE TABLE IF NOT EXISTS {table}
+            (
+                snapshot_date Date,
+                concept_code String,
+                concept_name String,
+                rank Nullable(Int64),
+                symbol String,
+                name String,
+                last Nullable(Float64),
+                change_percent Nullable(Float64),
+                change_amount Nullable(Float64),
+                volume Nullable(Float64),
+                amount Nullable(Float64),
+                amplitude Nullable(Float64),
+                high Nullable(Float64),
+                low Nullable(Float64),
+                open Nullable(Float64),
+                previous_close Nullable(Float64),
+                turnover_rate Nullable(Float64),
+                pe_dynamic Nullable(Float64),
+                pb Nullable(Float64),
+                source String,
+                fetched_at DateTime64(3)
+            )
+            ENGINE = ReplacingMergeTree(fetched_at)
+            PARTITION BY toYYYYMM(snapshot_date)
+            ORDER BY (snapshot_date, concept_code, symbol)
+            """
+        if task == "stock_board_concept_hist_em":
+            return f"""
+            CREATE TABLE IF NOT EXISTS {table}
+            (
+                concept_code String,
+                concept_name String,
+                period String,
+                adjust String,
+                trade_date Date,
+                open Nullable(Float64),
+                high Nullable(Float64),
+                low Nullable(Float64),
+                close Nullable(Float64),
+                change_percent Nullable(Float64),
+                change_amount Nullable(Float64),
+                volume Nullable(Float64),
+                amount Nullable(Float64),
+                amplitude Nullable(Float64),
+                turnover_rate Nullable(Float64),
+                source String,
+                fetched_at DateTime64(3)
+            )
+            ENGINE = ReplacingMergeTree(fetched_at)
+            PARTITION BY toYYYYMM(trade_date)
+            ORDER BY (concept_code, period, adjust, trade_date)
             """
         raise KeyError(task)
 

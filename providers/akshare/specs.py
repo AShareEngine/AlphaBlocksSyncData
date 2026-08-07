@@ -77,6 +77,22 @@ AKSHARE_TASK_SPECS: dict[str, AkshareTaskSpec] = {
         "ak_stock_board_concept_info_ths",
         uses_codes=True,
     ),
+    "stock_board_concept_name_em": AkshareTaskSpec(
+        "stock_board_concept_name_em",
+        "ak_stock_board_concept_name_em",
+    ),
+    "stock_board_concept_cons_em": AkshareTaskSpec(
+        "stock_board_concept_cons_em",
+        "ak_stock_board_concept_cons_em",
+        uses_codes=True,
+    ),
+    "stock_board_concept_hist_em": AkshareTaskSpec(
+        "stock_board_concept_hist_em",
+        "ak_stock_board_concept_hist_em",
+        cursor_field="trade_date",
+        uses_codes=True,
+        kind="index",
+    ),
 }
 
 AKSHARE_TASK_CHOICES = tuple(AKSHARE_TASK_SPECS)
