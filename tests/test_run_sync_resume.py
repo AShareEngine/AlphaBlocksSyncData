@@ -358,7 +358,7 @@ class RunSyncResumeTest(unittest.TestCase):
             ],
         )
 
-    def test_market_kline_uses_historical_stock_index_etf_option_kzz_universes(self) -> None:
+    def test_market_kline_daily_includes_etf_options_but_minute_excludes_them(self) -> None:
         for task in ("daily_kline", "minute_kline"):
             with self.subTest(task=task):
                 context = self._build_context()
@@ -373,31 +373,71 @@ class RunSyncResumeTest(unittest.TestCase):
                     end_date=20240131,
                 )
 
+                expected_codes = [
+                    "000001.SZ",
+                    "600000.SH",
+                    "000300.SH",
+                    "510300.SH",
+                ]
+                expected_security_types = [
+                    "EXTRA_STOCK_A",
+                    "EXTRA_INDEX_A",
+                    "EXTRA_ETF",
+                ]
+                if task == "daily_kline":
+                    expected_codes.extend(["10000001.SH", "10000002.SH"])
+                    expected_security_types.append("EXTRA_ETF_OP")
+                expected_codes.append("110030.SH")
+                expected_security_types.append("EXTRA_KZZ")
+
+                self.assertEqual(result, expected_codes)
                 self.assertEqual(
-                    result,
-                    [
-                        "000001.SZ",
-                        "600000.SH",
-                        "000300.SH",
-                        "510300.SH",
-                        "10000001.SH",
-                        "10000002.SH",
-                        "110030.SH",
-                    ],
-                )
-                self.assertEqual(
-                    context.base_data.hist_code_calls,
-                    [
-                        ("EXTRA_STOCK_A", 20100101, 20240131, "/tmp/amazing_data_cache"),
-                        ("EXTRA_INDEX_A", 20100101, 20240131, "/tmp/amazing_data_cache"),
-                        ("EXTRA_ETF", 20100101, 20240131, "/tmp/amazing_data_cache"),
-                        ("EXTRA_ETF_OP", 20100101, 20240131, "/tmp/amazing_data_cache"),
-                        ("EXTRA_KZZ", 20100101, 20240131, "/tmp/amazing_data_cache"),
-                    ],
+                    [item[0] for item in context.base_data.hist_code_calls],
+                    expected_security_types,
                 )
                 self.assertEqual(context.base_data.stock_universe_calls, [])
                 self.assertEqual(context.base_data.index_universe_calls, [])
                 self.assertEqual(context.base_data.etf_universe_calls, [])
+
+    def test_minute_kline_filters_explicit_etf_option_codes(self) -> None:
+        context = self._build_context()
+
+        result = resolve_code_list(
+            base_data=context.base_data,
+            task="minute_kline",
+            raw_codes="000001.SZ,10000001.SH",
+            limit=0,
+            local_path="/tmp/amazing_data_cache",
+            begin_date=20240101,
+            end_date=20240131,
+        )
+
+        self.assertEqual(result, ["000001.SZ"])
+        self.assertEqual(
+            context.base_data.hist_code_calls,
+            [
+                (
+                    "EXTRA_ETF_OP",
+                    20100101,
+                    20240131,
+                    "/tmp/amazing_data_cache",
+                )
+            ],
+        )
+
+    def test_minute_kline_rejects_explicit_etf_option_only(self) -> None:
+        context = self._build_context()
+
+        with self.assertRaisesRegex(ValueError, "不支持同步 EXTRA_ETF_OP"):
+            resolve_code_list(
+                base_data=context.base_data,
+                task="minute_kline",
+                raw_codes="10000001.SH",
+                limit=0,
+                local_path="/tmp/amazing_data_cache",
+                begin_date=20240101,
+                end_date=20240131,
+            )
 
     def test_hist_code_list_syncs_all_market_asset_types(self) -> None:
         calls = []

@@ -523,7 +523,8 @@ export SYNC_MAX_PARALLEL_PROVIDERS=3
 
 ### minute_kline
 
-- 从 `ad_hist_code_daily` 获取请求区间内的股票、指数、ETF、ETF 期权、可转债代码池
+- 从 `ad_hist_code_daily` 获取请求区间内的股票、指数、ETF、可转债代码池
+- 不同步 `EXTRA_ETF_OP` ETF 期权分钟数据
 - 按单只证券逐个同步
 - 每只证券同步前先查 `ad_market_kline_minute` 中该证券最新日期
 - 仅同步 1 分钟 K 线

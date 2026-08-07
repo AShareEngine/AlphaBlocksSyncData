@@ -175,6 +175,37 @@ class ServiceTaskRegistryTest(unittest.TestCase):
         self.assertEqual(probe.end_date, 20240131)
         self.assertEqual(probe.codes, [])
 
+    def test_minute_kline_defaults_excludes_etf_option_codes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            probe = create_probe(
+                task_name="amazingdata.minute_kline",
+                job_id="job1",
+                project_root=Path(tmpdir),
+                log_path=Path(tmpdir) / "job1.log",
+                begin_date=20240101,
+                end_date=20240131,
+            )
+            probe.context = SimpleNamespace(
+                base_data=_FakeBaseData(),
+                provider=_FakeProvider(),
+                sdk_config=SimpleNamespace(local_path="/tmp/amazing_data_cache"),
+            )
+
+            TASK_REGISTRY.resolve_inputs(probe)
+
+        self.assertNotIn("10000001.SH", probe.codes)
+        self.assertEqual(
+            probe.codes,
+            [
+                "000001.SZ",
+                "600000.SH",
+                "000005.SZ",
+                "000300.SH",
+                "510300.SH",
+                "110030.SH",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

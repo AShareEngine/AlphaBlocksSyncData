@@ -3,7 +3,9 @@
 """正式同步入口.
 
 行情主线使用历史证券代码池：
-- 股票、指数、ETF、ETF 期权、可转债均来自 `ad_hist_code_daily`
+- 日线同步股票、指数、ETF、ETF 期权、可转债
+- 分钟线同步股票、指数、ETF、可转债，不同步 ETF 期权
+- 代码池均来自 `ad_hist_code_daily`
 - 不做批量调度，按证券代码顺序同步
 
 正式任务：
@@ -87,6 +89,11 @@ MARKET_KLINE_HIST_SECURITY_TYPES = (
     ("etf", SecurityType.EXTRA_ETF),
     ("etf_option", SecurityType.EXTRA_ETF_OP),
     ("kzz", SecurityType.EXTRA_KZZ),
+)
+MINUTE_KLINE_HIST_SECURITY_TYPES = tuple(
+    item
+    for item in MARKET_KLINE_HIST_SECURITY_TYPES
+    if item[1] != SecurityType.EXTRA_ETF_OP
 )
 DEFAULT_RUNTIME_PATH = str(resolve_runtime_config_path(PROJECT_ROOT))
 DEFAULT_LOG_LEVEL = "INFO"
@@ -1899,6 +1906,32 @@ def resolve_code_list(
     end_date: int | None = None,
 ) -> list[str]:
     codes = parse_codes(raw_codes)
+    if task == "minute_kline" and codes:
+        if end_date is None or not str(local_path or "").strip():
+            raise ValueError("minute_kline 过滤 ETF 期权代码时必须提供 end_date 和 local_path。")
+        try:
+            option_codes = set(
+                base_data.get_hist_code_list(
+                    security_type=SecurityType.EXTRA_ETF_OP,
+                    start_date=DEFAULT_FULL_SYNC_BEGIN_DATE,
+                    end_date=end_date,
+                    local_path=str(local_path),
+                )
+            )
+        except BaseDataCacheMissError as exc:
+            raise RuntimeError(
+                "minute_kline 无法确认 ETF 期权代码范围，已拒绝执行以避免写入 EXTRA_ETF_OP。"
+            ) from exc
+        excluded = [code for code in codes if code in option_codes]
+        if excluded:
+            logger.warning(
+                "minute_kline excludes EXTRA_ETF_OP codes count=%s preview=%s",
+                len(excluded),
+                ",".join(excluded[:10]),
+            )
+            codes = [code for code in codes if code not in option_codes]
+        if not codes:
+            raise ValueError("minute_kline 不支持同步 EXTRA_ETF_OP ETF 期权代码。")
     if task in {"daily_kline", "minute_kline"} and not codes:
         codes = resolve_market_kline_code_list(
             base_data=base_data,
@@ -2033,7 +2066,12 @@ def resolve_market_kline_code_list(
         raise ValueError(f"{task} 获取历史证券代码池时必须配置 AmazingData local_path。")
 
     raw_codes: list[str] = []
-    for label, security_type in MARKET_KLINE_HIST_SECURITY_TYPES:
+    security_types = (
+        MINUTE_KLINE_HIST_SECURITY_TYPES
+        if task == "minute_kline"
+        else MARKET_KLINE_HIST_SECURITY_TYPES
+    )
+    for label, security_type in security_types:
         try:
             fetched = base_data.get_hist_code_list(
                 security_type=security_type,
@@ -2096,8 +2134,10 @@ def resolve_backward_factor_code_list(
 
 
 def resolve_task_security_type(task: str) -> str:
-    if task in {"daily_kline", "minute_kline"}:
+    if task == "daily_kline":
         return "EXTRA_STOCK_A+EXTRA_INDEX_A+EXTRA_ETF+EXTRA_ETF_OP+EXTRA_KZZ"
+    if task == "minute_kline":
+        return "EXTRA_STOCK_A+EXTRA_INDEX_A+EXTRA_ETF+EXTRA_KZZ"
     if task == "hist_code_list":
         return DEFAULT_SYNC_SECURITY_TYPE
     if task == "bj_code_mapping":
