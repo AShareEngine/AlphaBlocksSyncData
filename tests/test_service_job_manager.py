@@ -699,7 +699,7 @@ class SyncJobManagerTest(unittest.TestCase):
                     {
                         "id": "a",
                         "name": "amazingdata.daily_kline",
-                        "parameters": {},
+                        "parameters": {"force": True},
                     }
                 ],
             }
@@ -758,12 +758,49 @@ class SyncJobManagerTest(unittest.TestCase):
             rewritten = json.loads(payload_path.read_text(encoding="utf-8"))
             self.assertTrue(rewritten["resume_after_restart"])
             self.assertTrue(rewritten["tasks"][0]["parameters"]["resume"])
+            self.assertFalse(rewritten["tasks"][0]["parameters"]["force"])
             popen.assert_called_once()
             process.finish()
             self.assertEqual(
                 wait_for_status(reloaded, "parent", {"success"}).status,
                 "success",
             )
+
+    def test_provider_task_restart_disables_force_and_enables_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            manager = SyncJobManager(root, state_dir=root / ".service_state")
+            job = JobRecord(
+                job_id="minute_child",
+                kind="provider_task",
+                status="running",
+                created_at="2026-07-30T01:00:00+00:00",
+                started_at="2026-07-30T01:00:01+00:00",
+                finished_at=None,
+                cwd=str(root),
+                command=[
+                    "python",
+                    "scripts/run_provider_sync.py",
+                    "--task",
+                    "amazingdata.minute_kline",
+                    "--force",
+                ],
+                log_path=str(root / "minute_child.log"),
+                source="amazingdata",
+                request_payload={
+                    "name": "amazingdata.minute_kline",
+                    "force": True,
+                    "resume": False,
+                },
+            )
+
+            manager._enable_resume_for_job_locked(job)
+
+            self.assertNotIn("--force", job.command)
+            self.assertIn("--resume", job.command)
+            self.assertFalse(job.request_payload["force"])
+            self.assertTrue(job.request_payload["resume"])
 
     def test_list_jobs_supports_filters(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

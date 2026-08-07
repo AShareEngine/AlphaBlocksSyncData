@@ -58,7 +58,6 @@ STRING_COLUMNS = frozenset(
         "symbol",
         "name",
         "instrument_type",
-        "source",
         "adjust",
         "item",
         "value",
@@ -125,6 +124,41 @@ class AkshareUSRepository:
         self.client.command(self._create_symbol_cursor_ddl())
         for task in AKSHARE_TASK_SPECS:
             self.client.command(self._create_task_table_ddl(task))
+            self._migrate_removed_metadata_columns(task)
+
+    def _migrate_removed_metadata_columns(self, task: str) -> None:
+        """Rebuild old business tables that used fetch metadata as row versions."""
+
+        table_name = AKSHARE_TASK_SPECS[task].table_name
+        rows = self.client.query_rows(
+            """
+            SELECT name
+            FROM system.columns
+            WHERE database = {database:String}
+              AND table = {table:String}
+              AND name IN ('source', 'fetched_at')
+            """,
+            {"database": self.database, "table": table_name},
+        )
+        if not any(row for row in rows):
+            return
+
+        table = self._table_ref(table_name)
+        migration_name = f"{table_name}__without_fetch_metadata_v1"
+        migration_table = self._table_ref(migration_name)
+        columns = TASK_COLUMNS[task]
+        column_sql = ", ".join(columns)
+
+        self.client.command(f"DROP TABLE IF EXISTS {migration_table}")
+        self.client.command(
+            self._create_task_table_ddl(task, table_name=migration_name)
+        )
+        self.client.command(
+            f"INSERT INTO {migration_table} ({column_sql}) "
+            f"SELECT {column_sql} FROM {table} FINAL"
+        )
+        self.client.command(f"EXCHANGE TABLES {table} AND {migration_table}")
+        self.client.command(f"DROP TABLE IF EXISTS {migration_table}")
 
     def save_frame(self, task: str, frame: pd.DataFrame) -> int:
         if task not in TASK_COLUMNS:
@@ -175,7 +209,7 @@ class AkshareUSRepository:
             AKSHARE_TASK_SPECS["stock_board_concept_name_ths"].table_name
         )
         sql = f"""
-        SELECT concept_code, argMax(concept_name, fetched_at) AS concept_name
+        SELECT concept_code, any(concept_name) AS concept_name
         FROM {table}
         WHERE snapshot_date = {{snapshot_date:Date}}
         GROUP BY concept_code
@@ -205,7 +239,7 @@ class AkshareUSRepository:
             AKSHARE_TASK_SPECS["stock_board_concept_name_em"].table_name
         )
         sql = f"""
-        SELECT concept_code, argMax(concept_name, fetched_at) AS concept_name
+        SELECT concept_code, any(concept_name) AS concept_name
         FROM {table}
         WHERE snapshot_date = {{snapshot_date:Date}}
         GROUP BY concept_code
@@ -399,8 +433,15 @@ class AkshareUSRepository:
         ORDER BY (task_name, symbol)
         """
 
-    def _create_task_table_ddl(self, task: str) -> str:
-        table = self._table_ref(AKSHARE_TASK_SPECS[task].table_name)
+    def _create_task_table_ddl(
+        self,
+        task: str,
+        *,
+        table_name: str | None = None,
+    ) -> str:
+        table = self._table_ref(
+            table_name or AKSHARE_TASK_SPECS[task].table_name
+        )
         if task == "us_spot":
             return f"""
             CREATE TABLE IF NOT EXISTS {table}
@@ -424,11 +465,9 @@ class AkshareUSRepository:
                 volume Nullable(Float64),
                 turnover Nullable(Float64),
                 amplitude Nullable(Float64),
-                turnover_rate Nullable(Float64),
-                source String,
-                fetched_at DateTime64(3)
+                turnover_rate Nullable(Float64)
             )
-            ENGINE = ReplacingMergeTree(fetched_at)
+            ENGINE = ReplacingMergeTree(snapshot_at)
             PARTITION BY toYYYYMM(snapshot_date)
             ORDER BY (snapshot_date, symbol, em_code)
             """
@@ -449,11 +488,9 @@ class AkshareUSRepository:
                 change_percent Nullable(Float64),
                 change_amount Nullable(Float64),
                 turnover_rate Nullable(Float64),
-                adjust String,
-                source String,
-                fetched_at DateTime64(3)
+                adjust String
             )
-            ENGINE = ReplacingMergeTree(fetched_at)
+            ENGINE = ReplacingMergeTree()
             PARTITION BY toYYYYMM(trade_date)
             ORDER BY (symbol, trade_date, adjust)
             """
@@ -470,11 +507,9 @@ class AkshareUSRepository:
                 close Nullable(Float64),
                 volume Nullable(Float64),
                 turnover Nullable(Float64),
-                latest Nullable(Float64),
-                source String,
-                fetched_at DateTime64(3)
+                latest Nullable(Float64)
             )
-            ENGINE = ReplacingMergeTree(fetched_at)
+            ENGINE = ReplacingMergeTree()
             PARTITION BY toYYYYMM(trade_time)
             ORDER BY (symbol, trade_time)
             """
@@ -485,11 +520,9 @@ class AkshareUSRepository:
                 snapshot_date Date,
                 symbol String,
                 item String,
-                value String,
-                source String,
-                fetched_at DateTime64(3)
+                value String
             )
-            ENGINE = ReplacingMergeTree(fetched_at)
+            ENGINE = ReplacingMergeTree()
             PARTITION BY toYYYYMM(snapshot_date)
             ORDER BY (snapshot_date, symbol, item)
             """
@@ -507,11 +540,9 @@ class AkshareUSRepository:
                 item_code String,
                 item_name String,
                 amount Nullable(Float64),
-                raw_json String,
-                source String,
-                fetched_at DateTime64(3)
+                raw_json String
             )
-            ENGINE = ReplacingMergeTree(fetched_at)
+            ENGINE = ReplacingMergeTree()
             PARTITION BY toYYYYMM(report_date)
             ORDER BY (symbol, statement_type, period_type, report_date, item_code, item_name)
             """
@@ -539,11 +570,9 @@ class AkshareUSRepository:
                 current_ratio Nullable(Float64),
                 quick_ratio Nullable(Float64),
                 debt_asset_ratio Nullable(Float64),
-                raw_json String,
-                source String,
-                fetched_at DateTime64(3)
+                raw_json String
             )
-            ENGINE = ReplacingMergeTree(fetched_at)
+            ENGINE = ReplacingMergeTree()
             PARTITION BY toYYYYMM(report_date)
             ORDER BY (symbol, period_type, report_date)
             """
@@ -555,11 +584,9 @@ class AkshareUSRepository:
                 indicator String,
                 period String,
                 trade_date Date,
-                value Nullable(Float64),
-                source String,
-                fetched_at DateTime64(3)
+                value Nullable(Float64)
             )
-            ENGINE = ReplacingMergeTree(fetched_at)
+            ENGINE = ReplacingMergeTree()
             PARTITION BY toYYYYMM(trade_date)
             ORDER BY (symbol, indicator, trade_date)
             """
@@ -575,11 +602,9 @@ class AkshareUSRepository:
                 low Nullable(Float64),
                 close Nullable(Float64),
                 volume Nullable(Float64),
-                amount Nullable(Float64),
-                source String,
-                fetched_at DateTime64(3)
+                amount Nullable(Float64)
             )
-            ENGINE = ReplacingMergeTree(fetched_at)
+            ENGINE = ReplacingMergeTree()
             PARTITION BY toYYYYMM(trade_date)
             ORDER BY (index_code, trade_date)
             """
@@ -589,11 +614,9 @@ class AkshareUSRepository:
             (
                 snapshot_date Date,
                 concept_code String,
-                concept_name String,
-                source String,
-                fetched_at DateTime64(3)
+                concept_name String
             )
-            ENGINE = ReplacingMergeTree(fetched_at)
+            ENGINE = ReplacingMergeTree()
             PARTITION BY toYYYYMM(snapshot_date)
             ORDER BY (snapshot_date, concept_code)
             """
@@ -609,11 +632,9 @@ class AkshareUSRepository:
                 low Nullable(Float64),
                 close Nullable(Float64),
                 volume Nullable(Float64),
-                amount Nullable(Float64),
-                source String,
-                fetched_at DateTime64(3)
+                amount Nullable(Float64)
             )
-            ENGINE = ReplacingMergeTree(fetched_at)
+            ENGINE = ReplacingMergeTree()
             PARTITION BY toYYYYMM(trade_date)
             ORDER BY (concept_code, trade_date)
             """
@@ -625,11 +646,9 @@ class AkshareUSRepository:
                 concept_code String,
                 concept_name String,
                 item String,
-                value String,
-                source String,
-                fetched_at DateTime64(3)
+                value String
             )
-            ENGINE = ReplacingMergeTree(fetched_at)
+            ENGINE = ReplacingMergeTree()
             PARTITION BY toYYYYMM(snapshot_date)
             ORDER BY (snapshot_date, concept_code, item)
             """
@@ -639,11 +658,9 @@ class AkshareUSRepository:
             (
                 snapshot_date Date,
                 concept_code String,
-                concept_name String,
-                source String,
-                fetched_at DateTime64(3)
+                concept_name String
             )
-            ENGINE = ReplacingMergeTree(fetched_at)
+            ENGINE = ReplacingMergeTree()
             PARTITION BY toYYYYMM(snapshot_date)
             ORDER BY (snapshot_date, concept_code)
             """
@@ -669,11 +686,9 @@ class AkshareUSRepository:
                 previous_close Nullable(Float64),
                 turnover_rate Nullable(Float64),
                 pe_dynamic Nullable(Float64),
-                pb Nullable(Float64),
-                source String,
-                fetched_at DateTime64(3)
+                pb Nullable(Float64)
             )
-            ENGINE = ReplacingMergeTree(fetched_at)
+            ENGINE = ReplacingMergeTree()
             PARTITION BY toYYYYMM(snapshot_date)
             ORDER BY (snapshot_date, concept_code, symbol)
             """
@@ -695,11 +710,9 @@ class AkshareUSRepository:
                 volume Nullable(Float64),
                 amount Nullable(Float64),
                 amplitude Nullable(Float64),
-                turnover_rate Nullable(Float64),
-                source String,
-                fetched_at DateTime64(3)
+                turnover_rate Nullable(Float64)
             )
-            ENGINE = ReplacingMergeTree(fetched_at)
+            ENGINE = ReplacingMergeTree()
             PARTITION BY toYYYYMM(trade_date)
             ORDER BY (concept_code, period, adjust, trade_date)
             """

@@ -80,8 +80,6 @@ SPOT_COLUMNS = (
     "turnover",
     "amplitude",
     "turnover_rate",
-    "source",
-    "fetched_at",
 )
 
 DAILY_COLUMNS = (
@@ -99,8 +97,6 @@ DAILY_COLUMNS = (
     "change_amount",
     "turnover_rate",
     "adjust",
-    "source",
-    "fetched_at",
 )
 
 MINUTE_COLUMNS = (
@@ -114,8 +110,6 @@ MINUTE_COLUMNS = (
     "volume",
     "turnover",
     "latest",
-    "source",
-    "fetched_at",
 )
 
 PROFILE_COLUMNS = (
@@ -123,8 +117,6 @@ PROFILE_COLUMNS = (
     "symbol",
     "item",
     "value",
-    "source",
-    "fetched_at",
 )
 
 FINANCIAL_STATEMENT_COLUMNS = (
@@ -139,8 +131,6 @@ FINANCIAL_STATEMENT_COLUMNS = (
     "item_name",
     "amount",
     "raw_json",
-    "source",
-    "fetched_at",
 )
 
 FINANCIAL_INDICATOR_COLUMNS = (
@@ -165,8 +155,6 @@ FINANCIAL_INDICATOR_COLUMNS = (
     "quick_ratio",
     "debt_asset_ratio",
     "raw_json",
-    "source",
-    "fetched_at",
 )
 
 VALUATION_COLUMNS = (
@@ -175,8 +163,6 @@ VALUATION_COLUMNS = (
     "period",
     "trade_date",
     "value",
-    "source",
-    "fetched_at",
 )
 
 INDEX_COLUMNS = (
@@ -189,16 +175,12 @@ INDEX_COLUMNS = (
     "close",
     "volume",
     "amount",
-    "source",
-    "fetched_at",
 )
 
 THS_CONCEPT_NAME_COLUMNS = (
     "snapshot_date",
     "concept_code",
     "concept_name",
-    "source",
-    "fetched_at",
 )
 
 THS_CONCEPT_INDEX_COLUMNS = (
@@ -211,8 +193,6 @@ THS_CONCEPT_INDEX_COLUMNS = (
     "close",
     "volume",
     "amount",
-    "source",
-    "fetched_at",
 )
 
 THS_CONCEPT_INFO_COLUMNS = (
@@ -221,16 +201,12 @@ THS_CONCEPT_INFO_COLUMNS = (
     "concept_name",
     "item",
     "value",
-    "source",
-    "fetched_at",
 )
 
 EM_CONCEPT_NAME_COLUMNS = (
     "snapshot_date",
     "concept_code",
     "concept_name",
-    "source",
-    "fetched_at",
 )
 
 EM_CONCEPT_CONS_COLUMNS = (
@@ -253,8 +229,6 @@ EM_CONCEPT_CONS_COLUMNS = (
     "turnover_rate",
     "pe_dynamic",
     "pb",
-    "source",
-    "fetched_at",
 )
 
 EM_CONCEPT_HIST_COLUMNS = (
@@ -273,8 +247,6 @@ EM_CONCEPT_HIST_COLUMNS = (
     "amount",
     "amplitude",
     "turnover_rate",
-    "source",
-    "fetched_at",
 )
 
 
@@ -352,8 +324,6 @@ class AkshareUSProvider:
         result["snapshot_date"] = snapshot_date or date.today()
         result["concept_code"] = _text_series(frame, "板块代码", "代码", "code")
         result["concept_name"] = _text_series(frame, "板块名称", "名称", "name")
-        result["source"] = "akshare:stock_board_concept_name_em"
-        result["fetched_at"] = _utcnow()
         result = result[(result["concept_code"] != "") & (result["concept_name"] != "")]
         result = result.drop_duplicates(subset=["concept_code"], keep="first")
         result = result.sort_values(["concept_name", "concept_code"])
@@ -444,8 +414,6 @@ class AkshareUSProvider:
         result["turnover_rate"] = _number_series(frame, "换手率", "turnover_rate")
         result["pe_dynamic"] = _number_series(frame, "市盈率-动态", "pe_dynamic")
         result["pb"] = _number_series(frame, "市净率", "pb")
-        result["source"] = "akshare:stock_board_concept_cons_em"
-        result["fetched_at"] = _utcnow()
         result = result[result["symbol"] != ""].copy()
         result = result.drop_duplicates(subset=["symbol"], keep="first")
         return result.loc[:, list(EM_CONCEPT_CONS_COLUMNS)].reset_index(drop=True)
@@ -511,8 +479,6 @@ class AkshareUSProvider:
         result["amount"] = _number_series(frame, "成交额", "amount")
         result["amplitude"] = _number_series(frame, "振幅", "amplitude")
         result["turnover_rate"] = _number_series(frame, "换手率", "turnover_rate")
-        result["source"] = "akshare:stock_board_concept_hist_em"
-        result["fetched_at"] = _utcnow()
         result = result[result["trade_date"].notna()].copy()
         result = result[(result["trade_date"] >= start) & (result["trade_date"] <= end)]
         normalized = result.loc[:, list(EM_CONCEPT_HIST_COLUMNS)]
@@ -655,13 +621,10 @@ class AkshareUSProvider:
         frame = _as_dataframe(raw)
         if frame.empty:
             return _empty_frame(THS_CONCEPT_NAME_COLUMNS)
-        fetched_at = _utcnow()
         result = pd.DataFrame(index=frame.index)
         result["snapshot_date"] = snapshot_date or date.today()
         result["concept_code"] = _text_series(frame, "code", "代码", "板块代码")
         result["concept_name"] = _text_series(frame, "name", "名称", "板块名称")
-        result["source"] = "akshare:stock_board_concept_name_ths"
-        result["fetched_at"] = fetched_at
         result = result[(result["concept_code"] != "") & (result["concept_name"] != "")]
         result = result.drop_duplicates(subset=["concept_code"], keep="first")
         result = result.sort_values(["concept_name", "concept_code"])
@@ -733,7 +696,6 @@ class AkshareUSProvider:
         frame = _as_dataframe(raw)
         if frame.empty:
             return _empty_frame(THS_CONCEPT_INDEX_COLUMNS)
-        fetched_at = _utcnow()
         result = pd.DataFrame(index=frame.index)
         result["concept_code"] = concept_code
         result["concept_name"] = concept_name
@@ -746,8 +708,6 @@ class AkshareUSProvider:
         result["close"] = _number_series(frame, "收盘价", "收盘", "close")
         result["volume"] = _number_series(frame, "成交量", "volume")
         result["amount"] = _number_series(frame, "成交额", "amount")
-        result["source"] = "akshare:stock_board_concept_index_ths"
-        result["fetched_at"] = fetched_at
         result = result[result["trade_date"].notna()].copy()
         result = result[(result["trade_date"] >= start) & (result["trade_date"] <= end)]
         normalized = result.loc[:, list(THS_CONCEPT_INDEX_COLUMNS)]
@@ -784,8 +744,6 @@ class AkshareUSProvider:
                 "concept_name": concept_name,
                 "item": item,
                 "value": value,
-                "source": "akshare:stock_board_concept_info_ths",
-                "fetched_at": _utcnow(),
             }
         )
         result = result[result["item"] != ""]
@@ -802,7 +760,7 @@ class AkshareUSProvider:
         if frame.empty:
             return _empty_frame(SPOT_COLUMNS)
 
-        fetched_at = _utcnow()
+        snapshot_at = _utcnow()
         result = pd.DataFrame(index=frame.index)
         if source == "akshare:stock_us_spot_em":
             result["em_code"] = _text_series(frame, "代码", "code")
@@ -828,7 +786,7 @@ class AkshareUSProvider:
             )
         ]
         result["snapshot_date"] = snapshot_date or date.today()
-        result["snapshot_at"] = fetched_at
+        result["snapshot_at"] = snapshot_at
         result["last"] = _number_series(frame, "最新价", "latest", "price")
         result["change_amount"] = _number_series(frame, "涨跌额", "diff")
         result["change_percent"] = _number_series(frame, "涨跌幅", "chg")
@@ -842,8 +800,6 @@ class AkshareUSProvider:
         result["turnover"] = _number_series(frame, "成交额", "amount")
         result["amplitude"] = _number_series(frame, "振幅", "amplitude")
         result["turnover_rate"] = _number_series(frame, "换手率", "turnover_rate")
-        result["source"] = source
-        result["fetched_at"] = fetched_at
         result = result[(result["em_code"] != "") & (result["symbol"] != "")].copy()
         if source == "akshare:stock_us_spot":
             result = result[result["last"].notna()]
@@ -961,7 +917,6 @@ class AkshareUSProvider:
     ) -> pd.DataFrame:
         start = _date_value(start_date)
         end = _date_value(end_date)
-        source = "akshare:stock_us_hist"
         actual_adjust = self.config.adjust
         has_eastmoney_code = bool(re.match(r"^\d+\..+$", normalize_us_symbol(em_code)))
         try:
@@ -981,7 +936,6 @@ class AkshareUSProvider:
             operation = getattr(self._akshare, "stock_us_daily", None)
             if not callable(operation):
                 raise
-            source = "akshare:stock_us_daily"
             actual_adjust = self.config.adjust if self.config.adjust in {"", "qfq"} else ""
             logger.warning(
                 "AKShare daily Eastmoney source unavailable symbol=%s; falling back to Sina stock_us_daily",
@@ -994,7 +948,6 @@ class AkshareUSProvider:
         frame = _as_dataframe(raw)
         if frame.empty:
             return _empty_frame(DAILY_COLUMNS)
-        fetched_at = _utcnow()
         result = pd.DataFrame(index=frame.index)
         result["em_code"] = em_code or symbol
         result["symbol"] = symbol
@@ -1010,8 +963,6 @@ class AkshareUSProvider:
         result["change_amount"] = _number_series(frame, "涨跌额")
         result["turnover_rate"] = _number_series(frame, "换手率")
         result["adjust"] = actual_adjust
-        result["source"] = source
-        result["fetched_at"] = fetched_at
         result = result[result["trade_date"].notna()].copy()
         result = result[
             (result["trade_date"] >= start)
@@ -1042,7 +993,6 @@ class AkshareUSProvider:
         frame = _as_dataframe(raw)
         if frame.empty:
             return _empty_frame(MINUTE_COLUMNS)
-        fetched_at = _utcnow()
         result = pd.DataFrame(index=frame.index)
         result["em_code"] = em_code
         result["symbol"] = symbol
@@ -1054,8 +1004,6 @@ class AkshareUSProvider:
         result["volume"] = _number_series(frame, "成交量", "volume")
         result["turnover"] = _number_series(frame, "成交额", "amount")
         result["latest"] = _number_series(frame, "最新价", "latest")
-        result["source"] = "akshare:stock_us_hist_min_em"
-        result["fetched_at"] = fetched_at
         result = result[result["trade_time"].notna()].copy()
         if start_date:
             result = result[result["trade_time"].dt.date >= _date_value(start_date)]
@@ -1076,7 +1024,6 @@ class AkshareUSProvider:
         frame = _as_dataframe(raw)
         if frame.empty:
             return _empty_frame(PROFILE_COLUMNS)
-        fetched_at = _utcnow()
         item = _text_series(frame, "item", "项目", "指标")
         value = _text_series(frame, "value", "值", "内容")
         if (item == "").all() and len(frame.columns) >= 2:
@@ -1088,8 +1035,6 @@ class AkshareUSProvider:
                 "symbol": symbol,
                 "item": item,
                 "value": value,
-                "source": "akshare:stock_individual_basic_info_us_xq",
-                "fetched_at": fetched_at,
             }
         )
         return result[result["item"] != ""].loc[:, list(PROFILE_COLUMNS)].reset_index(drop=True)
@@ -1112,7 +1057,6 @@ class AkshareUSProvider:
         frame = _as_dataframe(raw)
         if frame.empty:
             return _empty_frame(FINANCIAL_STATEMENT_COLUMNS)
-        fetched_at = _utcnow()
         rows: list[dict[str, Any]] = []
         for record in frame.to_dict("records"):
             report_date = _optional_date(_record_get(record, "REPORT_DATE", "STD_REPORT_DATE"))
@@ -1131,8 +1075,6 @@ class AkshareUSProvider:
                     "item_name": _string(_record_get(record, "ITEM_NAME")),
                     "amount": _optional_float(_record_get(record, "AMOUNT")),
                     "raw_json": _record_json(record),
-                    "source": "akshare:stock_financial_us_report_em",
-                    "fetched_at": fetched_at,
                 }
             )
         return pd.DataFrame(rows, columns=FINANCIAL_STATEMENT_COLUMNS)
@@ -1153,7 +1095,6 @@ class AkshareUSProvider:
         frame = _as_dataframe(raw)
         if frame.empty:
             return _empty_frame(FINANCIAL_INDICATOR_COLUMNS)
-        fetched_at = _utcnow()
         rows: list[dict[str, Any]] = []
         for record in frame.to_dict("records"):
             report_date = _optional_date(_record_get(record, "REPORT_DATE", "STD_REPORT_DATE"))
@@ -1182,8 +1123,6 @@ class AkshareUSProvider:
                     "quick_ratio": _optional_float(_record_get(record, "SPEED_RATIO")),
                     "debt_asset_ratio": _optional_float(_record_get(record, "DEBT_ASSET_RATIO")),
                     "raw_json": _record_json(record),
-                    "source": "akshare:stock_financial_us_analysis_indicator_em",
-                    "fetched_at": fetched_at,
                 }
             )
         return pd.DataFrame(rows, columns=FINANCIAL_INDICATOR_COLUMNS)
@@ -1206,15 +1145,12 @@ class AkshareUSProvider:
         frame = _as_dataframe(raw)
         if frame.empty:
             return _empty_frame(VALUATION_COLUMNS)
-        fetched_at = _utcnow()
         result = pd.DataFrame(index=frame.index)
         result["symbol"] = symbol
         result["indicator"] = indicator
         result["period"] = period
         result["trade_date"] = pd.to_datetime(_value_series(frame, "date", "日期"), errors="coerce").dt.date
         result["value"] = _number_series(frame, "value", "值")
-        result["source"] = "akshare:stock_us_valuation_baidu"
-        result["fetched_at"] = fetched_at
         result = result[result["trade_date"].notna()].copy()
         return result.loc[:, list(VALUATION_COLUMNS)].sort_values("trade_date").reset_index(drop=True)
 
@@ -1235,7 +1171,6 @@ class AkshareUSProvider:
         frame = _as_dataframe(raw)
         if frame.empty:
             return _empty_frame(INDEX_COLUMNS)
-        fetched_at = _utcnow()
         result = pd.DataFrame(index=frame.index)
         result["index_code"] = index_code
         result["index_name"] = index_name
@@ -1246,8 +1181,6 @@ class AkshareUSProvider:
         result["close"] = _number_series(frame, "close", "收盘")
         result["volume"] = _number_series(frame, "volume", "成交量")
         result["amount"] = _number_series(frame, "amount", "成交额")
-        result["source"] = "akshare:index_us_stock_sina"
-        result["fetched_at"] = fetched_at
         result = result[result["trade_date"].notna()].copy()
         result = result[
             (result["trade_date"] >= start)

@@ -23,12 +23,13 @@ from sync_data_system.providers.qmt.specs import QMT_TASK_SPECS
 
 class _FakeClickHouseClient:
     def __init__(self) -> None:
+        self.commands: list[str] = []
         self.insert_calls: list[tuple[str, list[str], list[tuple]]] = []
         self.query_value_calls: list[tuple[str, dict | None]] = []
         self.query_value_result = 0
 
     def command(self, sql: str, parameters=None):
-        return None
+        self.commands.append(sql)
 
     def insert_rows(self, table: str, column_names, rows):
         self.insert_calls.append((table, list(column_names), list(rows)))
@@ -36,6 +37,9 @@ class _FakeClickHouseClient:
     def query_value(self, sql: str, parameters=None):
         self.query_value_calls.append((sql, parameters))
         return self.query_value_result
+
+    def query_rows(self, sql: str, parameters=None):
+        return []
 
 
 class _FakeQmtProvider:
@@ -105,6 +109,46 @@ class QmtProviderHelperTest(unittest.TestCase):
 
         self.assertEqual([row["symbol"] for row in rows], ["600000.SH", "000001.SZ"])
         self.assertEqual(rows[0]["sector_name"], "沪深A股")
+
+
+class QmtRepositoryTest(unittest.TestCase):
+    def test_business_tables_exclude_ingestion_metadata(self) -> None:
+        repository = QmtRepository(_FakeClickHouseClient(), database="qmt")
+
+        self.assertTrue(
+            {"source", "fetched_at", "ingested_at"}.isdisjoint(
+                repository.TASK_TABLE_COLUMNS
+            )
+        )
+        for task, spec in QMT_TASK_SPECS.items():
+            with self.subTest(task=task):
+                ddl = repository._create_task_table_ddl(spec)
+                self.assertNotIn("source String", ddl)
+                self.assertNotIn("fetched_at", ddl)
+                self.assertNotIn("ingested_at", ddl)
+                self.assertIn("ENGINE = ReplacingMergeTree()", ddl)
+
+    def test_legacy_ingested_at_table_is_rebuilt_without_metadata(self) -> None:
+        client = _FakeClickHouseClient()
+
+        def query_rows(sql: str, parameters=None):
+            if "system.columns" in sql:
+                return [("ingested_at",)]
+            return []
+
+        client.query_rows = query_rows
+        repository = QmtRepository(client, database="qmt")
+        spec = QMT_TASK_SPECS["kline_history"]
+
+        repository._migrate_removed_ingested_at(spec)
+
+        commands = "\n".join(client.commands)
+        self.assertIn("qmt_kline_history__without_ingested_at_v1", commands)
+        self.assertIn("SELECT task, symbol, stock_code", commands)
+        self.assertIn(
+            "EXCHANGE TABLES qmt.qmt_kline_history",
+            commands,
+        )
 
 
 class QmtRunnerTest(unittest.TestCase):

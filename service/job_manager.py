@@ -1096,7 +1096,7 @@ class SyncJobManager:
                 self._append_scheduler_log_locked(
                     parent,
                     f"provider={job.source} child={job.job_id} "
-                    "status=requeued reason=service_restart resume=true",
+                    "status=requeued reason=service_restart resume=true force=false",
                 )
 
     def _enable_resume_for_job_locked(self, job: JobRecord) -> None:
@@ -1108,6 +1108,12 @@ class SyncJobManager:
                 task = deepcopy(raw_task)
                 parameters = dict(task.get("parameters") or {})
                 parameters["resume"] = True
+                # A restarted job is a continuation, even when the original
+                # manual run requested a forced backfill. Keeping force=True
+                # would make target-table incremental tasks (notably AmazingData
+                # minute_kline) ignore their persisted max(trade_time) and fetch
+                # the entire requested history again.
+                parameters["force"] = False
                 task["parameters"] = parameters
                 tasks.append(task)
             payload["tasks"] = tasks
@@ -1116,6 +1122,8 @@ class SyncJobManager:
                 self._write_json_atomic(Path(payload_path), payload)
         elif job.kind == "provider_task":
             payload["resume"] = True
+            payload["force"] = False
+            job.command = [argument for argument in job.command if argument != "--force"]
             if "--resume" not in job.command:
                 job.command.append("--resume")
         job.request_payload = payload or job.request_payload

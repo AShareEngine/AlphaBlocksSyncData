@@ -2,6 +2,12 @@
 
 本文档只覆盖 REST 版 11 个查询类数据接口，不包含订阅管理、WebSocket、gRPC 和交易接口。
 
+QMT 业务表不保存 `source`、`fetched_at` 或 `ingested_at`。数据身份由任务、证券代码、
+市场、周期、业务日期/时间等 `ORDER BY` 业务字段决定；由于接口没有统一可靠的业务更新时间，
+业务表使用无版本参数的 `ReplacingMergeTree()`。同步初始化会自动将旧的
+`ReplacingMergeTree(ingested_at)` 表迁移为新结构并保留已有业务数据。任务日志和 checkpoint
+仍使用 `finished_at`，因为它是任务状态本身的业务时间。
+
 ## 基础信息
 
 默认服务地址：

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -25,11 +26,18 @@ class _FakeRepository:
         self.successful_scope_keys = set(successful_scope_keys or [])
         self.last_task_name = ""
         self.last_scope_keys = []
+        self.minute_latest_dates = {}
 
     def load_successful_scope_keys(self, task_name: str, scope_keys):
         self.last_task_name = task_name
         self.last_scope_keys = list(scope_keys)
         return set(scope_keys) & self.successful_scope_keys
+
+    def load_latest_kline_minute_trade_date_map(self, code_list):
+        return {
+            code: self.minute_latest_dates.get(code)
+            for code in code_list
+        }
 
 
 class _FakeBaseData:
@@ -83,6 +91,9 @@ class _FakeInfoData:
 
 
 class _FakeMarketData:
+    def __init__(self, repository) -> None:
+        self.repository = repository
+
     @staticmethod
     def _build_market_scope_key(task_name: str, code_list, begin_date, end_date, period=None, begin_time=None, end_time=None):
         return f"market:{task_name}:{code_list[0]}:{begin_date}:{end_date}:{period}:{begin_time}:{end_time}"
@@ -94,7 +105,7 @@ class RunSyncResumeTest(unittest.TestCase):
         return SimpleNamespace(
             base_data=_FakeBaseData(repository),
             info_data=_FakeInfoData(),
-            market_data=_FakeMarketData(),
+            market_data=_FakeMarketData(repository),
         )
 
     def test_build_resume_scope_pairs_for_adj_factor(self) -> None:
@@ -163,7 +174,6 @@ class RunSyncResumeTest(unittest.TestCase):
             "industry_weight",
             "industry_daily",
             "daily_kline",
-            "minute_kline",
             "market_snapshot",
         ):
             with self.subTest(task=task):
@@ -185,6 +195,61 @@ class RunSyncResumeTest(unittest.TestCase):
                 self.assertEqual(result, codes)
                 self.assertEqual(context.base_data.repository.last_scope_keys, [])
 
+    def test_minute_kline_resume_starts_after_completed_codes(self) -> None:
+        codes = ["000001.SZ", "000002.SZ", "000003.SZ"]
+        context = self._build_context()
+        scope_pairs = build_resume_scope_pairs(
+            context=context,
+            task="minute_kline",
+            code_list=codes,
+            begin_date=20240101,
+            end_date=20240131,
+        )
+        context.base_data.repository.successful_scope_keys = {
+            scope_key
+            for code, scope_key, _task_name in scope_pairs
+            if code in {"000001.SZ", "000002.SZ"}
+        }
+        context.base_data.repository.minute_latest_dates = {
+            "000001.SZ": date(2024, 1, 31),
+            # Simulate a dropped/missing target partition: its checkpoint must
+            # not hide the missing data.
+            "000002.SZ": None,
+        }
+
+        result = filter_code_list_for_resume(
+            context=context,
+            task_spec=TaskRunSpec(task="minute_kline", resume=True),
+            code_list=codes,
+            begin_date=20240101,
+            end_date=20240131,
+        )
+
+        self.assertEqual(result, ["000002.SZ", "000003.SZ"])
+        self.assertEqual(
+            context.base_data.repository.last_task_name,
+            "query_kline_minute",
+        )
+
+    def test_minute_kline_resume_uses_target_cursor_when_old_scope_does_not_match(
+        self,
+    ) -> None:
+        context = self._build_context()
+        context.base_data.repository.minute_latest_dates = {
+            "000001.SZ": date(2024, 1, 31),
+            "000002.SZ": date(2024, 1, 30),
+        }
+
+        result = filter_code_list_for_resume(
+            context=context,
+            task_spec=TaskRunSpec(task="minute_kline", resume=True),
+            code_list=["000001.SZ", "000002.SZ"],
+            begin_date=20240101,
+            end_date=20240131,
+        )
+
+        self.assertEqual(result, ["000002.SZ"])
+
     def test_etf_pcf_resume_requires_info_and_constituent_both_success(self) -> None:
         repository = _FakeRepository(
             successful_scope_keys={
@@ -196,7 +261,7 @@ class RunSyncResumeTest(unittest.TestCase):
         context = SimpleNamespace(
             base_data=_FakeBaseData(repository),
             info_data=_FakeInfoData(),
-            market_data=_FakeMarketData(),
+            market_data=_FakeMarketData(repository),
         )
         task_spec = TaskRunSpec(task="etf_pcf", resume=True)
 

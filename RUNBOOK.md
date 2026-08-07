@@ -230,6 +230,11 @@ python3 scripts/run_provider_sync.py --config run_sync.full.toml --resume
 说明：
 
 - `--resume` 会对支持 checkpoint 恢复的任务结合 `ad_sync_checkpoint` 跳过已成功的 code / 标的
+- 同步服务重启后会自动把未完成任务改为 `resume=true、force=false`；即使原任务是
+  `force=true`，恢复执行也不会再次强制全量。`minute_kline` 会用逐代码成功
+  checkpoint 跳过重启前已经完成的代码（例如完成 1000 个后从第 1001 个继续），
+  并依据 `ad_market_kline_minute` 中每只证券已有的最大 `trade_time` 增量同步；
+  checkpoint 对应代码在目标表中没有数据时不会跳过，避免删表后漏同步
 - 已由目标表计算增量日期或数据状态的任务不使用永久 checkpoint 跳过标的，包括：
   - 财务与持有人：`balance_sheet`、`cash_flow`、`income`、`profit_express`、
     `profit_notice`、`fund_share`、`fund_iopv`、`share_holder`、`holder_num`

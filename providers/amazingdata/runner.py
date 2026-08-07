@@ -2391,7 +2391,10 @@ def filter_code_list_for_resume(
     if not task_spec.resume or not code_list:
         return code_list
 
-    if task_spec.task in TARGET_TABLE_DRIVEN_RESUME_TASKS:
+    if (
+        task_spec.task in TARGET_TABLE_DRIVEN_RESUME_TASKS
+        and task_spec.task != "minute_kline"
+    ):
         logger.info(
             "resume checkpoint bypassed task=%s reason=target_table_driven_incremental",
             task_spec.task,
@@ -2420,7 +2423,18 @@ def filter_code_list_for_resume(
             scope_keys,
         )
 
-    if not any(successful_scope_keys_by_task.values()):
+    minute_latest_date_map: dict[str, object] | None = None
+    if task_spec.task == "minute_kline":
+        minute_latest_date_map = (
+            context.market_data.repository.load_latest_kline_minute_trade_date_map(
+                code_list
+            )
+        )
+
+    if (
+        not any(successful_scope_keys_by_task.values())
+        and minute_latest_date_map is None
+    ):
         logger.info("resume enabled task=%s no_successful_checkpoint_found", task_spec.task)
         return code_list
 
@@ -2434,7 +2448,27 @@ def filter_code_list_for_resume(
         if not requirements:
             remaining_codes.append(code)
             continue
-        if any(scope_key not in successful_scope_keys_by_task.get(task_name, set()) for task_name, scope_key in requirements):
+        has_missing_checkpoint = any(
+            scope_key not in successful_scope_keys_by_task.get(task_name, set())
+            for task_name, scope_key in requirements
+        )
+        if minute_latest_date_map is None:
+            if has_missing_checkpoint:
+                remaining_codes.append(code)
+            continue
+
+        latest_date = minute_latest_date_map.get(code)
+        has_target_rows = latest_date is not None
+        target_reached_end = (
+            has_target_rows
+            and to_ch_date(latest_date) >= to_ch_date(end_date)
+        )
+        # An exact success checkpoint also covers securities that legitimately
+        # stopped trading before end_date. It is trusted only while the target
+        # table still contains rows for that code, so a DROP/rebuild cannot
+        # accidentally hide missing data.
+        checkpoint_complete = not has_missing_checkpoint and has_target_rows
+        if not target_reached_end and not checkpoint_complete:
             remaining_codes.append(code)
 
     skipped_count = len(code_list) - len(remaining_codes)

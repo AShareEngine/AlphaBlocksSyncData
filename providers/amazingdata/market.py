@@ -418,7 +418,11 @@ class MarketData:
             scope_key = self._build_market_scope_key(
                 task_name="query_kline_minute",
                 code_list=[code],
-                begin_date=sync_start,
+                # Keep the checkpoint scope stable across a service restart.
+                # The actual request still begins at sync_start, but resume
+                # matches the original task window and can skip codes that
+                # already completed before the interruption.
+                begin_date=begin,
                 end_date=end,
                 period=period_token,
                 begin_time=begin_time,

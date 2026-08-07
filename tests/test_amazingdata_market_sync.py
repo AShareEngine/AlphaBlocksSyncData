@@ -86,6 +86,10 @@ class AmazingDataMarketSyncTest(unittest.TestCase):
         self.assertEqual(inserted, 1)
         self.assertEqual(provider.calls[0][1], date(2026, 5, 22))
         self.assertEqual(provider.calls[0][2], date(2026, 5, 25))
+        self.assertIn(
+            "begin_date=2010-01-01",
+            repository.sync_logs[0].scope_key,
+        )
 
 
 if __name__ == "__main__":

@@ -15,7 +15,10 @@ import pandas as pd
 import requests
 
 from sync_data_system.providers.akshare.provider import AkshareUSConfig, AkshareUSProvider
-from sync_data_system.providers.akshare.repository import AkshareUSRepository
+from sync_data_system.providers.akshare.repository import (
+    TASK_COLUMNS,
+    AkshareUSRepository,
+)
 from sync_data_system.providers.akshare.runner import (
     SyncArgs,
     load_execution_plan_from_toml,
@@ -431,7 +434,7 @@ class AkshareUSProviderTest(unittest.TestCase):
 
         self.assertEqual(frame["symbol"].tolist(), ["AAPL"])
         self.assertEqual(frame.iloc[0]["em_code"], "AAPL")
-        self.assertEqual(frame.iloc[0]["source"], "akshare:stock_us_spot")
+        self.assertTrue({"source", "fetched_at"}.isdisjoint(frame.columns))
         self.assertEqual(frame.iloc[0]["last"], 225.0)
         self.assertEqual([call[0] for call in akshare.calls[:2]], ["stock_us_spot_em", "stock_us_spot"])
 
@@ -591,7 +594,7 @@ class AkshareUSProviderTest(unittest.TestCase):
         )
 
         self.assertEqual(len(frame), 2)
-        self.assertEqual(frame.iloc[0]["source"], "akshare:stock_us_daily")
+        self.assertTrue({"source", "fetched_at"}.isdisjoint(frame.columns))
         self.assertEqual(frame.iloc[0]["em_code"], "AAPL")
         daily_call = next(item for item in self.ak.calls if item[0] == "stock_us_daily")[1]
         self.assertEqual(daily_call["symbol"], "AAPL")
@@ -881,6 +884,24 @@ class AkshareUSProviderTest(unittest.TestCase):
 
 
 class AkshareUSRepositoryTest(unittest.TestCase):
+    def test_all_business_tables_exclude_fetch_metadata_and_use_business_keys(
+        self,
+    ) -> None:
+        repository = AkshareUSRepository(_FakeClickHouseClient(), database="akshare")
+
+        for task, columns in TASK_COLUMNS.items():
+            with self.subTest(task=task):
+                self.assertTrue({"source", "fetched_at"}.isdisjoint(columns))
+                ddl = repository._create_task_table_ddl(task)
+                self.assertNotIn("source String", ddl)
+                self.assertNotIn("fetched_at", ddl)
+                expected_engine = (
+                    "ENGINE = ReplacingMergeTree(snapshot_at)"
+                    if task == "us_spot"
+                    else "ENGINE = ReplacingMergeTree()"
+                )
+                self.assertIn(expected_engine, ddl)
+
     def test_ensure_tables_creates_all_business_and_state_tables(self) -> None:
         client = _FakeClickHouseClient()
         repository = AkshareUSRepository(client, database="akshare")
@@ -900,6 +921,33 @@ class AkshareUSRepositoryTest(unittest.TestCase):
         self.assertIn("ak_stock_board_concept_hist_em", ddl)
         self.assertIn("ak_sync_task_log", ddl)
         self.assertIn("ak_symbol_cursor", ddl)
+
+    def test_legacy_fetch_metadata_tables_are_rebuilt_without_metadata(self) -> None:
+        client = _FakeClickHouseClient()
+
+        def query_rows(sql: str, parameters=None):
+            if "system.columns" in sql:
+                return [("source",), ("fetched_at",)]
+            return []
+
+        client.query_rows = query_rows
+        repository = AkshareUSRepository(client, database="akshare")
+
+        repository._migrate_removed_metadata_columns("us_daily_kline")
+
+        commands = "\n".join(client.commands)
+        self.assertIn(
+            "ak_us_daily_kline__without_fetch_metadata_v1",
+            commands,
+        )
+        self.assertIn(
+            "SELECT em_code, symbol, trade_date",
+            commands,
+        )
+        self.assertIn(
+            "EXCHANGE TABLES akshare.ak_us_daily_kline",
+            commands,
+        )
 
 
 class AkshareUSRunnerTest(unittest.TestCase):

@@ -19,6 +19,11 @@ ClickHouse `akshare` 数据库，不会覆盖现有 `yfinance` 表。
 其中 `ak_sync_task_log`、`ak_sync_checkpoint` 和 `ak_symbol_cursor` 分别记录任务日志、同步
 checkpoint 和逐证券日线游标。
 
+AKShare 业务表不保存 `source` 和 `fetched_at`。表的去重身份只使用证券代码、业务日期、
+周期、复权方式等真实业务字段；实时快照使用业务字段 `snapshot_at` 作为
+`ReplacingMergeTree` 版本，其余没有可靠业务版本号的历史表使用无版本参数的
+`ReplacingMergeTree()`。启动同步时会自动把旧表迁移到新结构并保留原有业务数据。
+
 ## 安装
 
 必须使用实际执行同步任务的 Python 安装依赖。例如 PM2 使用

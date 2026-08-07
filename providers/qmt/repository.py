@@ -79,6 +79,39 @@ class QmtRepository:
         self.client.command(self._create_sync_checkpoint_ddl())
         for spec in QMT_TASK_SPECS.values():
             self.client.command(self._create_task_table_ddl(spec))
+            self._migrate_removed_ingested_at(spec)
+
+    def _migrate_removed_ingested_at(self, spec: QmtTaskSpec) -> None:
+        """Rebuild legacy QMT tables that used ingestion time as row version."""
+
+        rows = self.client.query_rows(
+            """
+            SELECT name
+            FROM system.columns
+            WHERE database = {database:String}
+              AND table = {table:String}
+              AND name = 'ingested_at'
+            """,
+            {"database": self.database, "table": spec.table_name},
+        )
+        if not any(row for row in rows):
+            return
+
+        table = self._table_ref(spec.table_name)
+        migration_name = f"{spec.table_name}__without_ingested_at_v1"
+        migration_table = self._table_ref(migration_name)
+        column_sql = ", ".join(self.TASK_TABLE_COLUMNS)
+
+        self.client.command(f"DROP TABLE IF EXISTS {migration_table}")
+        self.client.command(
+            self._create_task_table_ddl(spec, table_name=migration_name)
+        )
+        self.client.command(
+            f"INSERT INTO {migration_table} ({column_sql}) "
+            f"SELECT {column_sql} FROM {table} FINAL"
+        )
+        self.client.command(f"EXCHANGE TABLES {table} AND {migration_table}")
+        self.client.command(f"DROP TABLE IF EXISTS {migration_table}")
 
     def save_task_response(
         self,
@@ -292,8 +325,13 @@ class QmtRepository:
         ORDER BY (task_name, scope_key, run_date, finished_at)
         """
 
-    def _create_task_table_ddl(self, spec: QmtTaskSpec) -> str:
-        table = self._table_ref(spec.table_name)
+    def _create_task_table_ddl(
+        self,
+        spec: QmtTaskSpec,
+        *,
+        table_name: str | None = None,
+    ) -> str:
+        table = self._table_ref(table_name or spec.table_name)
         order_by = ", ".join(order_by_columns_for_spec(spec))
         return f"""
         CREATE TABLE IF NOT EXISTS {table}
@@ -310,10 +348,9 @@ class QmtRepository:
             time_ms Int64,
             request_start_time String,
             request_end_time String,
-            payload_json String,
-            ingested_at DateTime64(3) DEFAULT now64(3)
+            payload_json String
         )
-        ENGINE = ReplacingMergeTree(ingested_at)
+        ENGINE = ReplacingMergeTree()
         ORDER BY ({order_by})
         """
 
