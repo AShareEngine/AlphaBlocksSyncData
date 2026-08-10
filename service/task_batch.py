@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from sync_data_system.clickhouse_client import ClickHouseConfig, create_clickhouse_client
 from sync_data_system.scripts.run_provider_sync import run_registered_task
+from sync_data_system.service.log_time import log_timestamp
 from sync_data_system.service.log_redaction import redact_sensitive_text
 from sync_data_system.service.sync_config_manager import WIDE_TABLE_TASK_KIND
 from sync_data_system.service.table_check_state import TableCheckStateStore
@@ -434,7 +435,7 @@ def _load_previous_results(path: Path) -> dict[str, dict[str, Any]]:
 def _append_log(path: Path, message: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(f"{utc_now_iso()} {redact_sensitive_text(message)}\n")
+        handle.write(f"{log_timestamp()} {redact_sensitive_text(message)}\n")
 
 
 def _parse_date(value: Any) -> date | None:

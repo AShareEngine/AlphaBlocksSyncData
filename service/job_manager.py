@@ -22,6 +22,7 @@ from sync_data_system.config_paths import resolve_runtime_config_path
 from sync_data_system.core.providers import load_provider_registry
 from sync_data_system.runtime_config import load_runtime_config
 from sync_data_system.service.log_redaction import redact_sensitive_text
+from sync_data_system.service.log_time import log_timestamp
 from sync_data_system.service.sync_config_manager import (
     WIDE_TABLE_TASK_KIND,
     WIDE_TABLE_TASK_PROVIDER,
@@ -1440,7 +1441,7 @@ class SyncJobManager:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(
-                f"{utc_now_iso()} scheduler parent={parent.job_id} "
+                f"{log_timestamp()} scheduler parent={parent.job_id} "
                 f"{redact_sensitive_text(message)}\n"
             )
 

@@ -5,13 +5,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from sync_data_system.core.providers import ProviderManifest, ProviderTaskManifest, load_provider_registry
 from sync_data_system.data_models import normalize_code_list
 from sync_data_system.providers.amazingdata import runner as amazingdata_runner
+from sync_data_system.service.log_time import log_timestamp
 
 
 RUN_TASK_REQUEST_FIELDS = (
@@ -132,10 +132,9 @@ class SyncTaskProbe:
     context: Any = None
 
     def log(self, message: str) -> None:
-        timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.log_path.open("a", encoding="utf-8") as fh:
-            fh.write(f"{timestamp} {message}\n")
+            fh.write(f"{log_timestamp()} {message}\n")
 
     def set_status(self, status: str, message: str = "") -> None:
         self.status = status
