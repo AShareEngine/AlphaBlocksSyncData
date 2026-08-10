@@ -50,7 +50,9 @@ sync:
 ```
 
 SDK 会自动请求 `http://jiaoch.site/daily` 等接口路径，不要把 `/daily`
-写入 `base_url`。
+写入 `base_url`。各 Provider 的代理彼此隔离；Tushare 当前没有代理配置，
+请求会强制直连，并在请求期间忽略 PM2、systemd 或 Shell 继承的
+`HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 及对应的小写变量。
 
 也可以不把 Token 写入文件：
 

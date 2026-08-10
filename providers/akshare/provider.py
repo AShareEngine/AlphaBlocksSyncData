@@ -10,7 +10,6 @@ import os
 import re
 import threading
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -20,19 +19,11 @@ import pandas as pd
 import requests
 
 from sync_data_system.config_paths import resolve_runtime_config_path
+from sync_data_system.network_proxy import PROXY_ENV_KEYS, scoped_proxy
 from sync_data_system.runtime_config import load_runtime_config
 
 
 logger = logging.getLogger(__name__)
-_PROXY_ENV_LOCK = threading.RLock()
-_PROXY_ENV_KEYS = (
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "ALL_PROXY",
-    "all_proxy",
-)
 _EASTMONEY_DIRECT_URLS: set[str] = set()
 _EASTMONEY_HEADERS = {
     "Accept": "application/json, text/plain, */*",
@@ -1209,7 +1200,7 @@ class AkshareUSProvider:
             for attempt in range(self.config.retries + 1):
                 self._wait_for_request_slot()
                 try:
-                    with _configured_proxy(self.config.proxy):
+                    with scoped_proxy(self.config.proxy):
                         return operation()
                 except Exception as exc:
                     if not _is_retryable_akshare_error(exc) or attempt >= self.config.retries:
@@ -1319,27 +1310,6 @@ def normalize_ths_concept_list(values: Iterable[Any]) -> list[str]:
 def _normalize_cn_stock_symbol(value: Any) -> str:
     symbol = str(value or "").strip()
     return symbol.zfill(6) if symbol.isdigit() and len(symbol) < 6 else symbol
-
-
-@contextmanager
-def _configured_proxy(proxy: str):
-    normalized = str(proxy or "").strip()
-    with _PROXY_ENV_LOCK:
-        previous = {key: os.environ.get(key) for key in _PROXY_ENV_KEYS}
-        try:
-            if normalized:
-                for key in _PROXY_ENV_KEYS:
-                    os.environ[key] = normalized
-            else:
-                for key in _PROXY_ENV_KEYS:
-                    os.environ.pop(key, None)
-            yield
-        finally:
-            for key, value in previous.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
 
 
 def _is_retryable_akshare_error(exc: Exception) -> bool:
@@ -1515,7 +1485,7 @@ def _fetch_eastmoney_url_json(
     try:
         return _request_eastmoney_url_json(url, params, trust_env=True)
     except Exception as proxied_error:
-        if not any(os.environ.get(key) for key in _PROXY_ENV_KEYS):
+        if not any(os.environ.get(key) for key in PROXY_ENV_KEYS):
             raise
         logger.warning(
             "Eastmoney request through configured proxy failed url=%s; "

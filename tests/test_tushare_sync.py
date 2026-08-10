@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -46,6 +47,7 @@ class FakeSDKApi:
     def __init__(self, token):
         self.created_with_token = token
         self.calls = []
+        self.proxy_snapshots = []
         self._DataApi__token = ""
         self._DataApi__http_url = ""
         self._DataApi__timeout = 0
@@ -53,6 +55,19 @@ class FakeSDKApi:
     def __getattr__(self, api_name):
         def call(**kwargs):
             self.calls.append((api_name, kwargs))
+            self.proxy_snapshots.append(
+                {
+                    key: os.environ.get(key)
+                    for key in (
+                        "HTTP_PROXY",
+                        "HTTPS_PROXY",
+                        "ALL_PROXY",
+                        "http_proxy",
+                        "https_proxy",
+                        "all_proxy",
+                    )
+                }
+            )
             return FakeSDKFrame()
 
         return call
@@ -389,6 +404,33 @@ sync:
 
     assert config.token == "env-token"
     assert config.base_url == "http://jiaoch.site"
+
+
+def test_empty_proxy_forces_direct_request_and_restores_inherited_proxy(monkeypatch):
+    inherited = "socks5://127.0.0.1:1080"
+    proxy_keys = (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    )
+    for key in proxy_keys:
+        monkeypatch.setenv(key, inherited)
+    sdk = FakeTushareSDK()
+    provider = TushareProvider(
+        TushareConfig(token="secret", request_interval_seconds=0),
+        sleep=lambda _: None,
+        tushare_module=sdk,
+    )
+
+    provider.query("stock_basic")
+
+    assert sdk.api.proxy_snapshots == [{key: None for key in proxy_keys}]
+    assert {key: os.environ.get(key) for key in proxy_keys} == {
+        key: inherited for key in proxy_keys
+    }
 
 
 def test_sdk_only_pro_bar_reuses_configured_sdk_api():

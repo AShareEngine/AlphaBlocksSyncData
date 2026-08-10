@@ -97,8 +97,15 @@ class _ProxyAwareFinanceDatabase:
         def select(self):
             _ProxyAwareFinanceDatabase.proxy_snapshots.append(
                 {
-                    "HTTP_PROXY": os.environ.get("HTTP_PROXY"),
-                    "HTTPS_PROXY": os.environ.get("HTTPS_PROXY"),
+                    key: os.environ.get(key)
+                    for key in (
+                        "HTTP_PROXY",
+                        "HTTPS_PROXY",
+                        "ALL_PROXY",
+                        "http_proxy",
+                        "https_proxy",
+                        "all_proxy",
+                    )
                 }
             )
             return _FakeFinanceDatabase.Equities().select()
@@ -436,12 +443,14 @@ class YFinanceProviderTest(unittest.TestCase):
             {
                 "HTTP_PROXY": "http://old-http.example",
                 "HTTPS_PROXY": "http://old-https.example",
+                "ALL_PROXY": "socks5://old-all.example",
             },
             clear=False,
         ):
             frame = provider.fetch_symbol_master(snapshot_date=date(2026, 7, 28))
             self.assertEqual(os.environ["HTTP_PROXY"], "http://old-http.example")
             self.assertEqual(os.environ["HTTPS_PROXY"], "http://old-https.example")
+            self.assertEqual(os.environ["ALL_PROXY"], "socks5://old-all.example")
 
         self.assertFalse(frame.empty)
         self.assertEqual(
@@ -450,6 +459,10 @@ class YFinanceProviderTest(unittest.TestCase):
                 {
                     "HTTP_PROXY": "http://127.0.0.1:7890",
                     "HTTPS_PROXY": "http://127.0.0.1:7890",
+                    "ALL_PROXY": "http://127.0.0.1:7890",
+                    "http_proxy": "http://127.0.0.1:7890",
+                    "https_proxy": "http://127.0.0.1:7890",
+                    "all_proxy": "http://127.0.0.1:7890",
                 }
             ],
         )

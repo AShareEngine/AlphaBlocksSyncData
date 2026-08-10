@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 from sync_data_system.config_paths import resolve_runtime_config_path
 from sync_data_system.runtime_config import load_runtime_config
@@ -55,6 +55,9 @@ class QmtConfig:
 class QmtProvider:
     def __init__(self, config: QmtConfig) -> None:
         self.config = config
+        # QMT is normally a LAN service and must not inherit another provider's
+        # HTTP/SOCKS proxy from PM2, systemd, or the parent shell.
+        self._opener = build_opener(ProxyHandler({}))
 
     def close(self) -> None:
         return None
@@ -147,7 +150,7 @@ class QmtProvider:
         request = Request(url, data=payload, method=method.upper(), headers=headers)
         logger.debug("QMT request method=%s url=%s body=%s", method.upper(), url, body or {})
         try:
-            with urlopen(request, timeout=self.config.timeout) as response:
+            with self._opener.open(request, timeout=self.config.timeout) as response:
                 raw = response.read().decode("utf-8")
         except HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")

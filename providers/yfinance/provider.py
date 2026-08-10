@@ -5,12 +5,10 @@
 from __future__ import annotations
 
 import logging
-import os
 import random
 import re
 import threading
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from io import StringIO
@@ -21,6 +19,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 import pandas as pd
 
 from sync_data_system.config_paths import resolve_runtime_config_path
+from sync_data_system.network_proxy import scoped_proxy
 from sync_data_system.providers.yfinance.specs import MarketGroupDefinition
 from sync_data_system.runtime_config import load_runtime_config
 
@@ -391,7 +390,7 @@ class YFinanceProvider:
         if self._finance_database_equities_cache is not None:
             return self._finance_database_equities_cache.copy()
 
-        with _configured_http_proxy(self.config.proxy):
+        with scoped_proxy(self.config.proxy):
             raw = self._finance_database.Equities().select()
         frame = _as_dataframe(raw)
         if frame.empty:
@@ -882,7 +881,7 @@ class YFinanceProvider:
                 "http": self.config.proxy,
                 "https": self.config.proxy,
             }
-        opener = build_opener(ProxyHandler(proxy_map) if proxy_map else ProxyHandler())
+        opener = build_opener(ProxyHandler(proxy_map))
         request = Request(
             url,
             headers={"User-Agent": "AlphaBlocksSyncData/1.0"},
@@ -943,8 +942,9 @@ class YFinanceProvider:
                     "请在任务使用的 Python 环境中升级 yfinance。"
                 )
         else:
-            if self.config.proxy:
-                network_config.proxy = self.config.proxy
+            # Always overwrite module-global yfinance state so a previous
+            # provider instance cannot leak its proxy into this one.
+            network_config.proxy = self.config.proxy or None
             network_config.retries = self.config.network_retries
 
         debug_config = getattr(yfinance_config, "debug", None)
@@ -1028,27 +1028,6 @@ def _is_rate_limit_error(exc: Exception) -> bool:
             "status code 429",
         )
     )
-
-
-@contextmanager
-def _configured_http_proxy(proxy: str):
-    value = str(proxy or "").strip()
-    if not value:
-        yield
-        return
-
-    keys = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
-    previous = {key: os.environ.get(key) for key in keys}
-    try:
-        for key in keys:
-            os.environ[key] = value
-        yield
-    finally:
-        for key, old_value in previous.items():
-            if old_value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = old_value
 
 
 def _parse_nasdaq_listed(text: str) -> pd.DataFrame:

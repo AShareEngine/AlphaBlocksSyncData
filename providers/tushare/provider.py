@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from sync_data_system.config_paths import resolve_runtime_config_path
+from sync_data_system.network_proxy import scoped_proxy
 from sync_data_system.runtime_config import load_runtime_config
 
 
@@ -134,10 +135,11 @@ class TushareProvider:
             self._before_request()
             try:
                 sdk_method = getattr(self._sdk_api, normalized_api_name)
-                frame = sdk_method(
-                    fields=str(field_text or "").strip(),
-                    **request_params,
-                )
+                with scoped_proxy():
+                    frame = sdk_method(
+                        fields=str(field_text or "").strip(),
+                        **request_params,
+                    )
                 return _frame_to_response(normalized_api_name, frame)
             except TushareRequestBudgetExceeded:
                 raise
@@ -195,10 +197,11 @@ class TushareProvider:
 
     def _query_pro_bar(self, params: Mapping[str, Any]) -> list[dict[str, Any]]:
         self._before_request()
-        frame = self._tushare_module.pro_bar(
-            api=self._sdk_api,
-            **_clean_params(params),
-        )
+        with scoped_proxy():
+            frame = self._tushare_module.pro_bar(
+                api=self._sdk_api,
+                **_clean_params(params),
+            )
         if frame is None:
             return []
         if hasattr(frame, "reset_index"):
