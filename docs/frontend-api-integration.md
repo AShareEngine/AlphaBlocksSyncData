@@ -402,6 +402,8 @@ curl http://127.0.0.1:18080/api/meta/tasks/amazingdata.daily_kline
 - `status`
 - `task`
 - `kind`
+- `page`：默认 `1`
+- `page_size`：默认 `20`，最大 `200`
 
 示例：
 
@@ -410,7 +412,13 @@ curl http://127.0.0.1:18080/api/jobs
 curl http://127.0.0.1:18080/api/jobs?status=running
 curl http://127.0.0.1:18080/api/jobs?task=amazingdata.daily_kline
 curl http://127.0.0.1:18080/api/jobs?kind=registered_task
+curl 'http://127.0.0.1:18080/api/jobs?page=2&page_size=20'
 ```
+
+返回中的 `pinned_jobs` 是当前 `queued`、`running`、`cancelling` 任务，
+不占历史记录分页名额；`history_jobs` 是当前页的已结束记录。`jobs` 保留
+兼容结构，内容为 `pinned_jobs + history_jobs`。分页元数据包括 `page`、
+`page_size`、`total`、`total_pages`、`pinned_total` 和 `total_all`。
 
 返回：
 

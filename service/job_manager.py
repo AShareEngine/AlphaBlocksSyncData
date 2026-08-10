@@ -123,7 +123,14 @@ class SyncJobManager:
                 for job in self._jobs.values()
                 if include_children or not job.parent_job_id
             ]
-        for job_id in job_ids:
+            active_job_ids = [
+                job_id
+                for job_id in job_ids
+                if self._jobs[job_id].status in ACTIVE_STATUSES
+            ]
+        # Terminal jobs are immutable. Refresh only live process/parent state so
+        # paginated history requests do not repeatedly walk every old record.
+        for job_id in active_job_ids:
             self._refresh_job(job_id)
         with self._lock:
             items = [
@@ -166,10 +173,25 @@ class SyncJobManager:
         ]
 
     def get_active_jobs(self, *, config_id: Optional[str] = None) -> list[JobRecord]:
-        items = [job for job in self.list_jobs() if job.status in ACTIVE_STATUSES]
-        if config_id:
-            items = [job for job in items if job.config_id == config_id]
-        return items
+        with self._lock:
+            job_ids = [
+                job.job_id
+                for job in self._jobs.values()
+                if not job.parent_job_id
+                and job.status in ACTIVE_STATUSES
+                and (not config_id or job.config_id == config_id)
+            ]
+        for job_id in job_ids:
+            self._refresh_job(job_id)
+        with self._lock:
+            items = [
+                self._jobs[job_id]
+                for job_id in job_ids
+                if job_id in self._jobs
+                and self._jobs[job_id].status in ACTIVE_STATUSES
+                and (not config_id or self._jobs[job_id].config_id == config_id)
+            ]
+        return sorted(items, key=lambda item: item.created_at, reverse=True)
 
     def find_active_config_job(self, config_id: str) -> Optional[JobRecord]:
         items = self.get_active_jobs(config_id=config_id)

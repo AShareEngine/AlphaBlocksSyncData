@@ -89,6 +89,14 @@ DATE_FIELD_CANDIDATES = (
 )
 LATEST_DATE_QUERY_BATCH_SIZE = 32
 FRESHNESS_WATERMARK_DATABASE = "alphablocks"
+ACTIVE_TABLE_SYNC_STATUSES = {"queued", "pending", "running", "cancelling"}
+FAILED_TABLE_SYNC_STATUSES = {
+    "failed",
+    "partial_success",
+    "cancelled",
+    "interrupted",
+    "not_run",
+}
 
 
 def _normalize_field_name(value: Any) -> str:
@@ -131,6 +139,96 @@ def _query_latest_dates(
             database, table, _ = batch[result_index]
             latest_dates[(database, table)] = str(row[1] or "")
     return latest_dates
+
+
+def _active_task_execution_states() -> dict[str, dict[str, Any]]:
+    """Return per-task progress for jobs that have not fully finished.
+
+    Batch parents stay active while their tables finish one by one. Their
+    aggregated task results let the freshness page stop showing a completed
+    table as running merely because another table in the same batch is active.
+    """
+
+    states: dict[str, dict[str, Any]] = {}
+    for job in JOB_MANAGER.get_active_jobs():
+        job_state = {
+            "status": str(job.status or "queued").strip().lower() or "queued",
+            "job_id": str(job.job_id or ""),
+            "batch_job_id": str(job.job_id or ""),
+            "started_at": job.started_at,
+            "finished_at": job.finished_at,
+            "updated_at": job.updated_at or job.started_at or job.created_at,
+            "error": str(job.error or ""),
+        }
+        task_name = str(job.task or "").strip()
+        if task_name and task_name not in states:
+            states[task_name] = job_state
+
+        tasks = list((job.request_payload or {}).get("tasks") or [])
+        if not tasks:
+            continue
+        try:
+            result_payload = JOB_MANAGER.read_task_results(job.job_id)
+        except Exception as exc:
+            logger.warning(
+                "freshness active task results unavailable job_id=%s error=%s",
+                job.job_id,
+                exc,
+            )
+            result_payload = {}
+        results = {
+            str(item.get("name") or "").strip(): item
+            for item in (result_payload.get("tasks") or [])
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        }
+        for task in tasks:
+            name = str(task.get("name") or "").strip()
+            if not name or name in states:
+                continue
+            result = results.get(name) or {}
+            states[name] = {
+                **job_state,
+                "status": str(result.get("status") or job.status or "queued").strip().lower(),
+                "started_at": result.get("started_at") or job.started_at,
+                "finished_at": result.get("finished_at"),
+                "updated_at": (
+                    result.get("finished_at")
+                    or result.get("started_at")
+                    or job_state["updated_at"]
+                ),
+                "error": str(result.get("error") or job.error or ""),
+            }
+    return states
+
+
+def _target_execution_state(
+    task_names: list[str],
+    states_by_task: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    candidates = [states_by_task[name] for name in task_names if name in states_by_task]
+    if not candidates:
+        return None
+
+    def priority(item: dict[str, Any]) -> tuple[int, str]:
+        status = str(item.get("status") or "").lower()
+        if status in ACTIVE_TABLE_SYNC_STATUSES:
+            rank = 3
+        elif status in FAILED_TABLE_SYNC_STATUSES:
+            rank = 2
+        else:
+            rank = 1
+        return rank, str(item.get("updated_at") or "")
+
+    return max(candidates, key=priority)
+
+
+def _table_status_with_execution(base_status: str, execution_state: dict[str, Any] | None) -> str:
+    execution_status = str((execution_state or {}).get("status") or "").lower()
+    if execution_status in ACTIVE_TABLE_SYNC_STATUSES:
+        return "running"
+    if execution_status in FAILED_TABLE_SYNC_STATUSES:
+        return "failed"
+    return base_status
 
 
 PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -833,6 +931,7 @@ def set_config_schedule_enabled(config_id: str, request: ScheduleEnabledRequest)
 def sync_table_status(runtime_path: Optional[str] = Query(None)):
     try:
         task_items = JOB_MANAGER.list_registered_tasks()
+        task_execution_states = _active_task_execution_states()
         tasks_by_target: dict[str, list[dict[str, Any]]] = {}
         for task_item in task_items:
             target = str(task_item.get("target") or "").strip()
@@ -1017,6 +1116,7 @@ def sync_table_status(runtime_path: Optional[str] = Query(None)):
             for target in targets:
                 related_tasks = tasks_by_target.get(target, [])
                 task_names = [str(item.get("name") or "") for item in related_tasks]
+                sync_state = _target_execution_state(task_names, task_execution_states)
                 task_freshness_modes = [
                     str(item.get("freshness_mode") or "daily").strip() or "daily"
                     for item in related_tasks
@@ -1040,11 +1140,12 @@ def sync_table_status(runtime_path: Optional[str] = Query(None)):
                             "latest_date": "",
                             "has_data": False,
                             "last_update_time": "",
-                            "status": "missing",
+                            "status": _table_status_with_execution("missing", sync_state),
                             "tasks": task_names,
                             "freshness_mode": freshness_mode,
                             "latest_field": "",
                             "check_state": check_state,
+                            "sync_state": sync_state,
                         }
                     )
                     continue
@@ -1057,6 +1158,7 @@ def sync_table_status(runtime_path: Optional[str] = Query(None)):
                 has_data = bool(part_row[2]) if part_row else False
                 last_update_time = str(part_row[3]) if part_row and part_row[3] is not None else ""
 
+                base_status = "ready" if latest_date else "warning"
                 items.append(
                     {
                         "target": target,
@@ -1064,11 +1166,12 @@ def sync_table_status(runtime_path: Optional[str] = Query(None)):
                         "latest_date": latest_date,
                         "has_data": has_data,
                         "last_update_time": last_update_time,
-                        "status": "ready" if latest_date else "warning",
+                        "status": _table_status_with_execution(base_status, sync_state),
                         "tasks": task_names,
                         "freshness_mode": freshness_mode,
                         "latest_field": latest_field or "",
                         "check_state": check_state,
+                        "sync_state": sync_state,
                     }
                 )
         finally:
@@ -1156,9 +1259,29 @@ def list_jobs(
     status: Optional[str] = Query(None),
     task: Optional[str] = Query(None),
     kind: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
 ):
+    items = JOB_MANAGER.list_jobs(status=status, task=task, kind=kind)
+    pinned = [item for item in items if item.status in ACTIVE_TABLE_SYNC_STATUSES]
+    history = [item for item in items if item.status not in ACTIVE_TABLE_SYNC_STATUSES]
+    total = len(history)
+    offset = (page - 1) * page_size
+    history_page = history[offset : offset + page_size]
+    total_pages = (total + page_size - 1) // page_size if total else 0
     return {
-        "jobs": [_job_response(job) for job in JOB_MANAGER.list_jobs(status=status, task=task, kind=kind)]
+        # Keep active jobs in the legacy jobs collection for clients that only
+        # read this field, while exposing explicit pinned/history collections
+        # for the paginated Studio page.
+        "jobs": [_job_response(job) for job in [*pinned, *history_page]],
+        "pinned_jobs": [_job_response(job) for job in pinned],
+        "history_jobs": [_job_response(job) for job in history_page],
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
+        "pinned_total": len(pinned),
+        "total_all": total + len(pinned),
     }
 
 

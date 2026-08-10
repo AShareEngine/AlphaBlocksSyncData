@@ -216,6 +216,12 @@ def run_registered_task(
     )
     definition = TASK_REGISTRY.get_task(probe.name)
     probe.log(f"task={probe.name} source={definition.source} target={definition.target} status=preparing")
+    _record_table_check(
+        probe,
+        definition=definition,
+        status="running",
+        attempted_at=attempted_at,
+    )
     owns_context = context is None
     try:
         if context is None:

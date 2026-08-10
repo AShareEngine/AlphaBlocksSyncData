@@ -63,6 +63,33 @@ class TableCheckStateStoreTest(unittest.TestCase):
             self.assertEqual(record["last_attempt_at"], "2026-07-22T10:00:00+00:00")
             self.assertEqual(record["last_error"], "provider unavailable")
 
+    def test_running_state_preserves_previous_success_until_task_finishes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = TableCheckStateStore(Path(tmpdir), state_dir=Path(tmpdir) / "state")
+            identity = {
+                "provider": "tushare",
+                "task": "tushare.daily",
+                "database": "tushare",
+                "table": "ts_daily",
+            }
+            store.record(
+                **identity,
+                status="success",
+                job_id="job-1",
+                finished_at="2026-08-09T10:00:00+00:00",
+            )
+
+            record = store.record(
+                **identity,
+                status="running",
+                job_id="job-2",
+                attempted_at="2026-08-10T10:00:00+00:00",
+            )
+
+            self.assertEqual(record["last_status"], "running")
+            self.assertEqual(record["last_success_at"], "2026-08-09T10:00:00+00:00")
+            self.assertEqual(record["last_job_id"], "job-2")
+
 
 if __name__ == "__main__":
     unittest.main()

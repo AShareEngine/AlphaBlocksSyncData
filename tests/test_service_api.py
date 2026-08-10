@@ -246,6 +246,91 @@ sync:
         self.assertEqual(len(fake_client.latest_date_queries), 1)
         self.assertIn("UNION ALL", fake_client.latest_date_queries[0])
 
+    def test_sync_table_status_marks_each_batch_table_ready_only_after_its_task_finishes(self) -> None:
+        client = TestClient(app)
+
+        class _FakeClient:
+            def query_rows(self, sql, parameters=None):
+                if "FROM system.tables" in sql:
+                    return [("market", "first_daily"), ("market", "second_daily")]
+                if "FROM system.columns" in sql:
+                    return [
+                        ("market", "first_daily", "trade_date"),
+                        ("market", "second_daily", "trade_date"),
+                    ]
+                if "AS latest_date" in sql:
+                    return [(0, "2026-08-07"), (1, "2026-08-07")]
+                if "FROM system.parts" in sql:
+                    return [
+                        ("market", "first_daily", True, "2026-08-10 10:00:00"),
+                        ("market", "second_daily", True, "2026-08-10 10:00:00"),
+                    ]
+                return []
+
+            def close(self):
+                return None
+
+        tasks = [
+            {"name": "test.first", "target": "first_daily", "cursor_field": "trade_date"},
+            {"name": "test.second", "target": "second_daily", "cursor_field": "trade_date"},
+        ]
+        job = JobRecord(
+            job_id="batch-1",
+            kind="task_batch",
+            status="running",
+            created_at="2026-08-10T10:00:00+00:00",
+            started_at="2026-08-10T10:00:00+00:00",
+            finished_at=None,
+            cwd="/tmp",
+            command=[],
+            log_path="/tmp/batch-1.log",
+            request_payload={"tasks": tasks},
+            updated_at="2026-08-10T10:01:00+00:00",
+        )
+        task_results = {
+            "tasks": [
+                {
+                    "name": "test.first",
+                    "status": "success",
+                    "started_at": "2026-08-10T10:00:00+00:00",
+                    "finished_at": "2026-08-10T10:00:30+00:00",
+                },
+                {
+                    "name": "test.second",
+                    "status": "running",
+                    "started_at": "2026-08-10T10:00:30+00:00",
+                    "finished_at": None,
+                },
+            ]
+        }
+        with patch(
+            "sync_data_system.service.api.JOB_MANAGER.list_registered_tasks",
+            return_value=tasks,
+        ), patch(
+            "sync_data_system.service.api.JOB_MANAGER.get_active_jobs",
+            return_value=[job],
+        ), patch(
+            "sync_data_system.service.api.JOB_MANAGER.read_task_results",
+            return_value=task_results,
+        ), patch(
+            "sync_data_system.service.api.TABLE_CHECK_STATE_STORE.list_states",
+            return_value=[],
+        ), patch(
+            "sync_data_system.service.api.ClickHouseConfig.from_env",
+            return_value=object(),
+        ), patch(
+            "sync_data_system.service.api.create_clickhouse_client",
+            return_value=_FakeClient(),
+        ):
+            response = client.get("/api/sync-table-status")
+
+        self.assertEqual(response.status_code, 200)
+        items = {item["target"]: item for item in response.json()["items"]}
+        self.assertEqual(items["first_daily"]["status"], "ready")
+        self.assertEqual(items["first_daily"]["sync_state"]["status"], "success")
+        self.assertEqual(items["second_daily"]["status"], "running")
+        self.assertEqual(items["second_daily"]["sync_state"]["status"], "running")
+
     def test_sync_table_status_reuses_watermark_until_source_parts_change(self) -> None:
         client = TestClient(app)
 
@@ -597,6 +682,54 @@ sync:
         payload = response.json()
         self.assertEqual(len(payload["jobs"]), 1)
         self.assertEqual(payload["jobs"][0]["status"], "running")
+        self.assertEqual(payload["pinned_total"], 1)
+        self.assertEqual(payload["total"], 0)
+
+    def test_list_jobs_pins_active_jobs_and_paginates_finished_history(self) -> None:
+        client = TestClient(app)
+
+        def job(index: int, status: str) -> JobRecord:
+            return JobRecord(
+                job_id=f"job-{index:02d}",
+                kind="registered_task",
+                status=status,
+                created_at=f"2026-08-{index + 1:02d}T10:00:00+00:00",
+                started_at=f"2026-08-{index + 1:02d}T10:00:00+00:00",
+                finished_at=None if status == "running" else f"2026-08-{index + 1:02d}T10:01:00+00:00",
+                cwd="/tmp",
+                command=["python"],
+                log_path=f"/tmp/job-{index:02d}.log",
+                task=f"test.task_{index}",
+            )
+
+        active = job(0, "running")
+        history = [job(index, "success") for index in range(1, 26)]
+        with patch(
+            "sync_data_system.service.api.JOB_MANAGER.list_jobs",
+            return_value=[active, *history],
+        ):
+            response = client.get("/api/jobs?page=2&page_size=10")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["page"], 2)
+        self.assertEqual(payload["page_size"], 10)
+        self.assertEqual(payload["total"], 25)
+        self.assertEqual(payload["total_pages"], 3)
+        self.assertEqual(payload["pinned_total"], 1)
+        self.assertEqual(payload["total_all"], 26)
+        self.assertEqual([item["job_id"] for item in payload["pinned_jobs"]], ["job-00"])
+        self.assertEqual(len(payload["history_jobs"]), 10)
+        self.assertEqual(len(payload["jobs"]), 11)
+        self.assertEqual(payload["history_jobs"][0]["job_id"], "job-11")
+        self.assertEqual(payload["jobs"][0]["job_id"], "job-00")
+
+    def test_list_jobs_rejects_invalid_pagination(self) -> None:
+        client = TestClient(app)
+
+        response = client.get("/api/jobs?page=0&page_size=0")
+
+        self.assertEqual(response.status_code, 422)
 
     def test_run_task_returns_task_metadata(self) -> None:
         client = TestClient(app)
