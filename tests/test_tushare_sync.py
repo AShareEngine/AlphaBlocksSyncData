@@ -217,6 +217,20 @@ def test_catalog_registers_every_read_only_document_api():
     assert catalog["unavailable_documents"][0]["doc_id"] == "314"
 
 
+def test_renamed_stopped_fields_remain_documented_but_are_never_requested():
+    stopped_fields = []
+    for spec in TUSHARE_TASK_SPECS.values():
+        for field in spec.output_fields:
+            if field.requestable:
+                continue
+            stopped_fields.append((spec.task, field.provider_name))
+            assert field.name not in spec.output_names
+            assert field.provider_name not in spec.output_provider_names
+
+    assert stopped_fields == [("cb_basic", "maturity_put_price")]
+    assert "maturity_call_price" in TUSHARE_TASK_SPECS["cb_basic"].output_provider_names
+
+
 def test_local_complete_document_matches_catalog_fields_and_embedded_interfaces():
     document_path = PROJECT_ROOT / "docs" / "Tushare_数据接口完整文档.md"
     if not document_path.exists():

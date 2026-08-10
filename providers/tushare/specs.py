@@ -43,6 +43,17 @@ class TushareFieldSpec:
             return self.name[2:]
         return self.name
 
+    @property
+    def requestable(self) -> bool:
+        """Whether the provider still accepts this documented field.
+
+        Tushare keeps renamed fields in some documentation tables for migration
+        guidance, even after the API rejects them in ``fields``. Preserve those
+        entries in the catalog, but do not request or create columns for them.
+        """
+
+        return "更名停用" not in self.description
+
 
 @dataclass(frozen=True)
 class TushareTaskSpec:
@@ -68,11 +79,13 @@ class TushareTaskSpec:
 
     @property
     def output_names(self) -> tuple[str, ...]:
-        return tuple(field.name for field in self.output_fields)
+        return tuple(field.name for field in self.output_fields if field.requestable)
 
     @property
     def output_provider_names(self) -> tuple[str, ...]:
-        return tuple(field.provider_name for field in self.output_fields)
+        return tuple(
+            field.provider_name for field in self.output_fields if field.requestable
+        )
 
     @property
     def business_key_fields(self) -> tuple[str, ...]:
