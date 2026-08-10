@@ -24,6 +24,7 @@ from sync_data_system.providers.tushare.runner import (
     _fetch_rows,
     _run_code_range,
     _run_date_slice,
+    _run_snapshot,
     load_execution_plan_from_toml,
 )
 from sync_data_system.providers.tushare.specs import TUSHARE_TASK_SPECS
@@ -296,6 +297,83 @@ def test_global_text_endpoints_use_date_slices_instead_of_security_universes():
         "irm_qa_sz": "date_slice",
         "research_report": "date_slice",
     }
+
+
+def test_cb_price_change_batches_multiple_bond_codes_per_request():
+    class Provider:
+        def __init__(self):
+            self.calls = []
+
+        def query_all(self, api_name, **kwargs):
+            self.calls.append((api_name, kwargs))
+            if api_name == "cb_basic":
+                return [{"ts_code": f"11{index:04d}.SH"} for index in range(45)]
+            return [
+                {"ts_code": code, "change_date": "20260101"}
+                for code in kwargs["params"]["ts_code"].split(",")
+            ]
+
+    class Repository:
+        def __init__(self):
+            self.saved = []
+
+        def save_rows(self, spec, rows, *, scope_key):
+            self.saved.extend(rows)
+            return len(rows)
+
+    provider = Provider()
+    repository = Repository()
+
+    inserted = _run_snapshot(
+        SyncArgs(task="cb_price_chg"),
+        TUSHARE_TASK_SPECS["cb_price_chg"],
+        provider,
+        repository,
+        context=None,
+    )
+
+    price_calls = [kwargs for api_name, kwargs in provider.calls if api_name == "cb_price_chg"]
+    assert inserted == 45
+    assert [len(call["params"]["ts_code"].split(",")) for call in price_calls] == [20, 20, 5]
+
+
+def test_cb_price_change_retries_individually_if_a_batch_reaches_row_limit():
+    class Provider:
+        def __init__(self):
+            self.calls = []
+
+        def query_all(self, api_name, **kwargs):
+            params = kwargs["params"]
+            self.calls.append(params["ts_code"])
+            codes = params["ts_code"].split(",")
+            if len(codes) > 1:
+                return [
+                    {"ts_code": codes[0], "change_date": f"{index:08d}"}
+                    for index in range(2000)
+                ]
+            return [{"ts_code": codes[0], "change_date": "20260101"}]
+
+    class Repository:
+        def __init__(self):
+            self.saved = []
+
+        def save_rows(self, spec, rows, *, scope_key):
+            self.saved.extend(rows)
+            return len(rows)
+
+    provider = Provider()
+    repository = Repository()
+
+    inserted = _run_snapshot(
+        SyncArgs(task="cb_price_chg", codes_raw="113001.SH,113002.SH"),
+        TUSHARE_TASK_SPECS["cb_price_chg"],
+        provider,
+        repository,
+        context=None,
+    )
+
+    assert inserted == 2
+    assert provider.calls == ["113001.SH,113002.SH", "113001.SH", "113002.SH"]
 
 
 def test_anns_d_queries_each_calendar_date_without_a_stock_code():

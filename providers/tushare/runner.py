@@ -86,6 +86,14 @@ UNIVERSE_DEFINITIONS: dict[str, tuple[str, tuple[dict[str, Any], ...]]] = {
     "美股数据": ("us_basic", ({},)),
     "现货数据": ("sge_basic", ({},)),
 }
+MULTI_CODE_SNAPSHOT_BATCH_SIZES = {
+    # The API explicitly accepts comma-separated convertible-bond codes. Keep
+    # batches conservative because a response is capped at 2,000 event rows.
+    "cb_price_chg": 20,
+}
+MULTI_CODE_SNAPSHOT_ROW_LIMITS = {
+    "cb_price_chg": 2000,
+}
 
 
 @dataclass(frozen=True)
@@ -486,15 +494,49 @@ def _run_snapshot(
         codes = _normalize_codes(args.codes_raw) or _resolve_universe(spec, provider, context=context)
         if args.limit > 0:
             codes = codes[: args.limit]
-        params_variants = [
-            {**params, spec.code_field: code}
-            for params in params_variants
-            for code in codes
+        batch_size = MULTI_CODE_SNAPSHOT_BATCH_SIZES.get(spec.task, 1)
+        code_batches = [
+            codes[index : index + batch_size]
+            for index in range(0, len(codes), batch_size)
         ]
+        params_variants = [
+            {**params, spec.code_field: ",".join(code_batch)}
+            for params in params_variants
+            for code_batch in code_batches
+        ]
+        logger.info(
+            "Tushare snapshot code batches task=%s codes=%s batches=%s batch_size=%s",
+            spec.task,
+            len(codes),
+            len(code_batches),
+            batch_size,
+        )
     total = 0
-    for params in params_variants:
+    for index, params in enumerate(params_variants, start=1):
         _validate_required_params(spec, params)
         rows = _fetch_rows(args, spec, provider, params)
+        code_batch = _normalize_codes(str(params.get(spec.code_field) or ""))
+        row_limit = MULTI_CODE_SNAPSHOT_ROW_LIMITS.get(spec.task, 0)
+        if len(code_batch) > 1 and row_limit > 0 and len(rows) >= row_limit:
+            logger.warning(
+                "Tushare snapshot batch reached row limit; retrying per code "
+                "task=%s progress=%s/%s codes=%s rows=%s limit=%s",
+                spec.task,
+                index,
+                len(params_variants),
+                len(code_batch),
+                len(rows),
+                row_limit,
+            )
+            for code in code_batch:
+                single_params = {**params, spec.code_field: code}
+                single_rows = _fetch_rows(args, spec, provider, single_params)
+                total += repository.save_rows(
+                    spec,
+                    single_rows,
+                    scope_key=_params_scope_key(spec.task, single_params),
+                )
+            continue
         total += repository.save_rows(
             spec,
             rows,
