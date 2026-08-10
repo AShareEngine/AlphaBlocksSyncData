@@ -103,9 +103,17 @@ python3 scripts/run_provider_sync.py tushare.stock_hsgt \
 2. 某只代码完全无数据时，从 `20100101` 开始；
 3. 有数据时，从该代码自己的最大日期开始，故意保留一个日期重叠以接收当天修订；
 4. 每只代码请求完成后立即落库，进程中断不会丢失已完成进度；
-5. 股票代码池来自 `stock_basic`，同时查询 `L/D/P/G`，包含退市和暂停上市股票，不混入指数。
+5. 未显式传入代码时，只从对应类目的本地基础表读取遍历池；基础表为空会先同步基础接口、落库，再重新读取，不直接拿临时 API 返回值遍历；
+6. 股票池以 `bak_basic` 历史列表中的全部历史代码为主体，再用 `stock_basic` 的 `L/D/P/G` 补入尚未进入历史列表的新代码，因此覆盖曾上市、已退市、暂停上市和当前上市股票，且不混入指数。
 
 全市场型接口按自己的日期游标增量；支持 `offset/limit` 的接口会自动分页。分钟接口在全历史计划中按天切窗，避免单次返回上限截断。
+
+类目基础表映射如下：股票 `ts_bak_basic + ts_stock_basic`、ETF
+`ts_etf_basic`、基金 `ts_fund_basic`、指数 `ts_index_basic`、期货
+`ts_fut_basic`、期权 `ts_opt_basic`、可转债 `ts_cb_basic`、外汇
+`ts_fx_obasic`、港股 `ts_hk_basic`、美股 `ts_us_basic`、现货
+`ts_sge_basic`。全历史计划会先同步这些基础表；`bak_basic` 从官方有数据的
+`20160101` 开始。
 
 ## ReplacingMergeTree 设计
 

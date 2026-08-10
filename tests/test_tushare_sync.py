@@ -13,6 +13,7 @@ install_sync_data_system_alias(PROJECT_ROOT)
 
 from sync_data_system.core.providers import load_provider_registry
 from sync_data_system.providers.tushare.provider import (
+    TushareAPIError,
     TushareConfig,
     TushareProvider,
     TushareRequestBudgetExceeded,
@@ -22,6 +23,7 @@ from sync_data_system.providers.tushare.runner import (
     UNIVERSE_DEFINITIONS,
     SyncArgs,
     _fetch_rows,
+    _resolve_universe,
     _run_code_range,
     _run_date_slice,
     _run_snapshot,
@@ -174,6 +176,8 @@ class EmptyUniverseProvider:
         self.calls.append((api_name, kwargs))
         if api_name == "stock_basic":
             return []
+        if api_name == "bak_basic":
+            raise TushareAPIError("bak_basic", -1, "permission denied")
         params = kwargs["params"]
         return [
             {
@@ -185,6 +189,9 @@ class EmptyUniverseProvider:
 
 
 class EmptyUniverseRepository(FakeRangeRepository):
+    def load_universe_codes(self, spec):
+        return []
+
     def load_latest_cursor(self, spec):
         return None
 
@@ -316,9 +323,15 @@ def test_cb_price_change_batches_multiple_bond_codes_per_request():
     class Repository:
         def __init__(self):
             self.saved = []
+            self.universes = {}
+
+        def load_universe_codes(self, spec):
+            return self.universes.get(spec.task, [])
 
         def save_rows(self, spec, rows, *, scope_key):
             self.saved.extend(rows)
+            if spec.task == "cb_basic":
+                self.universes[spec.task] = [row["ts_code"] for row in rows]
             return len(rows)
 
     provider = Provider()
@@ -374,6 +387,107 @@ def test_cb_price_change_retries_individually_if_a_batch_reaches_row_limit():
 
     assert inserted == 2
     assert provider.calls == ["113001.SH,113002.SH", "113001.SH", "113002.SH"]
+
+
+def test_cb_share_uses_local_cb_basic_codes_without_requesting_upstream_again():
+    class Provider:
+        def __init__(self):
+            self.config = TushareConfig(token="token", default_start_date="20100101")
+            self.calls = []
+
+        def query_all(self, api_name, **kwargs):
+            self.calls.append((api_name, kwargs))
+            if api_name == "cb_basic":
+                return []
+            params = kwargs["params"]
+            return [
+                {
+                    "ts_code": params["ts_code"],
+                    "end_date": params["end_date"],
+                }
+            ]
+
+    class Repository:
+        def __init__(self):
+            self.saved = []
+
+        def load_universe_codes(self, spec):
+            assert spec.task == "cb_basic"
+            return ["110027.SH", "113001.SH"]
+
+        def load_latest_cursors(self, spec, codes):
+            return {}
+
+        def save_rows(self, spec, rows, *, scope_key):
+            self.saved.extend(rows)
+            return len(rows)
+
+    provider = Provider()
+    repository = Repository()
+
+    inserted = _run_code_range(
+        SyncArgs(
+            task="cb_share",
+            begin_date="20260101",
+            end_date="20260131",
+        ),
+        TUSHARE_TASK_SPECS["cb_share"],
+        provider,
+        repository,
+        context=None,
+    )
+
+    cb_share_params = [
+        kwargs["params"]
+        for api_name, kwargs in provider.calls
+        if api_name == "cb_share"
+    ]
+    assert inserted == 2
+    assert [params["ts_code"] for params in cb_share_params] == [
+        "110027.SH",
+        "113001.SH",
+    ]
+    assert all(params["start_date"] == "20260101" for params in cb_share_params)
+    assert all(params["end_date"] == "20260131" for params in cb_share_params)
+    assert all(api_name != "cb_basic" for api_name, _ in provider.calls)
+
+
+def test_stock_universe_uses_historical_codes_and_complements_current_codes():
+    class Provider:
+        def query_all(self, api_name, **kwargs):
+            raise AssertionError(f"unexpected upstream request: {api_name}")
+
+    class Repository:
+        def load_universe_codes(self, spec):
+            if spec.task == "bak_basic":
+                return ["000001.SZ", "600001.SH"]
+            if spec.task == "stock_basic":
+                return ["000001.SZ", "920001.BJ"]
+            raise AssertionError(spec.task)
+
+    codes = _resolve_universe(
+        TUSHARE_TASK_SPECS["daily"],
+        Provider(),
+        repository=Repository(),
+        context=None,
+    )
+
+    assert codes == ["000001.SZ", "600001.SH", "920001.BJ"]
+
+
+def test_universe_loader_uses_result_ts_code_when_api_has_no_code_input():
+    class ClickHouse(FakeClickHouse):
+        def query_rows(self, sql, parameters=None):
+            if "SELECT DISTINCT `ts_code`" in sql:
+                return [("IF2608.CFX",), ("RB2610.SHF",)]
+            return []
+
+    repository = TushareRepository(ClickHouse())
+
+    assert repository.load_universe_codes(TUSHARE_TASK_SPECS["fut_basic"]) == [
+        "IF2608.CFX",
+        "RB2610.SHF",
+    ]
 
 
 def test_anns_d_queries_each_calendar_date_without_a_stock_code():
@@ -799,7 +913,16 @@ def test_generated_plans_are_executable_and_start_in_2010():
     )
 
     assert all(task.begin_date == "20100101" for task in daily.tasks)
-    assert all(task.begin_date == "20100101" for task in historical.tasks)
+    assert all(
+        task.begin_date == ("20160101" if task.task == "bak_basic" else "20100101")
+        for task in historical.tasks
+    )
+    expected_sources = [
+        source.task
+        for category_sources in UNIVERSE_DEFINITIONS.values()
+        for source in category_sources
+    ]
+    assert [task.task for task in historical.tasks[: len(expected_sources)]] == expected_sources
     assert len(historical.tasks) >= 200
 
 

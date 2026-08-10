@@ -49,42 +49,73 @@ DATE_PARAMS = frozenset(
         "datetime",
     }
 )
-UNIVERSE_DEFINITIONS: dict[str, tuple[str, tuple[dict[str, Any], ...]]] = {
+
+
+@dataclass(frozen=True)
+class UniverseSourceDefinition:
+    task: str
+    param_variants: tuple[dict[str, Any], ...]
+    historical: bool = False
+    begin_date: str = ""
+
+
+UNIVERSE_DEFINITIONS: dict[str, tuple[UniverseSourceDefinition, ...]] = {
     "股票数据": (
-        "stock_basic",
-        tuple({"list_status": status} for status in ("L", "D", "P", "G")),
+        UniverseSourceDefinition(
+            "stock_basic",
+            tuple({"list_status": status} for status in ("L", "D", "P", "G")),
+        ),
+        # bak_basic is the daily historical security list. Once populated, its
+        # distinct codes are the primary historical A-share universe; the
+        # current stock_basic table only complements newly listed securities.
+        UniverseSourceDefinition(
+            "bak_basic",
+            ({},),
+            historical=True,
+            begin_date="20160101",
+        ),
     ),
     "ETF专题": (
-        "etf_basic",
-        tuple({"list_status": status} for status in ("L", "D", "P")),
+        UniverseSourceDefinition(
+            "etf_basic",
+            tuple({"list_status": status} for status in ("L", "D", "P")),
+        ),
     ),
     "公募基金": (
-        "fund_basic",
-        tuple({"status": status} for status in ("L", "D", "I")),
+        UniverseSourceDefinition(
+            "fund_basic",
+            tuple({"status": status} for status in ("L", "D", "I")),
+        ),
     ),
     "指数专题": (
-        "index_basic",
-        tuple(
-            {"market": market}
-            for market in ("MSCI", "CSI", "SSE", "SZSE", "CICC", "SW", "OTH")
+        UniverseSourceDefinition(
+            "index_basic",
+            tuple(
+                {"market": market}
+                for market in ("MSCI", "CSI", "SSE", "SZSE", "CICC", "SW", "OTH")
+            ),
         ),
     ),
     "期货数据": (
-        "fut_basic",
-        tuple(
-            {"exchange": exchange}
-            for exchange in ("CFFEX", "DCE", "CZCE", "SHFE", "INE", "GFEX")
+        UniverseSourceDefinition(
+            "fut_basic",
+            tuple(
+                {"exchange": exchange}
+                for exchange in ("CFFEX", "DCE", "CZCE", "SHFE", "INE", "GFEX")
+            ),
         ),
     ),
-    "期权数据": ("opt_basic", ({},)),
-    "债券专题": ("cb_basic", ({},)),
-    "外汇数据": ("fx_obasic", ({},)),
+    "期权数据": (UniverseSourceDefinition("opt_basic", ({},)),),
+    "债券专题": (UniverseSourceDefinition("cb_basic", ({},)),),
+    "外汇数据": (UniverseSourceDefinition("fx_obasic", ({},)),),
     "港股数据": (
-        "hk_basic",
-        tuple({"list_status": status} for status in ("L", "D", "P")),
+        UniverseSourceDefinition(
+            "hk_basic",
+            tuple({"list_status": status} for status in ("L", "D", "P")),
+        ),
     ),
-    "美股数据": ("us_basic", ({},)),
-    "现货数据": ("sge_basic", ({},)),
+    "美股数据": (UniverseSourceDefinition("us_basic", ({},)),),
+    "现货数据": (UniverseSourceDefinition("sge_basic", ({},)),),
 }
 MULTI_CODE_SNAPSHOT_BATCH_SIZES = {
     # The API explicitly accepts comma-separated convertible-bond codes. Keep
@@ -282,6 +313,7 @@ def run_sync_args(
     }
     try:
         total = _execute_task(args, spec, provider, repository, context=context)
+        _invalidate_universe_cache(context, spec.task)
     except Exception as exc:
         write_sync_result(
             repository=repository,
@@ -342,7 +374,12 @@ def _run_code_range(
 ) -> int:
     codes = _normalize_codes(args.codes_raw)
     if not codes:
-        codes = _resolve_universe(spec, provider, context=context)
+        codes = _resolve_universe(
+            spec,
+            provider,
+            repository=repository,
+            context=context,
+        )
     if args.limit > 0:
         codes = codes[: args.limit]
     if not codes:
@@ -491,7 +528,12 @@ def _run_snapshot(
     params_variants = _expand_params(args.params)
     required_code = bool(spec.code_field and spec.code_field in spec.required_input_names)
     if required_code and not any(spec.code_field in params for params in params_variants):
-        codes = _normalize_codes(args.codes_raw) or _resolve_universe(spec, provider, context=context)
+        codes = _normalize_codes(args.codes_raw) or _resolve_universe(
+            spec,
+            provider,
+            repository=repository,
+            context=context,
+        )
         if args.limit > 0:
             codes = codes[: args.limit]
         batch_size = MULTI_CODE_SNAPSHOT_BATCH_SIZES.get(spec.task, 1)
@@ -592,43 +634,158 @@ def _resolve_universe(
     spec: TushareTaskSpec,
     provider: TushareProvider,
     *,
+    repository: TushareRepository,
     context: TushareExecutionContext | None,
 ) -> list[str]:
-    definition = UNIVERSE_DEFINITIONS.get(spec.category_root)
-    if definition is None:
+    sources = UNIVERSE_DEFINITIONS.get(spec.category_root)
+    if sources is None:
         return []
-    master_api, param_variants = definition
-    cache_key = f"{spec.category_root}:{master_api}"
+    cache_key = _universe_cache_key(spec.category_root, sources)
     if context is not None and cache_key in context.universe_cache:
-        return list(context.universe_cache[cache_key])
+        cached_codes = list(context.universe_cache[cache_key])
+        if cached_codes:
+            return cached_codes
 
-    master_spec = TUSHARE_TASK_SPECS[master_api]
-    rows: list[dict[str, Any]] = []
-    for params in param_variants:
-        rows.extend(
-            provider.query_all(
-                master_api,
-                params=params,
-                fields=master_spec.output_names,
-                supports_pagination=master_spec.supports_pagination,
+    local_loader = getattr(repository, "load_universe_codes", None)
+    source_codes: dict[str, list[str]] = {}
+    sync_errors: dict[str, Exception] = {}
+    for source in sources:
+        source_spec = TUSHARE_TASK_SPECS[source.task]
+        codes = local_loader(source_spec) if callable(local_loader) else []
+        if not codes:
+            logger.info(
+                "Tushare local universe is empty; synchronizing source first "
+                "category=%s source=%s table=%s historical=%s",
+                spec.category_root,
+                source.task,
+                source_spec.table_name,
+                source.historical,
             )
+            try:
+                _sync_universe_source(
+                    source,
+                    provider=provider,
+                    repository=repository,
+                    context=context,
+                )
+            except Exception as exc:
+                sync_errors[source.task] = exc
+                logger.warning(
+                    "Tushare universe source sync failed; re-reading any rows already persisted "
+                    "category=%s source=%s table=%s",
+                    spec.category_root,
+                    source.task,
+                    source_spec.table_name,
+                    exc_info=True,
+                )
+            codes = local_loader(source_spec) if callable(local_loader) else []
+        source_codes[source.task] = sorted(set(_normalize_codes(codes)))
+
+    historical_codes = {
+        code
+        for source in sources
+        if source.historical
+        for code in source_codes[source.task]
+    }
+    current_codes = {
+        code
+        for source in sources
+        if not source.historical
+        for code in source_codes[source.task]
+    }
+    # Historical lists are authoritative for previously listed/delisted
+    # securities. Current basic tables only complement codes not yet present in
+    # the historical list, such as a newly listed security before the next
+    # historical-list refresh.
+    codes = sorted(historical_codes | current_codes)
+    if (
+        not codes
+        and sync_errors
+        and spec.code_field in spec.required_input_names
+    ):
+        source_tables = ", ".join(
+            TUSHARE_TASK_SPECS[source.task].table_name for source in sources
         )
-    codes = sorted(
-        {
-            str(row.get("ts_code") or row.get("code") or row.get("symbol") or "").strip()
-            for row in rows
-            if str(row.get("ts_code") or row.get("code") or row.get("symbol") or "").strip()
-        }
-    )
+        failed_sources = ", ".join(sorted(sync_errors))
+        raise ValueError(
+            f"Tushare task={spec.task} 本地类目代码池为空；基础/历史列表同步失败 "
+            f"sources={failed_sources} tables={source_tables}。请先同步这些基础表。"
+        ) from next(iter(sync_errors.values()))
+    if not codes and sync_errors:
+        logger.warning(
+            "Tushare optional code universe remains empty after source sync failures; "
+            "task=%s failed_sources=%s",
+            spec.task,
+            ",".join(sorted(sync_errors)),
+        )
     if context is not None:
         context.universe_cache[cache_key] = list(codes)
     logger.info(
-        "Tushare universe resolved category=%s master=%s codes=%s",
+        "Tushare local universe resolved category=%s sources=%s "
+        "historical_codes=%s current_codes=%s codes=%s",
         spec.category_root,
-        master_api,
+        ",".join(source.task for source in sources),
+        len(historical_codes),
+        len(current_codes),
         len(codes),
     )
     return codes
+
+
+def _universe_cache_key(
+    category: str,
+    sources: Sequence[UniverseSourceDefinition],
+) -> str:
+    return f"{category}:{','.join(source.task for source in sources)}"
+
+
+def _invalidate_universe_cache(
+    context: TushareExecutionContext | None,
+    completed_task: str,
+) -> None:
+    if context is None:
+        return
+    for category, sources in UNIVERSE_DEFINITIONS.items():
+        if any(source.task == completed_task for source in sources):
+            context.universe_cache.pop(_universe_cache_key(category, sources), None)
+
+
+def _sync_universe_source(
+    source: UniverseSourceDefinition,
+    *,
+    provider: TushareProvider,
+    repository: TushareRepository,
+    context: TushareExecutionContext | None,
+) -> int:
+    source_spec = TUSHARE_TASK_SPECS[source.task]
+    ensure_table = getattr(repository, "ensure_task_table", None)
+    if callable(ensure_table):
+        ensure_table(source_spec)
+    total = 0
+    for params in source.param_variants:
+        source_args = SyncArgs(
+            task=source.task,
+            begin_date=source.begin_date,
+            end_date=date.today().strftime("%Y%m%d") if source.begin_date else "",
+            params=params,
+            resume=True,
+            database=getattr(repository, "database", "tushare"),
+        )
+        total += _execute_task(
+            source_args,
+            source_spec,
+            provider,
+            repository,
+            context=context,
+        )
+    logger.info(
+        "Tushare universe source synchronized source=%s table=%s historical=%s rows=%s",
+        source.task,
+        source_spec.table_name,
+        source.historical,
+        total,
+    )
+    return total
 
 
 def _request_window(args: SyncArgs, config: TushareConfig) -> tuple[str, str]:

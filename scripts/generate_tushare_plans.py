@@ -14,6 +14,24 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CATALOG_PATH = PROJECT_ROOT / "providers" / "tushare" / "catalog.json"
 DEFAULT_OUTPUT = PROJECT_ROOT / "providers" / "tushare" / "plans" / "all-historical.toml"
 EXCLUDED_HISTORICAL_APIS = frozenset({"p_get", "p_list"})
+UNIVERSE_SOURCE_TASKS = (
+    "stock_basic",
+    "bak_basic",
+    "etf_basic",
+    "fund_basic",
+    "index_basic",
+    "fut_basic",
+    "opt_basic",
+    "cb_basic",
+    "fx_obasic",
+    "hk_basic",
+    "us_basic",
+    "sge_basic",
+)
+BEGIN_DATE_OVERRIDES = {
+    # The official stock historical-list service starts in 2016.
+    "bak_basic": 20160101,
+}
 PARAM_OVERRIDES: dict[str, dict[str, Any]] = {
     "stock_basic": {"list_status": ["L", "D", "P", "G"]},
     "etf_basic": {"list_status": ["L", "D", "P"]},
@@ -58,6 +76,17 @@ def main() -> int:
         and endpoint["api_name"] not in EXCLUDED_HISTORICAL_APIS
         and not _is_realtime(endpoint)
     ]
+    source_order = {
+        task: index for index, task in enumerate(UNIVERSE_SOURCE_TASKS)
+    }
+    endpoints.sort(
+        key=lambda endpoint: (
+            0,
+            source_order[endpoint["api_name"]],
+        )
+        if endpoint["api_name"] in source_order
+        else (1, 0)
+    )
     lines = [
         'source = "tushare"',
         'database = "tushare"',
@@ -81,6 +110,10 @@ def main() -> int:
                 f'task = "{endpoint["api_name"]}"',
             ]
         )
+        if endpoint["api_name"] in BEGIN_DATE_OVERRIDES:
+            lines.append(
+                f'begin_date = {BEGIN_DATE_OVERRIDES[endpoint["api_name"]]}'
+            )
         params = _params_for(endpoint)
         if params:
             lines.append(f"params = {_toml_inline_table(params)}")

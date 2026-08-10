@@ -186,6 +186,32 @@ class TushareRepository:
             if len(row) >= 2 and str(row[0]).strip() and _stringify(row[1])
         }
 
+    def load_universe_codes(self, spec: TushareTaskSpec) -> list[str]:
+        """Load a previously synchronized security universe from ClickHouse."""
+
+        code_field = spec.code_field
+        if not code_field and "ts_code" in spec.output_names:
+            code_field = "ts_code"
+        if not code_field:
+            return []
+        self.ensure_task_table(spec)
+        code_column = _quote_identifier(code_field)
+        rows = self.client.query_rows(
+            f"""
+            SELECT DISTINCT {code_column}
+            FROM {self._table_ref(spec.table_name)}
+            WHERE {code_column} != ''
+            ORDER BY {code_column}
+            """
+        )
+        return sorted(
+            {
+                str(row[0]).strip().upper()
+                for row in rows
+                if row and str(row[0]).strip()
+            }
+        )
+
     def insert_sync_log(self, row: SyncTaskLogRow) -> None:
         self.client.insert_rows(
             self._table_ref(TS_SYNC_TASK_LOG_TABLE),

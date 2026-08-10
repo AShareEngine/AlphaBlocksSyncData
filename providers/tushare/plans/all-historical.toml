@@ -13,8 +13,46 @@ page_size = 5000
 # 高权限接口会按账号权限返回错误并继续；建议配置 max_requests_per_run 控制日配额。
 
 [[tasks]]
+task = "stock_basic"
+params = { list_status = ["L", "D", "P", "G"] }
+
+[[tasks]]
+task = "bak_basic"
+begin_date = 20160101
+
+[[tasks]]
 task = "etf_basic"
 params = { list_status = ["L", "D", "P"] }
+
+[[tasks]]
+task = "fund_basic"
+params = { status = ["L", "D", "I"] }
+
+[[tasks]]
+task = "index_basic"
+
+[[tasks]]
+task = "fut_basic"
+params = { exchange = ["CFFEX", "DCE", "CZCE", "SHFE", "INE", "GFEX"] }
+
+[[tasks]]
+task = "opt_basic"
+
+[[tasks]]
+task = "cb_basic"
+
+[[tasks]]
+task = "fx_obasic"
+
+[[tasks]]
+task = "hk_basic"
+params = { list_status = ["L", "D", "P"] }
+
+[[tasks]]
+task = "us_basic"
+
+[[tasks]]
+task = "sge_basic"
 
 [[tasks]]
 task = "etf_index"
@@ -55,9 +93,6 @@ task = "bond_blk"
 task = "bond_blk_detail"
 
 [[tasks]]
-task = "cb_basic"
-
-[[tasks]]
 task = "cb_call"
 
 [[tasks]]
@@ -94,10 +129,6 @@ task = "top10_cb_holders"
 task = "yc_cb"
 
 [[tasks]]
-task = "fund_basic"
-params = { status = ["L", "D", "I"] }
-
-[[tasks]]
 task = "fund_company"
 
 [[tasks]]
@@ -123,9 +154,6 @@ task = "mkt_idx_bmk"
 
 [[tasks]]
 task = "fx_daily"
-
-[[tasks]]
-task = "fx_obasic"
 
 [[tasks]]
 task = "anns_d"
@@ -230,9 +258,6 @@ params = { freq = "1min" }
 window_days = 1
 
 [[tasks]]
-task = "index_basic"
-
-[[tasks]]
 task = "index_classify"
 
 [[tasks]]
@@ -268,9 +293,6 @@ window_days = 1
 task = "sz_daily_info"
 
 [[tasks]]
-task = "opt_basic"
-
-[[tasks]]
 task = "opt_daily"
 
 [[tasks]]
@@ -285,10 +307,6 @@ task = "ft_limit"
 task = "ft_mins"
 params = { freq = "1min" }
 window_days = 1
-
-[[tasks]]
-task = "fut_basic"
-params = { exchange = ["CFFEX", "DCE", "CZCE", "SHFE", "INE", "GFEX"] }
 
 [[tasks]]
 task = "fut_daily"
@@ -325,10 +343,6 @@ task = "hk_adjfactor"
 task = "hk_balancesheet"
 
 [[tasks]]
-task = "hk_basic"
-params = { list_status = ["L", "D", "P"] }
-
-[[tasks]]
 task = "hk_cashflow"
 
 [[tasks]]
@@ -352,9 +366,6 @@ window_days = 1
 task = "hk_tradecal"
 
 [[tasks]]
-task = "sge_basic"
-
-[[tasks]]
 task = "sge_daily"
 
 [[tasks]]
@@ -362,9 +373,6 @@ task = "us_adjfactor"
 
 [[tasks]]
 task = "us_balancesheet"
-
-[[tasks]]
-task = "us_basic"
 
 [[tasks]]
 task = "us_cashflow"
@@ -442,9 +450,6 @@ task = "top10_floatholders"
 task = "top10_holders"
 
 [[tasks]]
-task = "bak_basic"
-
-[[tasks]]
 task = "bse_mapping"
 
 [[tasks]]
@@ -464,10 +469,6 @@ task = "stk_premarket"
 
 [[tasks]]
 task = "stk_rewards"
-
-[[tasks]]
-task = "stock_basic"
-params = { list_status = ["L", "D", "P", "G"] }
 
 [[tasks]]
 task = "stock_company"
