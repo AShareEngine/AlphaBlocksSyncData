@@ -107,21 +107,46 @@ python3 scripts/run_provider_sync.py tushare.stock_hsgt \
 
 ## ReplacingMergeTree 设计
 
-每个接口按需创建独立的 `ts_<api_name>` 表。文档输出字段全部保存为 `String`，并附加：
+每个接口按需创建独立的 `ts_<api_name>` 表，文档输出字段全部保存为
+`String`，不附加 `source`、`fetched_at` 或内部写入时间。每个接口在
+`providers/tushare/business_keys.py` 中声明自己的稳定业务键，例如：
 
-- `_row_hash`：接口名、稳定请求维度（不含起止时间）、完整返回行的 SHA-256；
-- `_scope_key`：代码、频率、复权类型等请求维度；
-- `_cursor_value`：规范化增量游标；
-- `_ingested_at`：写入版本时间。
+- `daily`：`(ts_code, trade_date)`；
+- `index_weight`：`(index_code, con_code, trade_date)`；
+- `income`：`(ts_code, end_date, report_type, comp_type, end_type)`；
+- `us_income`：`(ts_code, end_date, ind_type, ind_name, report_type)`。
 
-表引擎统一为：
+业务表引擎为：
 
 ```sql
-ENGINE = ReplacingMergeTree(_ingested_at)
-ORDER BY (_row_hash)
+ENGINE = ReplacingMergeTree()
+PRIMARY KEY (<接口业务键>)
+ORDER BY (<接口业务键>)
 ```
 
-这样不会因为人工 `ORDER BY (code, date)` 漏掉公告类型、报告期、频率或其他维度而吞掉不同记录。完全相同的行会合并；同一业务键发生内容修订时，新旧版本会同时保留，避免静默丢数据。下游若只要最新版，应基于该接口明确的完整业务键使用 `argMax(..., _ingested_at)`，不能使用一个全接口通用但不完整的键。
+同一业务键再次写入时，新行会在 ClickHouse 后台合并后替换旧行；查询必须立即得到
+合并结果时使用 `FINAL`。静态列表通常以证券代码为键，行情以证券代码和时间为键，
+成分关系会加入母代码和成分代码，财务长表会加入指标名和报告类型，避免过窄键吞掉
+合法记录。新增 Tushare 接口如果没有登记业务键，目录加载会直接失败，不会猜测建表。
+
+状态表采用不同语义：`ts_sync_task_log` 使用普通 `MergeTree` 保留每次执行记录；
+`ts_sync_checkpoint` 使用 `ReplacingMergeTree(finished_at)`，但版本字段不进入
+`ORDER BY (task_name, scope_key)`，因此每个任务范围只保留最新检查点。
+
+已有旧表不会被 `CREATE TABLE IF NOT EXISTS` 自动改变。同步启动时会检测整行哈希、
+旧内部字段和错误状态表键，并提示执行迁移：
+
+```bash
+# 先查看受影响的表和 SQL
+python3 scripts/migrate_tushare_remove_internal_columns.py --dry-run
+
+# 原子换表迁移；默认保留 __schema_backup_<时间> 备份
+python3 scripts/migrate_tushare_remove_internal_columns.py
+```
+
+迁移会把旧数据复制到新业务键表、执行 `OPTIMIZE ... FINAL` 后原子换名。由于整行哈希
+旧表没有可靠写入版本，在旧数据已经存在同一业务键多个不同版本时，无法从旧表字段
+判断哪一行最后写入；迁移默认保留备份，建议迁移后强制同步相关接口，再核对并删除备份。
 
 ## 更新官方目录
 

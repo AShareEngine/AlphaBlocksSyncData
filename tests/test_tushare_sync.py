@@ -26,6 +26,7 @@ from sync_data_system.providers.tushare.runner import (
     load_execution_plan_from_toml,
 )
 from sync_data_system.providers.tushare.specs import TUSHARE_TASK_SPECS
+from scripts.migrate_tushare_remove_internal_columns import migrate_table
 
 
 class FakeSDKFrame:
@@ -131,6 +132,7 @@ class FakeDateSliceProvider:
                 "ann_date": params["ann_date"],
                 "ts_code": "000001.SZ",
                 "title": "公告",
+                "url": f"https://example.test/{params['ann_date']}",
             }
         ]
 
@@ -441,7 +443,7 @@ def test_request_budget_stops_before_exceeding_configured_limit():
     assert len(sdk.api.calls) == 1
 
 
-def test_business_tables_only_store_tushare_fields_and_dedupe_exact_rows():
+def test_business_tables_use_stable_natural_key_for_corrections():
     client = FakeClickHouse()
     repository = TushareRepository(client)
     spec = TUSHARE_TASK_SPECS["daily"]
@@ -457,13 +459,149 @@ def test_business_tables_only_store_tushare_fields_and_dedupe_exact_rows():
 
     ddl = "\n".join(client.commands)
     assert "ReplacingMergeTree()" in ddl
-    assert "PRIMARY KEY tuple()" in ddl
-    assert "ORDER BY sipHash128(tuple(`ts_code`, `trade_date`" in ddl
+    assert "PRIMARY KEY (`ts_code`, `trade_date`)" in ddl
+    assert "ORDER BY (`ts_code`, `trade_date`)" in ddl
+    assert "sipHash128" not in ddl
     for column in ("_row_hash", "_scope_key", "_cursor_value", "_ingested_at"):
         assert column not in ddl
     inserted_rows = client.inserts[-1][2]
     assert client.inserts[-1][1] == spec.output_names
     assert len(inserted_rows[0]) == len(spec.output_names)
+
+
+def test_every_tushare_table_has_an_explicit_documented_business_key():
+    assert len(TUSHARE_TASK_SPECS) == 239
+    for spec in TUSHARE_TASK_SPECS.values():
+        assert spec.business_key_fields
+        assert set(spec.business_key_fields) <= (
+            set(spec.output_names) | set(spec.input_names)
+        )
+
+    assert TUSHARE_TASK_SPECS["daily"].business_key_fields == (
+        "ts_code",
+        "trade_date",
+    )
+    assert TUSHARE_TASK_SPECS["index_weight"].business_key_fields == (
+        "index_code",
+        "con_code",
+        "trade_date",
+    )
+    assert TUSHARE_TASK_SPECS["income"].business_key_fields == (
+        "ts_code",
+        "end_date",
+        "report_type",
+        "comp_type",
+        "end_type",
+    )
+    assert TUSHARE_TASK_SPECS["us_income"].business_key_fields == (
+        "ts_code",
+        "end_date",
+        "ind_type",
+        "ind_name",
+        "report_type",
+    )
+    assert TUSHARE_TASK_SPECS["pro_bar"].business_key_fields == (
+        "ts_code",
+        "trade_date",
+        "asset",
+        "freq",
+        "adj",
+    )
+
+
+def test_request_dimensions_are_materialized_for_business_keys():
+    class ProBarProvider:
+        def query_all(self, api_name, **kwargs):
+            assert api_name == "pro_bar"
+            return [{"ts_code": "000001.SZ", "trade_date": "20260729", "close": "10"}]
+
+    rows = _fetch_rows(
+        SyncArgs(task="pro_bar"),
+        TUSHARE_TASK_SPECS["pro_bar"],
+        ProBarProvider(),
+        {"asset": "E", "freq": "D", "adj": "qfq"},
+    )
+
+    assert rows == [
+        {
+            "ts_code": "000001.SZ",
+            "trade_date": "20260729",
+            "close": "10",
+            "asset": "E",
+            "freq": "D",
+            "adj": "qfq",
+        }
+    ]
+
+
+def test_state_tables_have_log_and_checkpoint_semantics():
+    client = FakeClickHouse()
+    repository = TushareRepository(client)
+
+    repository.ensure_tables()
+
+    ddl = "\n".join(client.commands)
+    assert "ENGINE = MergeTree" in ddl
+    assert "ORDER BY (run_date, task_name, started_at, scope_key)" in ddl
+    assert "ENGINE = ReplacingMergeTree(finished_at)" in ddl
+    assert "ORDER BY (task_name, scope_key)" in ddl
+    assert "ORDER BY (task_name, scope_key, run_date, finished_at)" not in ddl
+
+
+def test_outdated_full_row_hash_layout_must_be_migrated():
+    class OutdatedClickHouse(FakeClickHouse):
+        def query_rows(self, sql, parameters=None):
+            if "system.tables" in sql:
+                return [
+                    (
+                        "ReplacingMergeTree",
+                        "sipHash128(tuple(ts_code, trade_date, close))",
+                        "tuple()",
+                        "",
+                    )
+                ]
+            return []
+
+    repository = TushareRepository(OutdatedClickHouse())
+
+    try:
+        repository.ensure_task_table(TUSHARE_TASK_SPECS["daily"])
+    except RuntimeError as exc:
+        assert "outdated MergeTree layout" in str(exc)
+        assert "migrate_tushare_remove_internal_columns.py" in str(exc)
+    else:
+        raise AssertionError("full-row-hash Tushare schema should require migration")
+
+
+def test_migration_adds_missing_request_dimensions_and_keeps_backup():
+    class MigrationClickHouse(FakeClickHouse):
+        def query_rows(self, sql, parameters=None):
+            if "FROM system.columns" in sql:
+                return [
+                    ("ts_code", "String"),
+                    ("trade_date", "String"),
+                    ("close", "String"),
+                ]
+            return []
+
+    client = MigrationClickHouse()
+    backup = migrate_table(
+        client,
+        database="tushare",
+        table="ts_pro_bar",
+        suffix="20260729000000",
+        drop_backup=False,
+        dry_run=False,
+    )
+
+    sql = "\n".join(client.commands)
+    assert "`asset` String" in sql
+    assert "`freq` String" in sql
+    assert "`adj` String" in sql
+    assert "PRIMARY KEY (`ts_code`, `trade_date`, `asset`, `freq`, `adj`)" in sql
+    assert "SELECT `ts_code`, `trade_date`, `close`, 'E', 'D', ''" in sql
+    assert "OPTIMIZE TABLE" in sql
+    assert backup == "ts_pro_bar__schema_backup_20260729000000"
 
 
 def test_legacy_internal_columns_must_be_migrated_before_sync():

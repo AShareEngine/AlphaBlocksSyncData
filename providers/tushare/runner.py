@@ -528,7 +528,22 @@ def _fetch_rows(
         page_size=args.page_size,
         max_pages=args.max_pages,
     )
-    return [spec.normalize_output_row(row) for row in rows]
+    normalized_rows = [spec.normalize_output_row(row) for row in rows]
+    for row in normalized_rows:
+        for field in spec.business_key_fields:
+            if field in row:
+                continue
+            if field in params:
+                row[field] = params[field]
+                continue
+            if field in spec.business_key_defaults:
+                row[field] = spec.business_key_defaults[field]
+                continue
+            raise ValueError(
+                f"Tushare task={spec.task} 返回数据缺少业务键字段 {field!r}，"
+                "且请求参数未提供该维度。"
+            )
+    return normalized_rows
 
 
 def _resolve_universe(

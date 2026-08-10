@@ -11,6 +11,11 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
 
+from sync_data_system.providers.tushare.business_keys import (
+    TUSHARE_BUSINESS_KEY_DEFAULTS,
+    TUSHARE_BUSINESS_KEYS,
+)
+
 
 CATALOG_PATH = Path(__file__).with_name("catalog.json")
 SAFE_IDENTIFIER_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
@@ -68,6 +73,14 @@ class TushareTaskSpec:
     @property
     def output_provider_names(self) -> tuple[str, ...]:
         return tuple(field.provider_name for field in self.output_fields)
+
+    @property
+    def business_key_fields(self) -> tuple[str, ...]:
+        return TUSHARE_BUSINESS_KEYS[self.task]
+
+    @property
+    def business_key_defaults(self) -> Mapping[str, str]:
+        return TUSHARE_BUSINESS_KEY_DEFAULTS.get(self.task, {})
 
     @property
     def required_input_names(self) -> tuple[str, ...]:
@@ -142,6 +155,21 @@ def load_tushare_task_specs() -> dict[str, TushareTaskSpec]:
             supports_pagination=bool(raw.get("supports_pagination")),
             transport=str(raw.get("transport") or "http"),
         )
+    missing_keys = sorted(set(specs) - set(TUSHARE_BUSINESS_KEYS))
+    unknown_keys = sorted(set(TUSHARE_BUSINESS_KEYS) - set(specs))
+    if missing_keys or unknown_keys:
+        raise ValueError(
+            "Tushare business-key registry does not match the catalog: "
+            f"missing={missing_keys} unknown={unknown_keys}"
+        )
+    for spec in specs.values():
+        available_fields = set(spec.output_names) | set(spec.input_names)
+        unknown_fields = sorted(set(spec.business_key_fields) - available_fields)
+        if unknown_fields:
+            raise ValueError(
+                f"Tushare business key uses undocumented output fields: "
+                f"task={spec.task} fields={unknown_fields}"
+            )
     return specs
 
 

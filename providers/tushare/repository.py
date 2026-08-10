@@ -70,6 +70,17 @@ class TushareRepository:
         self.client.command(f"CREATE DATABASE IF NOT EXISTS {self.database}")
         self.client.command(self._create_sync_task_log_ddl())
         self.client.command(self._create_sync_checkpoint_ddl())
+        self._ensure_table_layout(
+            TS_SYNC_TASK_LOG_TABLE,
+            engine="MergeTree",
+            key_fields=("run_date", "task_name", "started_at", "scope_key"),
+            partition_by="toYYYYMM(run_date)",
+        )
+        self._ensure_table_layout(
+            TS_SYNC_CHECKPOINT_TABLE,
+            engine="ReplacingMergeTree",
+            key_fields=("task_name", "scope_key"),
+        )
 
     def ensure_task_table(
         self,
@@ -77,10 +88,17 @@ class TushareRepository:
         *,
         observed_fields: Sequence[str] = (),
     ) -> None:
-        field_names = _dedupe_fields((*spec.output_names, *observed_fields))
+        field_names = _dedupe_fields(
+            (*spec.output_names, *spec.business_key_fields, *observed_fields)
+        )
         if spec.table_name not in self._ensured_tables:
             self.client.command(self._create_task_table_ddl(spec, field_names))
             self._ensure_no_legacy_meta_columns(spec)
+            self._ensure_table_layout(
+                spec.table_name,
+                engine="ReplacingMergeTree",
+                key_fields=spec.business_key_fields,
+            )
             self._ensured_tables.add(spec.table_name)
         for field in observed_fields:
             normalized = _safe_identifier(field)
@@ -283,6 +301,48 @@ class TushareRepository:
             "`python3 scripts/migrate_tushare_remove_internal_columns.py` before syncing."
         )
 
+    def _ensure_table_layout(
+        self,
+        table_name: str,
+        *,
+        engine: str,
+        key_fields: Sequence[str],
+        partition_by: str = "",
+    ) -> None:
+        rows = self.client.query_rows(
+            """
+            SELECT engine, sorting_key, primary_key, partition_key
+            FROM system.tables
+            WHERE database = {database:String}
+              AND name = {table:String}
+            """,
+            {"database": self.database, "table": table_name},
+        )
+        if not rows:
+            # Some test doubles and restricted ClickHouse accounts cannot read
+            # system.tables.  CREATE TABLE remains authoritative in that case.
+            return
+        actual_engine, sorting_key, primary_key, partition_key = (
+            str(value) for value in rows[0][:4]
+        )
+        expected_key = _normalized_key_expression(key_fields)
+        if (
+            actual_engine == engine
+            and _normalize_key_expression(sorting_key) == expected_key
+            and _normalize_key_expression(primary_key) == expected_key
+            and _normalize_key_expression(partition_key)
+            == _normalize_key_expression(partition_by)
+        ):
+            return
+        raise RuntimeError(
+            f"Tushare table {self.database}.{table_name} has an outdated "
+            f"MergeTree layout: engine={actual_engine}, sorting_key={sorting_key!r}, "
+            f"primary_key={primary_key!r}, partition_key={partition_key!r}; "
+            f"expected engine={engine}, key={','.join(key_fields)}, "
+            f"partition_key={partition_by!r}. Run "
+            "`python3 scripts/migrate_tushare_remove_internal_columns.py` before syncing."
+        )
+
     def _create_task_table_ddl(
         self,
         spec: TushareTaskSpec,
@@ -293,9 +353,9 @@ class TushareRepository:
             for field in field_names
         ]
         columns_sql = ",\n            ".join(column_defs)
-        row_values = ", ".join(
+        key_values = ", ".join(
             _quote_identifier(_safe_identifier(field))
-            for field in field_names
+            for field in spec.business_key_fields
         )
         return f"""
         CREATE TABLE IF NOT EXISTS {self._table_ref(spec.table_name)}
@@ -303,8 +363,8 @@ class TushareRepository:
             {columns_sql}
         )
         ENGINE = ReplacingMergeTree()
-        PRIMARY KEY tuple()
-        ORDER BY sipHash128(tuple({row_values}))
+        PRIMARY KEY ({key_values})
+        ORDER BY ({key_values})
         """
 
     def _create_sync_task_log_ddl(self) -> str:
@@ -323,9 +383,10 @@ class TushareRepository:
             started_at DateTime64(3),
             finished_at DateTime64(3)
         )
-        ENGINE = ReplacingMergeTree(finished_at)
+        ENGINE = MergeTree
         PARTITION BY toYYYYMM(run_date)
-        ORDER BY (task_name, scope_key, run_date, finished_at)
+        PRIMARY KEY (run_date, task_name, started_at, scope_key)
+        ORDER BY (run_date, task_name, started_at, scope_key)
         """
 
     def _create_sync_checkpoint_ddl(self) -> str:
@@ -343,8 +404,8 @@ class TushareRepository:
             finished_at DateTime64(3)
         )
         ENGINE = ReplacingMergeTree(finished_at)
-        PARTITION BY toYYYYMM(run_date)
-        ORDER BY (task_name, scope_key, run_date, finished_at)
+        PRIMARY KEY (task_name, scope_key)
+        ORDER BY (task_name, scope_key)
         """
 
 
@@ -368,6 +429,17 @@ def _safe_identifier(value: Any) -> str:
 
 def _quote_identifier(value: Any) -> str:
     return f"`{_safe_identifier(value)}`"
+
+
+def _normalized_key_expression(fields: Sequence[str]) -> str:
+    return ",".join(_safe_identifier(field) for field in fields)
+
+
+def _normalize_key_expression(value: Any) -> str:
+    text = re.sub(r"[\s`]", "", str(value or ""))
+    while text.startswith("tuple(") and text.endswith(")"):
+        text = text[6:-1]
+    return text
 
 
 def _stringify(value: Any) -> str:

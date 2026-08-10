@@ -183,14 +183,15 @@ python3 scripts/run_provider_sync.py akshare.us_daily_kline --codes AAPL,MSFT --
 python3 scripts/run_provider_sync.py tushare.daily --codes 000001.SZ,000005.SZ --begin-date 20100101
 ```
 
-如果数据库中已经存在旧版 Tushare 业务表，先执行一次迁移，移除
-`_row_hash`、`_scope_key`、`_cursor_value`、`_ingested_at`：
+如果数据库中已经存在旧版 Tushare 业务表，先执行一次迁移。脚本会移除
+`_row_hash`、`_scope_key`、`_cursor_value`、`_ingested_at`，并把整行哈希排序表及
+旧状态表重建为各接口的实际业务键：
 
 ```bash
 # 先查看将要执行的 SQL
 python3 scripts/migrate_tushare_remove_internal_columns.py --dry-run
 
-# 迁移全部受影响的 Tushare 表；默认保留旧表备份
+# 迁移全部受影响的 Tushare 表；默认保留 __schema_backup_<时间> 备份
 python3 scripts/migrate_tushare_remove_internal_columns.py
 
 # 如果不需要保留备份，首次迁移时改用下面这一条
