@@ -14,6 +14,7 @@ from sync_data_system.providers.qmt.runner import (
     SyncArgs,
     build_fetch_kwargs,
     build_request_meta,
+    expand_task_args,
     load_execution_plan_from_toml,
     resolve_effective_request_meta,
     run_sync_args,
@@ -27,6 +28,7 @@ class _FakeClickHouseClient:
         self.insert_calls: list[tuple[str, list[str], list[tuple]]] = []
         self.query_value_calls: list[tuple[str, dict | None]] = []
         self.query_value_result = 0
+        self.query_rows_result: list[tuple] = []
 
     def command(self, sql: str, parameters=None):
         self.commands.append(sql)
@@ -39,17 +41,20 @@ class _FakeClickHouseClient:
         return self.query_value_result
 
     def query_rows(self, sql: str, parameters=None):
-        return []
+        return list(self.query_rows_result)
 
 
 class _FakeQmtProvider:
-    def __init__(self, envelope, *, sector_envelope=None) -> None:
+    def __init__(self, envelope, *, sector_envelope=None, sector_envelopes=None) -> None:
         self.envelope = envelope
         self.sector_envelope = sector_envelope
+        self.sector_envelopes = dict(sector_envelopes or {})
         self.fetch_calls: list[dict] = []
 
     def fetch_task(self, task: str, **kwargs):
         self.fetch_calls.append({"task": task, **kwargs})
+        if task == "sectors" and kwargs.get("sector_name") in self.sector_envelopes:
+            return self.sector_envelopes[kwargs["sector_name"]]
         if task == "sectors" and self.sector_envelope is not None:
             return self.sector_envelope
         return self.envelope
@@ -233,10 +238,65 @@ class QmtRunnerTest(unittest.TestCase):
         inserted = run_sync_args(self._args(symbols_raw="", limit=1), provider, repository)
 
         self.assertEqual(inserted, 1)
-        self.assertEqual(provider.fetch_calls[0]["task"], "sectors")
-        self.assertEqual(provider.fetch_calls[0]["sector_name"], "沪深A股")
-        self.assertEqual(provider.fetch_calls[1]["task"], "kline_history")
-        self.assertEqual(provider.fetch_calls[1]["symbols"], ["600000.SH"])
+        self.assertEqual(
+            [(call["task"], call.get("market")) for call in provider.fetch_calls[:2]],
+            [("download_history_contracts", "SH"), ("download_history_contracts", "SZ")],
+        )
+        self.assertEqual(provider.fetch_calls[3]["task"], "sectors")
+        self.assertEqual(provider.fetch_calls[3]["sector_name"], "沪深A股")
+        self.assertEqual(provider.fetch_calls[4]["sector_name"], "过期沪深A股")
+        self.assertEqual(provider.fetch_calls[5]["task"], "kline_history")
+        self.assertEqual(provider.fetch_calls[5]["symbols"], ["600000.SH"])
+
+    def test_cb_info_uses_historical_convertible_bond_universe(self) -> None:
+        provider = _FakeQmtProvider(
+            {"success": True, "data": {"bondCode": "113001.SH"}},
+            sector_envelopes={
+                "沪深转债": {
+                    "success": True,
+                    "data": {"items": [{"sector_name": "沪深转债", "symbols": ["113001.SH"]}]},
+                },
+                "过期沪深转债": {
+                    "success": True,
+                    "data": {"items": [{"sector_name": "过期沪深转债", "symbols": ["123001.SZ"]}]},
+                },
+            },
+        )
+        repository = QmtRepository(_FakeClickHouseClient(), database="qmt")
+
+        inserted = run_sync_args(
+            self._args(task="cb_info", symbols_raw="", begin_time="", end_time="", limit=0),
+            provider,
+            repository,
+        )
+
+        self.assertEqual(inserted, 2)
+        self.assertEqual(
+            [call["task"] for call in provider.fetch_calls[:4]],
+            ["download_history_contracts", "download_history_contracts", "download_sector", "download_cb"],
+        )
+        self.assertEqual(
+            [call["symbol"] for call in provider.fetch_calls if call["task"] == "cb_info"],
+            ["113001.SH", "123001.SZ"],
+        )
+
+    def test_cb_info_requires_qmt_historical_universe(self) -> None:
+        provider = _FakeQmtProvider({"success": True, "data": {}})
+        repository = QmtRepository(_FakeClickHouseClient(), database="qmt")
+
+        with self.assertRaisesRegex(ValueError, "QMT 历史合约和板块数据"):
+            run_sync_args(
+                self._args(task="cb_info", symbols_raw="", begin_time="", end_time=""),
+                provider,
+                repository,
+            )
+
+    def test_single_symbol_task_expands_all_supplied_codes(self) -> None:
+        tasks = expand_task_args(
+            self._args(task="cb_info", symbols_raw="113001.SH,123001.SZ", symbol="113001.SH")
+        )
+
+        self.assertEqual([task.symbol for task in tasks], ["113001.SH", "123001.SZ"])
 
     def test_run_sync_args_requires_codes_when_task_has_no_auto_universe(self) -> None:
         provider = _FakeQmtProvider({"success": True, "data": {"items": []}})

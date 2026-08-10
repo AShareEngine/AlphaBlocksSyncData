@@ -302,9 +302,13 @@ def load_runtime_qmt_config(runtime_path: str | None) -> QmtRestConfig:
 
 def expand_task(task: QmtTomlTask) -> list[QmtTomlTask]:
     spec = QMT_SPECS[task.task]
-    if not spec.uses_symbols:
+    uses_single_code = spec.uses_symbol or spec.uses_stock_code
+    if not spec.uses_symbols and not uses_single_code:
         return [task]
     symbols = parse_symbol_list(task.symbols_raw)
+    if uses_single_code:
+        explicit_code = task.symbol if spec.uses_symbol else task.stock_code
+        symbols = normalize_qmt_code_list([explicit_code, *symbols])
     if task.limit > 0:
         symbols = symbols[: task.limit]
     if not symbols:
@@ -316,7 +320,7 @@ def expand_task(task: QmtTomlTask) -> list[QmtTomlTask]:
             task,
             symbols_raw=symbol,
             symbol=symbol,
-            stock_code=task.stock_code or symbol,
+            stock_code=symbol if spec.uses_stock_code else task.stock_code,
         )
         for symbol in symbols
     ]

@@ -85,6 +85,10 @@ POST /api/v1/data/kline-history
 
 用途：查询一个或多个股票的历史 K 线数据。
 
+同步任务 `qmt.kline_history` 未显式传入 `codes` 时，会先通过 QMT 下载 SH/SZ
+历史合约和板块数据，然后合并 `沪深A股` 与 `过期沪深A股` 的 QMT 代码列表。
+后续历史行情查询只使用这份 QMT 自有代码池，不读取其他提供商的数据。
+
 请求体：
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
@@ -828,6 +832,14 @@ POST /api/v1/data/divid-factors
 ```text
 GET /api/v1/data/cb-info/{symbol}
 ```
+
+同步任务 `qmt.cb_info` 未显式传入 `codes` 时，只使用 QMT 自己的数据：先下载
+SH/SZ 历史合约、板块分类和可转债基础数据，再合并 `沪深转债` 与
+`过期沪深转债` 两个 QMT 板块的代码，最后按代码逐只调用该接口。
+QMT 与其他提供商的代码池完全隔离，不会读取 AmazingData、BaoStock 等数据库。
+
+历史池可能包含已退市或 QMT 本地数据缺失的转债。批量同步时可启用
+`continue_on_error`，使单只转债失败不影响其余代码继续执行。
 
 ### 获取新股申购信息
 

@@ -40,6 +40,8 @@ class QmtTaskSpec:
     cursor_path: tuple[str, ...] = ()
     cursor_granularity: str = "day"
     auto_symbol_universe: bool = False
+    auto_symbol_universe_sector: str = ""
+    auto_historical_symbol_universe_sector: str = ""
 
     @property
     def supports_incremental(self) -> bool:
@@ -285,6 +287,9 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         path="/cb-info/{symbol}",
         table_name="qmt_cb_info",
         uses_symbol=True,
+        auto_symbol_universe=True,
+        auto_symbol_universe_sector="沪深转债",
+        auto_historical_symbol_universe_sector="过期沪深转债",
     ),
     "ipo_info": QmtTaskSpec(
         task="ipo_info",
