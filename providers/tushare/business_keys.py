@@ -116,7 +116,10 @@ BUSINESS_KEY_GROUPS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("ts_code", "end_date", "holder_rank"), ("top10_cb_holders",)),
     (("trade_date", "ts_code", "curve_name", "curve_type", "curve_term"), ("yc_cb",)),
     (("ts_code", "base_date", "div_proc"), ("fund_div",)),
-    (("ts_code", "name", "begin_date"), ("fund_manager",)),
+    # Upstream fund-manager rows can legitimately omit begin_date.  The
+    # announcement identifies the published manager record and is also the
+    # endpoint cursor, so it is the stable event dimension for replacement.
+    (("ts_code", "ann_date", "name"), ("fund_manager",)),
     (("ts_code", "nav_date"), ("fund_nav",)),
     (("ts_code", "end_date", "symbol"), ("fund_portfolio",)),
     (("url",), ("anns_d", "npr")),
@@ -156,7 +159,10 @@ BUSINESS_KEY_GROUPS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("trade_date", "data_type", "ts_code", "rank_time"), ("dc_hot", "ths_hot")),
     (("trade_date", "ts_code", "hm_name", "tag"), ("hm_detail",)),
     (("con_code", "ts_code", "trade_date"), ("kpl_concept_cons",)),
-    (("ts_code", "con_code", "in_date"), ("ths_member",)),
+    # The official THS member contract marks in_date as "暂无" and the live
+    # payload leaves it empty.  This is a current membership snapshot, whose
+    # natural relation key is the index and constituent pair.
+    (("ts_code", "con_code"), ("ths_member",)),
     (("trade_date", "ts_code", "exalter", "side", "reason"), ("top_inst",)),
     (("trade_date", "ts_code", "reason"), ("top_list",)),
     (("month", "broker", "ts_code"), ("broker_recommend",)),

@@ -165,6 +165,9 @@ python3 scripts/test_tushare_enabled_tasks.py \
 - `index_weight`：`(index_code, con_code, trade_date)`；
 - `income`：`(ts_code, end_date, report_type, comp_type, end_type)`；
 - `us_income`：`(ts_code, end_date, ind_type, ind_name, report_type)`。
+- `fund_manager`：`(ts_code, ann_date, name)`，不使用上游可能为空的 `begin_date`；
+- `ths_member`：`(ts_code, con_code)`，官方标注“暂无”的 `in_date` 不进入键；
+- `pro_bar`：`(ts_code, trade_date, asset, freq, adj)`，其中空 `adj` 明确表示未复权。
 
 业务表引擎为：
 
@@ -192,6 +195,16 @@ python3 scripts/migrate_tushare_remove_internal_columns.py --dry-run
 
 # 原子换表迁移；默认保留 __schema_backup_<时间> 备份
 python3 scripts/migrate_tushare_remove_internal_columns.py
+```
+
+只迁移基金经理和同花顺成分表的新业务键：
+
+```bash
+python3 scripts/migrate_tushare_remove_internal_columns.py \
+  --tables ts_fund_manager,ts_ths_member \
+  --dry-run
+python3 scripts/migrate_tushare_remove_internal_columns.py \
+  --tables ts_fund_manager,ts_ths_member
 ```
 
 迁移会把旧数据复制到新业务键表、执行 `OPTIMIZE ... FINAL` 后原子换名。由于整行哈希

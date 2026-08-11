@@ -674,7 +674,11 @@ def _fetch_rows(
             if _has_business_key_value(params.get(request_field)):
                 row[field] = params[request_field]
                 continue
-            if _has_business_key_value(spec.business_key_defaults.get(field)):
+            # An explicitly declared default may intentionally be blank.  For
+            # example pro_bar uses adj="" to represent the documented
+            # unadjusted series.  Presence in the defaults registry, rather
+            # than truthiness, makes that business dimension materializable.
+            if field in spec.business_key_defaults:
                 row[field] = spec.business_key_defaults[field]
                 continue
             raise ValueError(
@@ -769,7 +773,7 @@ def _missing_business_key_fields(
         )
         if _has_business_key_value(params.get(request_field)):
             continue
-        if _has_business_key_value(spec.business_key_defaults.get(field)):
+        if field in spec.business_key_defaults:
             continue
         missing.append(field)
     return missing

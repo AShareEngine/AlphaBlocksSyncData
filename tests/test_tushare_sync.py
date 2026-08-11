@@ -1191,13 +1191,28 @@ def test_every_tushare_table_has_an_explicit_documented_business_key():
         "trade_date",
         "ts_code",
     )
+    assert TUSHARE_TASK_SPECS["fund_manager"].business_key_fields == (
+        "ts_code",
+        "ann_date",
+        "name",
+    )
+    assert TUSHARE_TASK_SPECS["ths_member"].business_key_fields == (
+        "ts_code",
+        "con_code",
+    )
 
 
 def test_request_dimensions_are_materialized_for_business_keys():
     class ProBarProvider:
         def query_all(self, api_name, **kwargs):
             assert api_name == "pro_bar"
-            return [{"ts_code": "000001.SZ", "trade_date": "20260729", "close": "10"}]
+            return [
+                {
+                    "ts_code": "000001.SZ",
+                    "trade_date": "20260729",
+                    "close": "10",
+                }
+            ]
 
     rows = _fetch_rows(
         SyncArgs(task="pro_bar"),
@@ -1214,6 +1229,37 @@ def test_request_dimensions_are_materialized_for_business_keys():
             "asset": "E",
             "freq": "D",
             "adj": "qfq",
+        }
+    ]
+
+
+def test_pro_bar_materializes_blank_unadjusted_business_dimension():
+    class ProBarProvider:
+        def query_all(self, api_name, **kwargs):
+            assert api_name == "pro_bar"
+            return [
+                {
+                    "ts_code": "000001.SZ",
+                    "trade_date": "20260729",
+                    "close": "10",
+                }
+            ]
+
+    rows = _fetch_rows(
+        SyncArgs(task="pro_bar"),
+        TUSHARE_TASK_SPECS["pro_bar"],
+        ProBarProvider(),
+        {},
+    )
+
+    assert rows == [
+        {
+            "ts_code": "000001.SZ",
+            "trade_date": "20260729",
+            "close": "10",
+            "asset": "E",
+            "freq": "D",
+            "adj": "",
         }
     ]
 

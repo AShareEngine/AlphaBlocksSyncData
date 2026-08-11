@@ -108,6 +108,42 @@ def test_limited_provider_scans_more_rows_for_paginated_contracts():
     assert raw.calls[0][1]["page_size"] == 20
 
 
+def test_contract_scan_accepts_documented_optional_member_dates():
+    class Provider:
+        def __init__(self):
+            self.config = SimpleNamespace()
+            self.request_count = 0
+
+        def query_all(self, api_name, **kwargs):
+            self.request_count += 1
+            if api_name == "fund_manager":
+                return [
+                    {
+                        "ts_code": "000001.OF",
+                        "ann_date": "20260810",
+                        "name": "测试经理",
+                        "begin_date": "",
+                    }
+                ]
+            if api_name == "ths_member":
+                return [
+                    {
+                        "ts_code": "885001.TI",
+                        "con_code": "000001.SZ",
+                        "in_date": "",
+                    }
+                ]
+            raise AssertionError(api_name)
+
+    provider = LimitedTushareProvider(Provider(), contract_row_limit=100)
+
+    provider.query_all("fund_manager", params={"ann_date": "20260810"})
+    provider.query_all("ths_member", params={"ts_code": "885001.TI"})
+
+    assert provider.contract_error("fund_manager") == ""
+    assert provider.contract_error("ths_member") == ""
+
+
 def test_fragile_tushare_tasks_use_known_documented_preflight_samples():
     assert PREFLIGHT_TASK_SAMPLES["bc_bestotcqt"].params == {
         "ts_code": "200013.BC"
