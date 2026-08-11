@@ -19,6 +19,11 @@ from sync_data_system.providers.tushare.business_keys import (
 
 CATALOG_PATH = Path(__file__).with_name("catalog.json")
 SAFE_IDENTIFIER_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+OUTPUT_FIELD_ALIASES: dict[str, dict[str, str]] = {
+    # Some compatible Tushare gateways return the cn_pmi input spelling `m`
+    # even though the documented output/business-key field is `month`.
+    "cn_pmi": {"m": "month"},
+}
 
 
 @dataclass(frozen=True)
@@ -122,10 +127,16 @@ class TushareTaskSpec:
             field.provider_name: field.name
             for field in self.output_fields
         }
-        return {
+        normalized = {
             field_names.get(str(name), str(name)): value
             for name, value in row.items()
         }
+        for source_name, target_name in OUTPUT_FIELD_ALIASES.get(self.task, {}).items():
+            if source_name not in normalized:
+                continue
+            value = normalized.pop(source_name)
+            normalized.setdefault(target_name, value)
+        return normalized
 
     @property
     def category_root(self) -> str:

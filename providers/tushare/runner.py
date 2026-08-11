@@ -117,6 +117,24 @@ UNIVERSE_DEFINITIONS: dict[str, tuple[UniverseSourceDefinition, ...]] = {
     "美股数据": (UniverseSourceDefinition("us_basic", ({},)),),
     "现货数据": (UniverseSourceDefinition("sge_basic", ({},)),),
 }
+TASK_UNIVERSE_DEFINITIONS: dict[str, tuple[UniverseSourceDefinition, ...]] = {
+    # ths_member requires either a THS index code or a constituent code even
+    # though the official parameter table marks both fields as optional. Use
+    # the matching THS index list instead of the broad A-share stock universe.
+    "ths_member": (UniverseSourceDefinition("ths_index", ({},)),),
+}
+TASK_DEFAULT_PARAMS: dict[str, dict[str, Any]] = {
+    # These dimensions are required by the upstream APIs. Plans already carry
+    # the same values, but registered/UI tasks do not have task-specific params.
+    "fut_basic": {
+        "exchange": ["CFFEX", "DCE", "CZCE", "SHFE", "INE", "GFEX"],
+    },
+    "fut_weekly_monthly": {"freq": ["week", "month"]},
+    "stk_week_month_adj": {"freq": ["week", "month"]},
+    "stk_weekly_monthly": {"freq": ["week", "month"]},
+    "stock_hsgt": {"type": ["HK_SZ", "SZ_HK", "HK_SH", "SH_HK"]},
+    "dc_index": {"idx_type": ["行业板块", "概念板块", "地域板块"]},
+}
 MULTI_CODE_SNAPSHOT_BATCH_SIZES = {
     # The API explicitly accepts comma-separated convertible-bond codes. Keep
     # batches conservative because a response is capped at 2,000 event rows.
@@ -426,7 +444,7 @@ def _run_code_range(
             end_date,
         )
         try:
-            for params in _expand_params(args.params):
+            for params in _task_param_variants(spec, args.params):
                 if spec.code_field:
                     params[spec.code_field] = code
                 if "start_date" in spec.input_names:
@@ -477,7 +495,7 @@ def _run_date_range(
         if cursor_date and cursor_date > begin_date:
             begin_date = cursor_date
     total = 0
-    for params in _expand_params(args.params):
+    for params in _task_param_variants(spec, args.params):
         if "start_date" in spec.input_names:
             params["start_date"] = _format_range_boundary(spec, "start_date", begin_date)
         if "end_date" in spec.input_names:
@@ -505,7 +523,7 @@ def _run_date_slice(
             begin_date = cursor_date
     total = 0
     for cursor_value in _cursor_values(spec.cursor_field, begin_date, end_date):
-        for params in _expand_params(args.params):
+        for params in _task_param_variants(spec, args.params):
             params[spec.cursor_field] = cursor_value
             _validate_required_params(spec, params)
             rows = _fetch_rows(args, spec, provider, params)
@@ -525,9 +543,11 @@ def _run_snapshot(
     *,
     context: TushareExecutionContext | None,
 ) -> int:
-    params_variants = _expand_params(args.params)
+    params_variants = _task_param_variants(spec, args.params)
     required_code = bool(spec.code_field and spec.code_field in spec.required_input_names)
-    if required_code and not any(spec.code_field in params for params in params_variants):
+    task_universe = spec.task in TASK_UNIVERSE_DEFINITIONS
+    needs_code_universe = bool(spec.code_field and (required_code or task_universe))
+    if needs_code_universe and not any(spec.code_field in params for params in params_variants):
         codes = _normalize_codes(args.codes_raw) or _resolve_universe(
             spec,
             provider,
@@ -536,6 +556,15 @@ def _run_snapshot(
         )
         if args.limit > 0:
             codes = codes[: args.limit]
+        if not codes:
+            source_tables = ", ".join(
+                TUSHARE_TASK_SPECS[source.task].table_name
+                for source in TASK_UNIVERSE_DEFINITIONS.get(spec.task, ())
+            )
+            source_hint = f"；请先同步基础表 {source_tables}" if source_tables else ""
+            raise ValueError(
+                f"Tushare task={spec.task} 无可用代码池{source_hint}。"
+            )
         batch_size = MULTI_CODE_SNAPSHOT_BATCH_SIZES.get(spec.task, 1)
         code_batches = [
             codes[index : index + batch_size]
@@ -637,10 +666,14 @@ def _resolve_universe(
     repository: TushareRepository,
     context: TushareExecutionContext | None,
 ) -> list[str]:
-    sources = UNIVERSE_DEFINITIONS.get(spec.category_root)
+    sources = TASK_UNIVERSE_DEFINITIONS.get(spec.task)
+    universe_scope = f"task:{spec.task}"
+    if sources is None:
+        sources = UNIVERSE_DEFINITIONS.get(spec.category_root)
+        universe_scope = f"category:{spec.category_root}"
     if sources is None:
         return []
-    cache_key = _universe_cache_key(spec.category_root, sources)
+    cache_key = _universe_cache_key(universe_scope, sources)
     if context is not None and cache_key in context.universe_cache:
         cached_codes = list(context.universe_cache[cache_key])
         if cached_codes:
@@ -701,7 +734,10 @@ def _resolve_universe(
     if (
         not codes
         and sync_errors
-        and spec.code_field in spec.required_input_names
+        and (
+            spec.code_field in spec.required_input_names
+            or spec.task in TASK_UNIVERSE_DEFINITIONS
+        )
     ):
         source_tables = ", ".join(
             TUSHARE_TASK_SPECS[source.task].table_name for source in sources
@@ -733,10 +769,10 @@ def _resolve_universe(
 
 
 def _universe_cache_key(
-    category: str,
+    scope: str,
     sources: Sequence[UniverseSourceDefinition],
 ) -> str:
-    return f"{category}:{','.join(source.task for source in sources)}"
+    return f"{scope}:{','.join(source.task for source in sources)}"
 
 
 def _invalidate_universe_cache(
@@ -747,7 +783,16 @@ def _invalidate_universe_cache(
         return
     for category, sources in UNIVERSE_DEFINITIONS.items():
         if any(source.task == completed_task for source in sources):
-            context.universe_cache.pop(_universe_cache_key(category, sources), None)
+            context.universe_cache.pop(
+                _universe_cache_key(f"category:{category}", sources),
+                None,
+            )
+    for task, sources in TASK_UNIVERSE_DEFINITIONS.items():
+        if any(source.task == completed_task for source in sources):
+            context.universe_cache.pop(
+                _universe_cache_key(f"task:{task}", sources),
+                None,
+            )
 
 
 def _sync_universe_source(
@@ -889,6 +934,13 @@ def _expand_params(params: Mapping[str, Any]) -> list[dict[str, Any]]:
         {key: value for key, value in zip(keys, combination)}
         for combination in itertools.product(*value_sets)
     ]
+
+
+def _task_param_variants(
+    spec: TushareTaskSpec,
+    params: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    return _expand_params({**TASK_DEFAULT_PARAMS.get(spec.task, {}), **dict(params)})
 
 
 def _cursor_to_date(value: str) -> str:

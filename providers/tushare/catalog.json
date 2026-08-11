@@ -795,7 +795,7 @@
       "mutating": false,
       "stopped": false,
       "default_enabled": true,
-      "supports_pagination": true,
+      "supports_pagination": false,
       "transport": "http"
     },
     {

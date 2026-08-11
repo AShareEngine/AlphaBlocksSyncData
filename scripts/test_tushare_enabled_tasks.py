@@ -82,6 +82,7 @@ FRESHNESS_DEFAULT_LOCKED_TASKS = frozenset(
         "news",
         "npr",
         "opt_mins",
+        "p_get",
         "research_report",
         "rt_etf_k",
         "rt_etf_min",
@@ -129,7 +130,7 @@ class PreflightResult:
 
 
 class LimitedTushareProvider:
-    """Inject a generic one-row limit while preserving the production client."""
+    """Cap real pagination while preserving task-specific query parameters."""
 
     def __init__(self, provider: TushareProvider, row_limit: int = 1) -> None:
         self.provider = provider
@@ -150,15 +151,9 @@ class LimitedTushareProvider:
         page_size: int = 0,
         max_pages: int = 0,
     ) -> list[dict[str, Any]]:
-        request_params = dict(params or {})
-        # Tushare's data API accepts limit/offset as common query dimensions.
-        # pro_bar is a local SDK convenience function and does not accept them.
-        if api_name != "pro_bar":
-            request_params.setdefault("limit", self.row_limit)
-            request_params.setdefault("offset", 0)
         return self.provider.query_all(
             api_name,
-            params=request_params,
+            params=dict(params or {}),
             fields=fields,
             supports_pagination=supports_pagination,
             page_size=min(max(1, int(page_size or self.row_limit)), self.row_limit),

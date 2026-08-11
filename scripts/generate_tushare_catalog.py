@@ -70,6 +70,13 @@ DATE_SLICE_API_NAMES = frozenset(
     }
 )
 SNAPSHOT_API_NAMES = frozenset({"fut_basic"})
+NON_PAGINATED_API_NAMES = frozenset(
+    {
+        # This compatible endpoint already appends its own LIMIT clause. Adding
+        # SDK limit/offset pagination produces invalid `LIMIT ... LIMIT ...` SQL.
+        "fund_adj",
+    }
+)
 STOPPED_TITLE_MARKERS = ("（停）", "(停)", "（旧）", "(旧)")
 DOCUMENT_ALIASES = {
     "146": {
@@ -345,7 +352,10 @@ def _parse_document(document: dict[str, Any], *, timeout: float) -> dict[str, An
         "mutating": api_name in MUTATING_API_NAMES,
         "stopped": stopped,
         "default_enabled": not stopped and api_name not in MUTATING_API_NAMES,
-        "supports_pagination": "offset" in input_names or "limit" in input_names,
+        "supports_pagination": (
+            ("offset" in input_names or "limit" in input_names)
+            and api_name not in NON_PAGINATED_API_NAMES
+        ),
         "transport": "sdk" if api_name == "pro_bar" else "http",
     }
 
