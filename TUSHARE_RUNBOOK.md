@@ -115,7 +115,7 @@ python3 scripts/run_provider_sync.py tushare.stock_hsgt \
 `ts_sge_basic`。全历史计划会先同步这些基础表；`bak_basic` 从官方有数据的
 `20160101` 开始。柜台流通式债券没有对应基础列表，`bc_otcqt` 先按
 `trade_date` 全市场获取当日 `.BC` 代码；如果兼容网关的 `bc_bestotcqt`
-全市场响应不返回 `ts_code`，同步器会使用这份当日代码逐债券查询最优报价。
+全市场响应不返回 `ts_code` 或直接返回空数据时，同步器会使用这份当日代码逐债券查询最优报价。
 两者都不使用 `ts_cb_basic` 的可转债代码。
 
 ### 全量同步前预检

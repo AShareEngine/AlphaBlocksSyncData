@@ -696,7 +696,7 @@ def _fetch_date_slice_rows(
     params: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
     try:
-        return _fetch_rows(args, spec, provider, params)
+        rows = _fetch_rows(args, spec, provider, params)
     except ValueError as exc:
         if (
             spec.task != "bc_bestotcqt"
@@ -704,7 +704,17 @@ def _fetch_date_slice_rows(
             or "缺少业务键字段 'ts_code'" not in str(exc)
         ):
             raise
+    else:
+        if (
+            spec.task != "bc_bestotcqt"
+            or _has_business_key_value(params.get("ts_code"))
+            or rows
+        ):
+            return rows
 
+    # Compatible gateways can return either an unidentifiable global row or
+    # an empty global response for bc_bestotcqt.  In both cases derive the
+    # day's real bond universe from bc_otcqt, then query each code explicitly.
     source_spec = TUSHARE_TASK_SPECS["bc_otcqt"]
     source_params = {
         key: value

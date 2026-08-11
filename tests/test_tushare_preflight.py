@@ -145,10 +145,8 @@ def test_contract_scan_accepts_documented_optional_member_dates():
 
 
 def test_fragile_tushare_tasks_use_known_documented_preflight_samples():
-    assert PREFLIGHT_TASK_SAMPLES["bc_bestotcqt"].params == {
-        "ts_code": "200013.BC"
-    }
-    assert PREFLIGHT_TASK_SAMPLES["bc_bestotcqt"].date == "20240329"
+    assert PREFLIGHT_TASK_SAMPLES["bc_bestotcqt"].params is None
+    assert PREFLIGHT_TASK_SAMPLES["bc_bestotcqt"].date == ""
     assert PREFLIGHT_TASK_SAMPLES["bc_bestotcqt"].expect_rows is True
     assert PREFLIGHT_TASK_SAMPLES["cb_rate"].codes == ("123046.SZ",)
     assert PREFLIGHT_TASK_SAMPLES["cb_rate"].expect_rows is True

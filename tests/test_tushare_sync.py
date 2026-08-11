@@ -593,7 +593,7 @@ def test_best_counter_bond_quote_rejects_gateway_rows_without_bond_code():
         raise AssertionError("bc_bestotcqt rows without ts_code must be rejected")
 
 
-def test_best_counter_bond_quote_falls_back_to_codes_from_daily_otc_quotes():
+def test_empty_best_counter_bond_quote_falls_back_to_daily_otc_codes():
     class Provider:
         def __init__(self):
             self.config = TushareConfig(token="token", default_start_date="20100101")
@@ -608,7 +608,7 @@ def test_best_counter_bond_quote_falls_back_to_codes_from_daily_otc_quotes():
                     {"TRADE_DATE": params["trade_date"], "TS_CODE": "200016.BC"},
                 ]
             if api_name == "bc_bestotcqt" and "ts_code" not in params:
-                return [{"best_buy_price": "101.2", "best_sell_price": "101.4"}]
+                return []
             if api_name == "bc_bestotcqt":
                 return [{"best_buy_price": "101.2", "best_sell_price": "101.4"}]
             raise AssertionError(api_name)

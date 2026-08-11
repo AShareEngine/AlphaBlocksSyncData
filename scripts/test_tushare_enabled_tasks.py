@@ -125,12 +125,11 @@ class PreflightSample:
     expect_rows: bool = False
 
 
-# Use documented, historically stable examples for endpoints whose generic
-# request can return an empty/placeholder shape on compatible gateways.
+# Use stable documented examples where possible.  bc_bestotcqt intentionally
+# has no fixed code/date: the production runner derives a live code from that
+# day's bc_otcqt response when the compatible gateway's global result is empty.
 PREFLIGHT_TASK_SAMPLES: dict[str, PreflightSample] = {
     "bc_bestotcqt": PreflightSample(
-        date="20240329",
-        params={"ts_code": "200013.BC"},
         expect_rows=True,
     ),
     "cb_rate": PreflightSample(
