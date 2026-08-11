@@ -225,6 +225,83 @@ class QmtRepositoryTest(unittest.TestCase):
         self.assertIn("TRUNCATE TABLE qmt.qmt_sync_task_log", commands)
         self.assertIn("TRUNCATE TABLE qmt.qmt_sync_checkpoint", commands)
 
+    def test_sync_state_engines_follow_state_business_identity(self) -> None:
+        repository = QmtRepository(_FakeClickHouseClient(), database="qmt")
+
+        task_log_ddl = repository._create_sync_task_log_ddl()
+        checkpoint_ddl = repository._create_sync_checkpoint_ddl()
+
+        self.assertIn("ENGINE = MergeTree", task_log_ddl)
+        self.assertIn(
+            "ORDER BY (task_name, scope_key, run_date, started_at)",
+            task_log_ddl,
+        )
+        self.assertNotIn("ReplacingMergeTree(finished_at)", task_log_ddl)
+        self.assertNotIn("finished_at", task_log_ddl)
+        self.assertIn("ENGINE = ReplacingMergeTree()", checkpoint_ddl)
+        self.assertIn("ORDER BY (task_name, scope_key)", checkpoint_ddl)
+        self.assertNotIn("PARTITION BY", checkpoint_ddl)
+        self.assertNotIn("ReplacingMergeTree(finished_at)", checkpoint_ddl)
+        self.assertNotIn("finished_at", checkpoint_ddl)
+        self.assertNotIn("finished_at", repository.SYNC_TASK_LOG_COLUMNS)
+        self.assertNotIn("finished_at", repository.SYNC_CHECKPOINT_COLUMNS)
+
+    def test_old_finished_at_state_keys_are_rebuilt(self) -> None:
+        client = _FakeClickHouseClient()
+
+        def query_rows(sql: str, parameters=None):
+            if "FROM system.tables" in sql:
+                table = (parameters or {}).get("table")
+                if table in {"qmt_sync_task_log", "qmt_sync_checkpoint"}:
+                    return [
+                        (
+                            "ReplacingMergeTree",
+                            "task_name, scope_key, run_date, finished_at",
+                            "toYYYYMM(run_date)",
+                        )
+                    ]
+            return []
+
+        client.query_rows = query_rows
+        repository = QmtRepository(client, database="qmt")
+
+        repository.ensure_tables()
+
+        commands = "\n".join(client.commands)
+        self.assertIn("DROP TABLE IF EXISTS qmt.qmt_sync_task_log", commands)
+        self.assertIn("DROP TABLE IF EXISTS qmt.qmt_sync_checkpoint", commands)
+
+    def test_finished_at_column_alone_rebuilds_qmt_state_tables(self) -> None:
+        client = _FakeClickHouseClient()
+
+        def query_rows(sql: str, parameters=None):
+            table = (parameters or {}).get("table")
+            if "FROM system.tables" in sql:
+                if table == "qmt_sync_task_log":
+                    return [
+                        (
+                            "MergeTree",
+                            "task_name, scope_key, run_date, started_at",
+                            "toYYYYMM(run_date)",
+                        )
+                    ]
+                if table == "qmt_sync_checkpoint":
+                    return [("ReplacingMergeTree", "task_name, scope_key", "")]
+            if "FROM system.columns" in sql and table == "qmt_sync_task_log":
+                return [(column,) for column in (*QmtRepository.SYNC_TASK_LOG_COLUMNS, "finished_at")]
+            if "FROM system.columns" in sql and table == "qmt_sync_checkpoint":
+                return [(column,) for column in (*QmtRepository.SYNC_CHECKPOINT_COLUMNS, "finished_at")]
+            return []
+
+        client.query_rows = query_rows
+        repository = QmtRepository(client, database="qmt")
+
+        repository.ensure_tables()
+
+        commands = "\n".join(client.commands)
+        self.assertIn("DROP TABLE IF EXISTS qmt.qmt_sync_task_log", commands)
+        self.assertIn("DROP TABLE IF EXISTS qmt.qmt_sync_checkpoint", commands)
+
 
 class QmtRunnerTest(unittest.TestCase):
     def _args(self, **overrides) -> SyncArgs:

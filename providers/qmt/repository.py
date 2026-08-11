@@ -165,7 +165,6 @@ class QmtRepository:
         "row_count",
         "message",
         "started_at",
-        "finished_at",
     )
     SYNC_CHECKPOINT_COLUMNS = (
         "task_name",
@@ -176,7 +175,6 @@ class QmtRepository:
         "checkpoint_date",
         "row_count",
         "message",
-        "finished_at",
     )
 
     def __init__(
@@ -194,6 +192,22 @@ class QmtRepository:
         self.client.command(f"CREATE DATABASE IF NOT EXISTS {self.database}")
         self.client.command(self._create_sync_task_log_ddl())
         self.client.command(self._create_sync_checkpoint_ddl())
+        self._recreate_outdated_state_table(
+            QMT_SYNC_TASK_LOG_TABLE,
+            expected_engine="MergeTree",
+            expected_sorting_key=("task_name", "scope_key", "run_date", "started_at"),
+            expected_partition_key="toYYYYMM(run_date)",
+            expected_columns=self.SYNC_TASK_LOG_COLUMNS,
+            ddl=self._create_sync_task_log_ddl(),
+        )
+        self._recreate_outdated_state_table(
+            QMT_SYNC_CHECKPOINT_TABLE,
+            expected_engine="ReplacingMergeTree",
+            expected_sorting_key=("task_name", "scope_key"),
+            expected_partition_key="",
+            expected_columns=self.SYNC_CHECKPOINT_COLUMNS,
+            ddl=self._create_sync_checkpoint_ddl(),
+        )
         recreated_tasks: list[str] = []
         for spec in QMT_TASK_SPECS.values():
             self.client.command(self._create_task_table_ddl(spec))
@@ -210,6 +224,59 @@ class QmtRepository:
                 "Cleared QMT sync logs and checkpoints after rebuilding %s business tables",
                 len(recreated_tasks),
             )
+
+    def _recreate_outdated_state_table(
+        self,
+        table_name: str,
+        *,
+        expected_engine: str,
+        expected_sorting_key: tuple[str, ...],
+        expected_partition_key: str,
+        expected_columns: tuple[str, ...],
+        ddl: str,
+    ) -> bool:
+        rows = self.client.query_rows(
+            """
+            SELECT engine, sorting_key, partition_key
+            FROM system.tables
+            WHERE database = {database:String}
+              AND name = {table:String}
+            """,
+            {"database": self.database, "table": table_name},
+        )
+        if not rows:
+            return False
+
+        engine, sorting_key, partition_key = (str(value or "") for value in rows[0][:3])
+        column_rows = self.client.query_rows(
+            """
+            SELECT name
+            FROM system.columns
+            WHERE database = {database:String}
+              AND table = {table:String}
+            """,
+            {"database": self.database, "table": table_name},
+        )
+        actual_columns = {str(row[0]) for row in column_rows if row}
+        expected_column_set = set(expected_columns)
+        expected_key = ",".join(expected_sorting_key)
+        if (
+            engine == expected_engine
+            and self._normalize_ch_expression(sorting_key) == expected_key
+            and self._normalize_ch_expression(partition_key)
+            == self._normalize_ch_expression(expected_partition_key)
+            and actual_columns == expected_column_set
+        ):
+            return False
+
+        table = self._table_ref(table_name)
+        logger.warning(
+            "Recreating QMT state table %s with business-correct engine and sorting key",
+            table,
+        )
+        self.client.command(f"DROP TABLE IF EXISTS {table}")
+        self.client.command(ddl)
+        return True
 
     def _recreate_outdated_task_table(self, spec: QmtTaskSpec) -> bool:
         """Drop an old generic QMT table; callers intentionally resync it."""
@@ -266,7 +333,6 @@ class QmtRepository:
             row.row_count,
             row.message,
             row.started_at,
-            row.finished_at,
         )]
         self.client.insert_rows(self._table_ref(QMT_SYNC_TASK_LOG_TABLE), self.SYNC_TASK_LOG_COLUMNS, rows)
         checkpoint_date = row.end_date or row.start_date
@@ -294,7 +360,6 @@ class QmtRepository:
             row.checkpoint_date,
             row.row_count,
             row.message,
-            row.finished_at,
         )]
         self.client.insert_rows(self._table_ref(QMT_SYNC_CHECKPOINT_TABLE), self.SYNC_CHECKPOINT_COLUMNS, rows)
 
@@ -517,12 +582,11 @@ class QmtRepository:
             end_date Nullable(Date),
             row_count Int64,
             message Nullable(String),
-            started_at DateTime64(3),
-            finished_at DateTime64(3)
+            started_at DateTime64(3)
         )
-        ENGINE = ReplacingMergeTree(finished_at)
+        ENGINE = MergeTree
         PARTITION BY toYYYYMM(run_date)
-        ORDER BY (task_name, scope_key, run_date, finished_at)
+        ORDER BY (task_name, scope_key, run_date, started_at)
         """
 
     def _create_sync_checkpoint_ddl(self) -> str:
@@ -537,12 +601,10 @@ class QmtRepository:
             target_table String,
             checkpoint_date Nullable(Date),
             row_count Int64,
-            message Nullable(String),
-            finished_at DateTime64(3)
+            message Nullable(String)
         )
-        ENGINE = ReplacingMergeTree(finished_at)
-        PARTITION BY toYYYYMM(run_date)
-        ORDER BY (task_name, scope_key, run_date, finished_at)
+        ENGINE = ReplacingMergeTree()
+        ORDER BY (task_name, scope_key)
         """
 
     def _create_task_table_ddl(
@@ -571,6 +633,10 @@ class QmtRepository:
         if key in {"symbol", "stock_code"}:
             return normalize_qmt_code(value)
         return str(value or "").strip()
+
+    @staticmethod
+    def _normalize_ch_expression(value: Any) -> str:
+        return "".join(str(value or "").replace("`", "").split())
 
 
 __all__ = [
