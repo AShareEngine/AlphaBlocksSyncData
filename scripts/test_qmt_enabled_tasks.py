@@ -54,6 +54,21 @@ from sync_data_system.sync_core.clickhouse import (
 
 DOWNLOAD_TASK_PREFIX = "download_"
 LEGACY_QMT_COLUMNS = ("source", "fetched_at", "ingested_at")
+FRESHNESS_DEFAULT_LOCKED_TASKS = frozenset(
+    {
+        # The deployed QMT REST service reports these xtdata methods as
+        # unsupported (HTTP 501). Keep them available for explicit probing so
+        # they can be re-enabled after the QMT client/server is upgraded.
+        "trading_calendar",
+        "full_kline",
+        "trade_times",
+        "holidays",
+        "periods",
+        "cb_info",
+        "ipo_info",
+        "etf_info",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -94,6 +109,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--financial-table", default="Balance")
     parser.add_argument("--code-market", default="IF.CFFEX")
     parser.add_argument("--include-downloads", action="store_true")
+    parser.add_argument(
+        "--include-locked",
+        action="store_true",
+        help="Also probe QMT tasks disabled by default on the freshness page.",
+    )
     parser.add_argument("--skip-table-check", action="store_true")
     parser.add_argument("--max-tasks", type=int, default=0)
     parser.add_argument("--fail-fast", action="store_true")
@@ -102,7 +122,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def selected_task_names(requested: Sequence[str], *, max_tasks: int = 0) -> list[str]:
+def selected_task_names(
+    requested: Sequence[str],
+    *,
+    include_locked: bool = False,
+    max_tasks: int = 0,
+) -> list[str]:
     explicit = [_normalize_task_name(item) for item in requested if str(item).strip()]
     if explicit:
         unknown = sorted(set(explicit) - set(QMT_TASK_SPECS))
@@ -110,8 +135,11 @@ def selected_task_names(requested: Sequence[str], *, max_tasks: int = 0) -> list
             raise ValueError(f"未知 QMT 任务: {','.join(unknown)}")
         names = list(dict.fromkeys(explicit))
     else:
-        # The freshness page currently has no default QMT selection locks.
-        names = list(QMT_TASK_SPECS)
+        names = [
+            name
+            for name in QMT_TASK_SPECS
+            if include_locked or name not in FRESHNESS_DEFAULT_LOCKED_TASKS
+        ]
     if max_tasks > 0:
         names = names[:max_tasks]
     return names
@@ -156,6 +184,7 @@ def run_preflight(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     task_names = selected_task_names(
         args.task,
+        include_locked=bool(args.include_locked),
         max_tasks=max(0, int(args.max_tasks or 0)),
     )
     probe_date = _normalize_probe_date(args.date)

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from scripts.test_qmt_enabled_tasks import (
+    FRESHNESS_DEFAULT_LOCKED_TASKS,
     build_sample_args,
     check_table_layout,
     classify_error,
@@ -40,7 +41,17 @@ class FakeClient:
 
 
 def test_default_qmt_preflight_selection_covers_freshness_tasks():
-    assert selected_task_names([]) == list(QMT_TASK_SPECS)
+    names = selected_task_names([])
+
+    assert names
+    assert not (set(names) & FRESHNESS_DEFAULT_LOCKED_TASKS)
+    assert "kline_history" in names
+    assert "trading_calendar" not in names
+
+
+def test_qmt_preflight_can_include_or_explicitly_probe_locked_tasks():
+    assert selected_task_names([], include_locked=True) == list(QMT_TASK_SPECS)
+    assert selected_task_names(["qmt.trading_calendar"]) == ["trading_calendar"]
 
 
 def test_explicit_qmt_preflight_task_normalizes_provider_prefix():
