@@ -8,6 +8,16 @@ QMT 业务表不保存 `source`、`fetched_at` 或 `ingested_at`。数据身份�
 `ReplacingMergeTree(ingested_at)` 表迁移为新结构并保留已有业务数据。任务日志和 checkpoint
 仍使用 `finished_at`，因为它是任务状态本身的业务时间。
 
+全量同步前可以运行只读小样本预检：
+
+```bash
+python3 scripts/test_qmt_enabled_tasks.py \
+  --json-report .service_state/qmt_preflight.json
+```
+
+脚本自动检查数据时效页面的全部 QMT 任务，但默认跳过会修改 QMT 本地缓存的
+`download_*` 接口。它不会写 ClickHouse 业务表、同步日志或 checkpoint。
+
 ## 基础信息
 
 默认服务地址：
