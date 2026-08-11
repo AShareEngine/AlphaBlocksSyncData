@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from sync_data_system.providers.qmt.provider import iter_qmt_rows, normalize_qmt_code
 from sync_data_system.providers.qmt.specs import QMT_TASK_SPECS, QmtTaskSpec, order_by_columns_for_spec
@@ -19,21 +19,38 @@ logger = logging.getLogger(__name__)
 
 QMT_SYNC_TASK_LOG_TABLE = "qmt_sync_task_log"
 QMT_SYNC_CHECKPOINT_TABLE = "qmt_sync_checkpoint"
+DYNAMIC_ROW_KINDS = frozenset(
+    {"financial", "instrument", "dynamic_fields", "type", "frame"}
+)
+LEGACY_GENERIC_COLUMNS = frozenset(
+    {
+        "source",
+        "fetched_at",
+        "ingested_at",
+        "task",
+        "request_start_time",
+        "request_end_time",
+        "record_index",
+        "field_name",
+        "field_value",
+        "extra_fields",
+    }
+)
 
 ROW_KIND_COLUMN_DEFINITIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "bar": (
         ("symbol", "String"),
         ("time_ms", "Int64"),
-        ("open", "Float64"),
-        ("high", "Float64"),
-        ("low", "Float64"),
-        ("close", "Float64"),
-        ("volume", "Int64"),
-        ("amount", "Float64"),
-        ("settle", "Float64"),
-        ("open_interest", "Int64"),
-        ("pre_close", "Float64"),
-        ("suspend_flag", "Int64"),
+        ("open", "Nullable(Float64)"),
+        ("high", "Nullable(Float64)"),
+        ("low", "Nullable(Float64)"),
+        ("close", "Nullable(Float64)"),
+        ("volume", "Nullable(Int64)"),
+        ("amount", "Nullable(Float64)"),
+        ("settle", "Nullable(Float64)"),
+        ("open_interest", "Nullable(Int64)"),
+        ("pre_close", "Nullable(Float64)"),
+        ("suspend_flag", "Nullable(Int64)"),
     ),
     "tick": (
         ("symbol", "String"),
@@ -105,25 +122,77 @@ ROW_KIND_COLUMN_DEFINITIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "financial": (
         ("symbol", "String"),
         ("table_name", "String"),
-        ("columns", "Array(String)"),
-        ("rows", "Array(Map(String, String))"),
+        ("index", "Int64"),
+        ("m_timetag", "String"),
+        ("m_anntime", "String"),
     ),
-    "fields": (("symbol", "String"), ("fields", "Map(String, String)")),
-    "type": (("symbol", "String"), ("type", "Map(String, String)")),
+    "instrument": (
+        ("symbol", "String"),
+        ("ExchangeID", "Nullable(String)"),
+        ("InstrumentID", "Nullable(String)"),
+        ("InstrumentName", "Nullable(String)"),
+        ("ProductID", "Nullable(String)"),
+        ("ProductName", "Nullable(String)"),
+        ("ProductType", "Nullable(String)"),
+        ("ExchangeCode", "Nullable(String)"),
+        ("UniCode", "Nullable(String)"),
+        ("CreateDate", "Nullable(String)"),
+        ("OpenDate", "Nullable(String)"),
+        ("ExpireDate", "Nullable(String)"),
+        ("PreClose", "Nullable(Float64)"),
+        ("SettlementPrice", "Nullable(Float64)"),
+        ("UpStopPrice", "Nullable(Float64)"),
+        ("DownStopPrice", "Nullable(Float64)"),
+        ("FloatVolume", "Nullable(Float64)"),
+        ("TotalVolume", "Nullable(Float64)"),
+        ("LongMarginRatio", "Nullable(Float64)"),
+        ("ShortMarginRatio", "Nullable(Float64)"),
+        ("PriceTick", "Nullable(Float64)"),
+        ("VolumeMultiple", "Nullable(Int64)"),
+        ("MainContract", "Nullable(Int64)"),
+        ("LastVolume", "Nullable(Int64)"),
+        ("InstrumentStatus", "Nullable(Int64)"),
+        ("IsTrading", "Nullable(Bool)"),
+        ("IsRecent", "Nullable(Bool)"),
+        ("ProductTradeQuota", "Nullable(Float64)"),
+        ("ContractTradeQuota", "Nullable(Float64)"),
+        ("ProductOpenInterestQuota", "Nullable(Float64)"),
+        ("ContractOpenInterestQuota", "Nullable(Float64)"),
+    ),
+    "dynamic_fields": (("symbol", "String"),),
+    "type": (("symbol", "String"),),
     "trade_times": (("symbol", "String"), ("trade_times", "Array(Array(Int64))")),
     "main_contract": (("code_market", "String"), ("main_contract", "String")),
     "calendar_date": (("market", "String"), ("date", "String")),
     "frame": (
         ("symbol", "String"),
-        ("fields", "Array(String)"),
-        ("rows", "Array(Map(String, String))"),
+        ("index", "String"),
+        ("time", "Int64"),
+        ("open", "Nullable(Float64)"),
+        ("high", "Nullable(Float64)"),
+        ("low", "Nullable(Float64)"),
+        ("close", "Nullable(Float64)"),
+        ("volume", "Nullable(Int64)"),
+        ("amount", "Nullable(Float64)"),
+        ("openInterest", "Nullable(Int64)"),
+        ("preClose", "Nullable(Float64)"),
+        ("settelementPrice", "Nullable(Float64)"),
+        ("suspendFlag", "Nullable(Int64)"),
     ),
     "holiday": (("date", "String"),),
     "period": (("period", "String"),),
     "data_dir": (("data_dir", "String"),),
-    "factor_collection": (
+    "factor": (
         ("stock_code", "String"),
-        ("items", "Array(Map(String, String))"),
+        ("index", "String"),
+        ("time", "Int64"),
+        ("interest", "Nullable(Float64)"),
+        ("stockBonus", "Nullable(Float64)"),
+        ("stockGift", "Nullable(Float64)"),
+        ("allotNum", "Nullable(Float64)"),
+        ("allotPrice", "Nullable(Float64)"),
+        ("gugai", "Nullable(Float64)"),
+        ("dr", "Nullable(Float64)"),
     ),
     "ipo": (
         ("securityCode", "String"),
@@ -187,6 +256,7 @@ class QmtRepository:
         self.client = client
         self.database = str(database).strip() or "qmt"
         self.insert_batch_size = max(1, int(insert_batch_size))
+        self._ensured_dynamic_columns: dict[str, set[str]] = {}
 
     def ensure_tables(self) -> None:
         self.client.command(f"CREATE DATABASE IF NOT EXISTS {self.database}")
@@ -292,7 +362,10 @@ class QmtRepository:
         )
         actual_columns = {str(row[0]) for row in rows if row}
         expected_columns = set(self.table_columns_for_spec(spec))
-        if not actual_columns or actual_columns == expected_columns:
+        if not actual_columns or self.table_layout_is_current(
+            spec,
+            actual_columns,
+        ):
             return False
 
         table = self._table_ref(spec.table_name)
@@ -302,6 +375,7 @@ class QmtRepository:
         )
         self.client.command(f"DROP TABLE IF EXISTS {table}")
         self.client.command(self._create_task_table_ddl(spec))
+        self._ensured_dynamic_columns.pop(spec.table_name, None)
         return True
 
     def save_task_response(
@@ -312,10 +386,22 @@ class QmtRepository:
         request_meta: Mapping[str, Any],
     ) -> int:
         spec = QMT_TASK_SPECS[task]
-        columns = self.table_columns_for_spec(spec)
+        source_rows = iter_qmt_rows(spec, envelope, request_meta)
+        definitions = list(self.table_column_definitions_for_spec(spec))
+        if spec.row_kind in DYNAMIC_ROW_KINDS:
+            base_columns = {name for name, _ in definitions}
+            observed_columns = _dedupe_names(
+                str(name)
+                for row in source_rows
+                for name in row
+                if str(name) not in base_columns
+            )
+            self._ensure_dynamic_columns(spec, observed_columns)
+            definitions.extend((name, "String") for name in observed_columns)
+        columns = tuple(name for name, _ in definitions)
         rows = self._materialize_rows(
-            spec,
-            iter_qmt_rows(spec, envelope, request_meta),
+            source_rows,
+            definitions,
         )
         if not rows:
             return 0
@@ -428,7 +514,7 @@ class QmtRepository:
         spec = QMT_TASK_SPECS[task]
         if not spec.cursor_path:
             return None
-        column = "time_ms" if spec.cursor_path == ("time_ms",) else "date"
+        column = spec.cursor_path[-1]
         columns = set(self.table_columns_for_spec(spec))
         if column not in columns:
             return None
@@ -438,13 +524,15 @@ class QmtRepository:
         if symbol and "symbol" in columns:
             clauses.append("symbol = {symbol:String}")
             parameters["symbol"] = normalize_qmt_code(symbol)
-        if column == "date":
-            clauses.append("date != ''")
+        quoted_column = self._quote_identifier(column)
+        column_type = dict(self.table_column_definitions_for_spec(spec))[column]
+        if column_type == "String":
+            clauses.append(f"{quoted_column} != ''")
         else:
-            clauses.append("time_ms != 0")
+            clauses.append(f"{quoted_column} != 0")
         where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = f"""
-        SELECT max({column})
+        SELECT max({quoted_column})
         FROM {self._table_ref(spec.table_name)}
         {where_clause}
         """
@@ -484,12 +572,42 @@ class QmtRepository:
     def table_columns_for_spec(cls, spec: QmtTaskSpec) -> tuple[str, ...]:
         return tuple(name for name, _ in cls.table_column_definitions_for_spec(spec))
 
+    @classmethod
+    def legacy_columns_for_spec(cls, spec: QmtTaskSpec) -> frozenset[str]:
+        container_columns: set[str] = {"payload_json"}
+        if spec.row_kind == "financial":
+            container_columns.update({"columns", "rows"})
+        elif spec.row_kind == "dynamic_fields":
+            container_columns.add("fields")
+        elif spec.row_kind == "type":
+            container_columns.add("type")
+        elif spec.row_kind == "frame":
+            container_columns.update({"fields", "rows"})
+        elif spec.row_kind == "instrument":
+            container_columns.add("fields")
+        elif spec.row_kind == "factor":
+            container_columns.add("items")
+        return frozenset(container_columns) | LEGACY_GENERIC_COLUMNS
+
+    @classmethod
+    def table_layout_is_current(
+        cls,
+        spec: QmtTaskSpec,
+        actual_columns: Iterable[str],
+    ) -> bool:
+        actual = {str(name) for name in actual_columns}
+        expected = set(cls.table_columns_for_spec(spec))
+        if actual & cls.legacy_columns_for_spec(spec):
+            return False
+        if spec.row_kind in DYNAMIC_ROW_KINDS:
+            return expected <= actual
+        return actual == expected
+
     def _materialize_rows(
         self,
-        spec: QmtTaskSpec,
         source_rows: Sequence[Mapping[str, Any]],
+        definitions: Sequence[tuple[str, str]],
     ) -> list[tuple[Any, ...]]:
-        definitions = self.table_column_definitions_for_spec(spec)
         return [
             tuple(
                 self._coerce_value(source.get(name), column_type)
@@ -497,6 +615,22 @@ class QmtRepository:
             )
             for source in source_rows
         ]
+
+    def _ensure_dynamic_columns(
+        self,
+        spec: QmtTaskSpec,
+        columns: Sequence[str],
+    ) -> None:
+        table = self._table_ref(spec.table_name)
+        ensured = self._ensured_dynamic_columns.setdefault(spec.table_name, set())
+        for column in columns:
+            if column in ensured:
+                continue
+            self.client.command(
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+                f"{self._quote_identifier(column)} String"
+            )
+            ensured.add(column)
 
     @staticmethod
     def _string_value(value: Any) -> str:
@@ -510,6 +644,10 @@ class QmtRepository:
 
     @classmethod
     def _coerce_value(cls, value: Any, column_type: str) -> Any:
+        if column_type.startswith("Nullable(") and column_type.endswith(")"):
+            if value is None:
+                return None
+            return cls._coerce_value(value, column_type[9:-1])
         if column_type == "Float64":
             try:
                 return float(value or 0)
@@ -614,9 +752,11 @@ class QmtRepository:
         table_name: str | None = None,
     ) -> str:
         table = self._table_ref(table_name or spec.table_name)
-        order_by = ", ".join(order_by_columns_for_spec(spec))
+        order_by = ", ".join(
+            self._quote_identifier(name) for name in order_by_columns_for_spec(spec)
+        )
         columns = ",\n            ".join(
-            f"{name} {column_type}"
+            f"{self._quote_identifier(name)} {column_type}"
             for name, column_type in self.table_column_definitions_for_spec(spec)
         )
         return f"""
@@ -637,6 +777,21 @@ class QmtRepository:
     @staticmethod
     def _normalize_ch_expression(value: Any) -> str:
         return "".join(str(value or "").replace("`", "").split())
+
+    @staticmethod
+    def _quote_identifier(value: Any) -> str:
+        return f"`{str(value).replace('`', '``')}`"
+
+
+def _dedupe_names(values: Iterable[Any]) -> tuple[str, ...]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        name = str(value)
+        if name and name not in seen:
+            seen.add(name)
+            result.append(name)
+    return tuple(result)
 
 
 __all__ = [

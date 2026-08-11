@@ -117,7 +117,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         response_key="",
         uses_symbol=True,
         uses_complete=True,
-        row_kind="fields",
+        row_kind="instrument",
         auto_symbol_universe=True,
     ),
     "trading_calendar": QmtTaskSpec(
@@ -203,7 +203,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         uses_fill_data=True,
         default_period="1d",
         row_kind="frame",
-        cursor_path=("time_ms",),
+        cursor_path=("time",),
         auto_symbol_universe=True,
     ),
     "local_data": QmtTaskSpec(
@@ -221,7 +221,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         uses_fill_data=True,
         default_period="1d",
         row_kind="frame",
-        cursor_path=("time_ms",),
+        cursor_path=("time",),
         auto_symbol_universe=True,
     ),
     "full_kline": QmtTaskSpec(
@@ -309,7 +309,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         table_name="qmt_divid_factors",
         uses_stock_code=True,
         uses_begin_end=True,
-        row_kind="factor_collection",
+        row_kind="factor",
         auto_symbol_universe=True,
     ),
     "cb_info": QmtTaskSpec(
@@ -318,7 +318,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         path="/cb-info/{symbol}",
         table_name="qmt_cb_info",
         uses_symbol=True,
-        row_kind="fields",
+        row_kind="dynamic_fields",
         auto_symbol_universe=True,
         auto_symbol_universe_sector="沪深转债",
         auto_historical_symbol_universe_sector="过期沪深转债",
@@ -335,7 +335,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         method="GET",
         path="/etf-info",
         table_name="qmt_etf_info",
-        row_kind="fields",
+        row_kind="dynamic_fields",
     ),
     "download_history": QmtTaskSpec(
         task="download_history",
@@ -436,15 +436,17 @@ def order_by_columns_for_spec(spec: QmtTaskSpec) -> tuple[str, ...]:
     if spec.row_kind == "sector":
         return ("sector_name",)
     if spec.row_kind == "financial":
-        return ("symbol", "table_name")
-    if spec.row_kind in {"fields", "type", "trade_times", "frame"}:
+        return ("symbol", "table_name", "m_timetag", "m_anntime")
+    if spec.row_kind in {"instrument", "dynamic_fields", "type", "trade_times"}:
         return ("symbol",)
+    if spec.row_kind == "frame":
+        return ("symbol", "index")
     if spec.row_kind == "calendar_date":
         return ("market", "date")
     if spec.row_kind == "main_contract":
         return ("code_market",)
-    if spec.row_kind == "factor_collection":
-        return ("stock_code",)
+    if spec.row_kind == "factor":
+        return ("stock_code", "time")
     if spec.row_kind == "ipo":
         return ("securityCode",)
     if spec.row_kind == "holiday":

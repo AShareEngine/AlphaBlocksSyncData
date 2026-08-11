@@ -340,7 +340,6 @@ def check_table_layout(client: Any, *, database: str, spec: QmtTaskSpec) -> str:
     if legacy_rows:
         columns = ",".join(str(row[0]) for row in legacy_rows if row)
         return f"outdated:legacy_columns={columns}"
-    expected_columns = set(QmtRepository.table_columns_for_spec(spec))
     actual_rows = client.query_rows(
         """
         SELECT name
@@ -351,11 +350,15 @@ def check_table_layout(client: Any, *, database: str, spec: QmtTaskSpec) -> str:
         {"database": database, "table": spec.table_name},
     )
     actual_columns = {str(row[0]) for row in actual_rows if row}
+    expected_columns = set(QmtRepository.table_columns_for_spec(spec))
     missing = sorted(expected_columns - actual_columns)
     if missing:
         return f"outdated:missing_columns={','.join(missing)}"
-    unexpected = sorted(actual_columns - expected_columns)
-    if unexpected:
+    legacy = sorted(actual_columns & QmtRepository.legacy_columns_for_spec(spec))
+    if legacy:
+        return f"outdated:legacy_columns={','.join(legacy)}"
+    if not QmtRepository.table_layout_is_current(spec, actual_columns):
+        unexpected = sorted(actual_columns - expected_columns)
         return f"outdated:unexpected_columns={','.join(unexpected)}"
     return "ok"
 

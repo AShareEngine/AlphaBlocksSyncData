@@ -6,8 +6,10 @@ QMT 业务表只保存 QMT REST 接口实际返回的核心业务字段，不添
 同步来源或抓取时间等通用列。固定结构的数据直接写入类型化业务列，例如 K 线表只包含
 `symbol/time_ms/open/high/low/close/volume/amount/settle/open_interest/pre_close/suspend_flag`；
 Tick 和 Level-2 表同样只使用网关标准化后返回的字段。QMT 原样返回动态字典或记录集合的接口，
-按接口本身的 `fields`、`columns`、`rows` 或 `items` 字段保存，不拆成自定义 EAV 明细，
-也不添加 `extra_fields` 或 `payload_json`。业务表使用无版本参数的 `ReplacingMergeTree()`。
+QMT 响应中的 `fields`、`columns`、`rows`、`items` 只是传输容器，不作为数据库字段。
+容器内真实返回的业务字段直接展开成 ClickHouse 列：每根行情、每条财务报表记录、
+每个除权因子各占一行。系统不添加 `extra_fields` 或 `payload_json`。业务表使用无版本参数的
+`ReplacingMergeTree()`，排序键只采用接口真实返回的业务身份字段。
 
 同步初始化发现旧表结构时会直接删除并重建对应 QMT 业务表，不迁移旧数据；部署新版本后需要
 重新执行 QMT 同步任务。发生结构重建时会同时清空 QMT 自己的任务日志和 checkpoint，避免旧的

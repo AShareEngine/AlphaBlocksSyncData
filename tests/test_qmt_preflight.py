@@ -120,7 +120,31 @@ def test_qmt_table_layout_rejects_invented_generic_columns():
 
     status = check_table_layout(client, database="qmt", spec=spec)
 
-    assert status == "outdated:unexpected_columns=request_start_time,task"
+    assert status == "outdated:legacy_columns=request_start_time,task"
+
+
+def test_qmt_dynamic_table_layout_accepts_real_returned_columns():
+    spec = QMT_TASK_SPECS["financial"]
+    key = ", ".join(order_by_columns_for_spec(spec))
+    client = FakeClient(
+        table_rows=[("ReplacingMergeTree", key, key, "")],
+        columns=(*QmtRepository.table_columns_for_spec(spec), "totAssets"),
+    )
+
+    assert check_table_layout(client, database="qmt", spec=spec) == "ok"
+
+
+def test_qmt_dynamic_table_layout_rejects_old_response_containers():
+    spec = QMT_TASK_SPECS["financial"]
+    key = ", ".join(order_by_columns_for_spec(spec))
+    client = FakeClient(
+        table_rows=[("ReplacingMergeTree", key, key, "")],
+        columns=(*QmtRepository.table_columns_for_spec(spec), "columns", "rows"),
+    )
+
+    status = check_table_layout(client, database="qmt", spec=spec)
+
+    assert status == "outdated:legacy_columns=columns,rows"
 
 
 def test_qmt_empty_response_detection_uses_nested_collections():

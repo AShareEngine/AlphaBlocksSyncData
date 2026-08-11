@@ -528,7 +528,7 @@ def resolve_effective_request_meta(
     latest_cursor = None
     if not args.force:
         latest_cursor = repository.load_latest_cursor(args.task, symbol=str(effective.get("symbol") or "") or None)
-    if latest_cursor and spec.cursor_path != ("time_ms",):
+    if latest_cursor and spec.cursor_path not in {("time_ms",), ("time",)}:
         next_value = advance_cursor_value(latest_cursor, spec.cursor_granularity)
         if not start_value or _compare_qmt_time_values(next_value, start_value) > 0:
             start_value = next_value

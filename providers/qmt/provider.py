@@ -231,38 +231,52 @@ def iter_qmt_rows(spec: QmtTaskSpec, envelope: Mapping[str, Any], request_meta: 
                     rows.append({"symbol": symbol, **tick})
     elif spec.row_kind == "financial":
         for item in _iter_items(data, spec.item_collection_key):
-            rows.append(
-                {
-                    "symbol": normalize_qmt_code(item.get("symbol")),
-                    "table_name": str(item.get("table_name") or ""),
-                    "columns": [str(value) for value in _as_list(item.get("columns"))],
-                    "rows": _as_list(item.get("rows")),
-                }
-            )
-    elif spec.row_kind == "fields":
+            symbol = normalize_qmt_code(item.get("symbol"))
+            table_name = str(item.get("table_name") or "")
+            for financial_row in _as_list(item.get("rows")):
+                if isinstance(financial_row, Mapping):
+                    rows.append(
+                        {
+                            **financial_row,
+                            "symbol": symbol,
+                            "table_name": table_name,
+                        }
+                    )
+    elif spec.row_kind == "instrument":
+        payload = data if isinstance(data, Mapping) else {}
+        fields = payload.get("fields") if isinstance(payload.get("fields"), Mapping) else {}
+        rows.append(
+            {
+                **fields,
+                "symbol": normalize_qmt_code(payload.get("symbol") or request_meta.get("symbol")),
+            }
+        )
+    elif spec.row_kind == "dynamic_fields":
         payload = data if isinstance(data, Mapping) else {}
         if "symbol" in payload or "fields" in payload:
+            fields = payload.get("fields") if isinstance(payload.get("fields"), Mapping) else {}
             rows.append(
                 {
+                    **fields,
                     "symbol": normalize_qmt_code(payload.get("symbol") or request_meta.get("symbol")),
-                    "fields": payload.get("fields") if isinstance(payload.get("fields"), Mapping) else {},
                 }
             )
         else:
             rows.extend(
                 {
+                    **fields,
                     "symbol": normalize_qmt_code(symbol),
-                    "fields": fields,
                 }
                 for symbol, fields in payload.items()
                 if isinstance(fields, Mapping)
             )
     elif spec.row_kind == "type":
         payload = data if isinstance(data, Mapping) else {}
+        type_fields = payload.get("type") if isinstance(payload.get("type"), Mapping) else {}
         rows.append(
             {
+                **type_fields,
                 "symbol": normalize_qmt_code(payload.get("symbol") or request_meta.get("symbol")),
-                "type": payload.get("type") if isinstance(payload.get("type"), Mapping) else {},
             }
         )
     elif spec.row_kind == "trade_times":
@@ -323,13 +337,10 @@ def iter_qmt_rows(spec: QmtTaskSpec, envelope: Mapping[str, Any], request_meta: 
                     rows.append({"symbol": symbol, **transaction})
     elif spec.row_kind == "frame":
         for item in _iter_items(data, spec.item_collection_key):
-            rows.append(
-                {
-                    "symbol": normalize_qmt_code(item.get("symbol")),
-                    "fields": [str(value) for value in _as_list(item.get("fields"))],
-                    "rows": _as_list(item.get("rows")),
-                }
-            )
+            symbol = normalize_qmt_code(item.get("symbol"))
+            for frame_row in _as_list(item.get("rows")):
+                if isinstance(frame_row, Mapping):
+                    rows.append({**frame_row, "symbol": symbol})
     elif spec.row_kind == "holiday":
         rows.extend({"date": str(value)} for value in _extract_sequence(data))
     elif spec.row_kind == "period":
@@ -337,14 +348,12 @@ def iter_qmt_rows(spec: QmtTaskSpec, envelope: Mapping[str, Any], request_meta: 
     elif spec.row_kind == "data_dir":
         payload = data if isinstance(data, Mapping) else {}
         rows.append({"data_dir": str(payload.get("data_dir") or "")})
-    elif spec.row_kind == "factor_collection":
+    elif spec.row_kind == "factor":
         payload = data if isinstance(data, Mapping) else {}
-        rows.append(
-            {
-                "stock_code": normalize_qmt_code(payload.get("stock_code") or request_meta.get("stock_code")),
-                "items": _as_list(payload.get("items")),
-            }
-        )
+        stock_code = normalize_qmt_code(payload.get("stock_code") or request_meta.get("stock_code"))
+        for factor in _as_list(payload.get("items")):
+            if isinstance(factor, Mapping):
+                rows.append({**factor, "stock_code": stock_code})
     elif spec.row_kind == "ipo":
         items = data if isinstance(data, list) else _as_list(data.get("items") if isinstance(data, Mapping) else [])
         for item in items:
