@@ -117,6 +117,29 @@ python3 scripts/run_provider_sync.py tushare.stock_hsgt \
 `bc_otcqt` 使用独立的 `.BC` 代码体系，因此按 `trade_date` 全市场切片同步，
 不使用 `ts_cb_basic` 的可转债代码。
 
+### 全量同步前预检
+
+下面的只读预检脚本会小样本检查数据时效页面默认允许选择的 Tushare
+任务。它不写入业务表、同步日志或 checkpoint；每个任务只读取一小份响应，
+并检查接口权限、必填参数、代码池、返回业务键和现有表结构。
+
+```bash
+python3 scripts/test_tushare_enabled_tasks.py
+```
+
+只检查单个任务：
+
+```bash
+python3 scripts/test_tushare_enabled_tasks.py --task bc_otcqt
+```
+
+保存机器可读报告：
+
+```bash
+python3 scripts/test_tushare_enabled_tasks.py \
+  --json-report .service_state/tushare_preflight.json
+```
+
 ## ReplacingMergeTree 设计
 
 每个接口按需创建独立的 `ts_<api_name>` 表，文档输出字段全部保存为

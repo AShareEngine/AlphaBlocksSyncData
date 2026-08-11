@@ -321,7 +321,6 @@ def test_counter_bond_quotes_use_market_date_slices_instead_of_cb_basic_codes():
                 return [
                     {
                         "trade_date": trade_date,
-                        "qt_time": "09:05:28",
                         "bank": "招商银行",
                         "ts_code": "200013.BC",
                     }
@@ -824,6 +823,11 @@ def test_every_tushare_table_has_an_explicit_documented_business_key():
         "asset",
         "freq",
         "adj",
+    )
+    assert TUSHARE_TASK_SPECS["bc_otcqt"].business_key_fields == (
+        "trade_date",
+        "bank",
+        "ts_code",
     )
 
 

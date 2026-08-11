@@ -103,7 +103,10 @@ BUSINESS_KEY_GROUPS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("trade_date", "ts_code"), ("etf_share_size", "bc_bestotcqt", "bond_blk")),
     (("trade_date", "ts_code", "buy_dp", "sell_dp", "price", "vol", "amount"), ("bond_blk_detail",)),
     (("ann_date", "url"), ("idx_anns",)),
-    (("trade_date", "qt_time", "bank", "ts_code"), ("bc_otcqt",)),
+    # qt_time is the bank quote's update time, not a stable record dimension.
+    # The same bank can revise its quote during a day; that revision should
+    # replace the earlier value for the bond instead of creating a new key.
+    (("trade_date", "bank", "ts_code"), ("bc_otcqt",)),
     (("ts_code", "ann_date", "call_type"), ("cb_call",)),
     (("ts_code", "change_date"), ("cb_price_chg",)),
     (("ts_code", "rate_start_date", "rate_end_date"), ("cb_rate",)),
