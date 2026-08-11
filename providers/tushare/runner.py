@@ -135,6 +135,12 @@ TASK_DEFAULT_PARAMS: dict[str, dict[str, Any]] = {
     "stock_hsgt": {"type": ["HK_SZ", "SZ_HK", "HK_SH", "SH_HK"]},
     "dc_index": {"idx_type": ["行业板块", "概念板块", "地域板块"]},
 }
+TASK_CURSOR_REQUEST_FIELDS = {
+    # cn_pmi documents `month` as the output cursor but accepts `m` as the
+    # single-month request parameter. Compatible gateways may omit month from
+    # the response, so the request dimension also supplies the business key.
+    "cn_pmi": "m",
+}
 MULTI_CODE_SNAPSHOT_BATCH_SIZES = {
     # The API explicitly accepts comma-separated convertible-bond codes. Keep
     # batches conservative because a response is capped at 2,000 event rows.
@@ -524,7 +530,11 @@ def _run_date_slice(
     total = 0
     for cursor_value in _cursor_values(spec.cursor_field, begin_date, end_date):
         for params in _task_param_variants(spec, args.params):
-            params[spec.cursor_field] = cursor_value
+            cursor_request_field = TASK_CURSOR_REQUEST_FIELDS.get(
+                spec.task,
+                spec.cursor_field,
+            )
+            params[cursor_request_field] = cursor_value
             _validate_required_params(spec, params)
             rows = _fetch_rows(args, spec, provider, params)
             total += repository.save_rows(
@@ -646,15 +656,20 @@ def _fetch_rows(
         for field in spec.business_key_fields:
             if field in row:
                 continue
-            if field in params:
-                row[field] = params[field]
+            request_field = (
+                TASK_CURSOR_REQUEST_FIELDS.get(spec.task, field)
+                if field == spec.cursor_field
+                else field
+            )
+            if request_field in params:
+                row[field] = params[request_field]
                 continue
             if field in spec.business_key_defaults:
                 row[field] = spec.business_key_defaults[field]
                 continue
             raise ValueError(
                 f"Tushare task={spec.task} 返回数据缺少业务键字段 {field!r}，"
-                "且请求参数未提供该维度。"
+                f"且请求参数未提供该维度；实际返回字段={sorted(row)}。"
             )
     return normalized_rows
 
@@ -945,7 +960,11 @@ def _task_param_variants(
 
 def _cursor_to_date(value: str) -> str:
     digits = "".join(character for character in str(value or "") if character.isdigit())
-    return digits[:8] if len(digits) >= 8 else ""
+    if len(digits) >= 8:
+        return digits[:8]
+    if len(digits) == 6:
+        return f"{digits}01"
+    return ""
 
 
 def _normalize_codes(raw: str | Sequence[str]) -> list[str]:

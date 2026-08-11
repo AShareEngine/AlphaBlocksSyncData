@@ -347,8 +347,15 @@ def run_preflight(argv: list[str] | None = None) -> int:
             except Exception as exc:
                 rows = 0
                 status = "FAIL"
-                error_type = classify_error(exc)
-                error = _compact_error(exc)
+                if table_status.startswith("outdated:"):
+                    error_type = "TABLE_LAYOUT"
+                    error = (
+                        f"{table_status.removeprefix('outdated:')}; "
+                        f"request_error={_compact_error(exc)}"
+                    )
+                else:
+                    error_type = classify_error(exc)
+                    error = _compact_error(exc)
             result = PreflightResult(
                 task=task_name,
                 table=spec.table_name,

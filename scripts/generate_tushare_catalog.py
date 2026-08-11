@@ -64,11 +64,15 @@ DATE_SLICE_API_NAMES = frozenset(
         # trade_date instead.
         "bc_bestotcqt",
         "bc_otcqt",
+        "cn_pmi",
         "irm_qa_sh",
         "irm_qa_sz",
         "research_report",
     }
 )
+DATE_SLICE_INPUT_ALIASES = {
+    "cn_pmi": "m",
+}
 SNAPSHOT_API_NAMES = frozenset({"fut_basic"})
 NON_PAGINATED_API_NAMES = frozenset(
     {
@@ -332,7 +336,8 @@ def _parse_document(document: dict[str, Any], *, timeout: float) -> dict[str, An
     request_mode = _request_mode(input_fields, output_fields, cursor_field)
     if api_name in GLOBAL_RANGE_API_NAMES and {"start_date", "end_date"} <= set(input_names):
         request_mode = "date_range"
-    if api_name in DATE_SLICE_API_NAMES and cursor_field in input_names:
+    date_slice_input = DATE_SLICE_INPUT_ALIASES.get(api_name, cursor_field)
+    if api_name in DATE_SLICE_API_NAMES and date_slice_input in input_names:
         request_mode = "date_slice"
     if api_name in SNAPSHOT_API_NAMES:
         request_mode = "snapshot"

@@ -397,6 +397,47 @@ def test_cn_pmi_compatible_gateway_month_alias_satisfies_business_key():
     assert rows == [{"month": "202607", "pmi010000": "49.3"}]
 
 
+def test_cn_pmi_slices_by_m_and_materializes_missing_month_business_key():
+    class Provider:
+        def __init__(self):
+            self.config = TushareConfig(token="token", default_start_date="20100101")
+            self.calls = []
+
+        def query_all(self, api_name, **kwargs):
+            assert api_name == "cn_pmi"
+            self.calls.append(kwargs["params"])
+            return [{"pmi010000": "49.3"}]
+
+    class Repository:
+        def __init__(self):
+            self.saved = []
+
+        def load_latest_cursor(self, spec):
+            return "202607"
+
+        def save_rows(self, spec, rows, *, scope_key):
+            self.saved.extend(rows)
+            return len(rows)
+
+    provider = Provider()
+    repository = Repository()
+    inserted = _run_date_slice(
+        SyncArgs(
+            task="cn_pmi",
+            begin_date="20100101",
+            end_date="20260810",
+        ),
+        TUSHARE_TASK_SPECS["cn_pmi"],
+        provider,
+        repository,
+    )
+
+    assert TUSHARE_TASK_SPECS["cn_pmi"].request_mode == "date_slice"
+    assert inserted == 2
+    assert provider.calls == [{"m": "202607"}, {"m": "202608"}]
+    assert [row["month"] for row in repository.saved] == ["202607", "202608"]
+
+
 def test_fund_adj_disables_generic_pagination_for_compatible_gateway():
     assert TUSHARE_TASK_SPECS["fund_adj"].supports_pagination is False
 

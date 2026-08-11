@@ -8260,9 +8260,9 @@
         }
       ],
       "cursor_field": "month",
-      "request_mode": "snapshot",
+      "request_mode": "date_slice",
       "incremental_scope": "global",
-      "supports_incremental": false,
+      "supports_incremental": true,
       "mutating": false,
       "stopped": false,
       "default_enabled": true,
