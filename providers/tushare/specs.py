@@ -23,6 +23,8 @@ OUTPUT_FIELD_ALIASES: dict[str, dict[str, str]] = {
     # Some compatible Tushare gateways return the cn_pmi input spelling `m`
     # even though the documented output/business-key field is `month`.
     "cn_pmi": {"m": "month"},
+    # The compatible gateway uses BID_BANK for the documented bank field.
+    "bc_otcqt": {"bid_bank": "bank"},
 }
 
 
@@ -124,18 +126,25 @@ class TushareTaskSpec:
 
     def normalize_output_row(self, row: Mapping[str, Any]) -> dict[str, Any]:
         field_names = {
-            field.provider_name: field.name
+            field.provider_name.casefold(): field.name
             for field in self.output_fields
         }
-        normalized = {
-            field_names.get(str(name), str(name)): value
-            for name, value in row.items()
+        aliases = {
+            source_name.casefold(): target_name
+            for source_name, target_name in OUTPUT_FIELD_ALIASES.get(
+                self.task,
+                {},
+            ).items()
         }
-        for source_name, target_name in OUTPUT_FIELD_ALIASES.get(self.task, {}).items():
-            if source_name not in normalized:
-                continue
-            value = normalized.pop(source_name)
-            normalized.setdefault(target_name, value)
+        normalized: dict[str, Any] = {}
+        for name, value in row.items():
+            raw_name = str(name)
+            folded_name = raw_name.casefold()
+            normalized_name = aliases.get(
+                folded_name,
+                field_names.get(folded_name, folded_name),
+            )
+            normalized[normalized_name] = value
         return normalized
 
     @property

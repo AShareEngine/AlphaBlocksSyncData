@@ -37,16 +37,44 @@ from scripts.migrate_tushare_remove_internal_columns import migrate_table
 
 
 class FakeSDKFrame:
-    columns = ("ts_code", "trade_date", "close")
-
     def __init__(self, records=None):
         self.records = records or [
             {"ts_code": "000001.SZ", "trade_date": "20260729", "close": 12.3}
         ]
+        self.columns = tuple(self.records[0])
 
     def to_dict(self, orient):
         assert orient == "records"
         return list(self.records)
+
+
+class FakeNamedIndex:
+    names = ("ts_code",)
+
+
+class FakeNamedIndexFrame:
+    index = FakeNamedIndex()
+    columns = ("best_buy_price", "best_sell_price")
+
+    def reset_index(self):
+        return FakeSDKFrame(
+            [
+                {
+                    "ts_code": "200013.BC",
+                    "best_buy_price": "101.2",
+                    "best_sell_price": "101.4",
+                }
+            ]
+        )
+
+    def to_dict(self, orient):
+        assert orient == "records"
+        return [
+            {
+                "best_buy_price": "101.2",
+                "best_sell_price": "101.4",
+            }
+        ]
 
 
 class FakeSDKApi:
@@ -452,13 +480,22 @@ def test_counter_bond_quotes_use_market_date_slices_instead_of_cb_basic_codes():
             self.calls.append((api_name, kwargs))
             trade_date = kwargs["params"]["trade_date"]
             if api_name == "bc_bestotcqt":
-                return [{"trade_date": trade_date, "ts_code": "200013.BC"}]
-            if api_name == "bc_otcqt":
                 return [
                     {
                         "trade_date": trade_date,
-                        "bank": "招商银行",
                         "ts_code": "200013.BC",
+                        "best_buy_price": "101.2",
+                        "best_sell_price": "101.4",
+                    }
+                ]
+            if api_name == "bc_otcqt":
+                return [
+                    {
+                        "TRADE_DATE": trade_date,
+                        "BID_BANK": "招商银行",
+                        "TS_CODE": "200013.BC",
+                        "BUY_PRICE": "101.2",
+                        "CREATE_BY": "compatible-gateway",
                     }
                 ]
             raise AssertionError(api_name)
@@ -497,6 +534,25 @@ def test_counter_bond_quotes_use_market_date_slices_instead_of_cb_basic_codes():
         )
 
         assert inserted == 1
+        if task == "bc_bestotcqt":
+            assert repository.saved == [
+                {
+                    "trade_date": "20240329",
+                    "ts_code": "200013.BC",
+                    "best_buy_price": "101.2",
+                    "best_sell_price": "101.4",
+                }
+            ]
+        else:
+            assert repository.saved == [
+                {
+                    "trade_date": "20240329",
+                    "bank": "招商银行",
+                    "ts_code": "200013.BC",
+                    "buy_price": "101.2",
+                    "create_by": "compatible-gateway",
+                }
+            ]
         assert provider.calls == [
             (
                 task,
@@ -509,6 +565,32 @@ def test_counter_bond_quotes_use_market_date_slices_instead_of_cb_basic_codes():
                 },
             )
         ]
+
+
+def test_best_counter_bond_quote_rejects_gateway_rows_without_bond_code():
+    class Provider:
+        def query_all(self, api_name, **kwargs):
+            assert api_name == "bc_bestotcqt"
+            assert kwargs["params"] == {"trade_date": "20260810"}
+            return [
+                {
+                    "trade_date": "20260810",
+                    "best_buy_price": "101.2",
+                    "best_sell_price": "101.4",
+                }
+            ]
+
+    try:
+        _fetch_rows(
+            SyncArgs(task="bc_bestotcqt"),
+            TUSHARE_TASK_SPECS["bc_bestotcqt"],
+            Provider(),
+            {"trade_date": "20260810"},
+        )
+    except ValueError as exc:
+        assert "缺少业务键字段 'ts_code'" in str(exc)
+    else:
+        raise AssertionError("bc_bestotcqt rows without ts_code must be rejected")
 
 
 def test_cb_price_change_batches_multiple_bond_codes_per_request():
@@ -797,6 +879,42 @@ def test_sdk_provider_uses_configurable_token_url_and_all_documented_fields():
     ]
 
 
+def test_sdk_provider_restores_business_dimensions_from_named_frame_index():
+    class SDK(FakeTushareSDK):
+        def pro_api(self, token):
+            api = FakeSDKApi(token)
+
+            def best_quote(**kwargs):
+                api.calls.append(("bc_bestotcqt", kwargs))
+                return FakeNamedIndexFrame()
+
+            api.bc_bestotcqt = best_quote
+            self.api = api
+            return api
+
+    provider = TushareProvider(
+        TushareConfig(token="secret", request_interval_seconds=0),
+        sleep=lambda _: None,
+        tushare_module=SDK(),
+    )
+
+    rows = _fetch_rows(
+        SyncArgs(task="bc_bestotcqt"),
+        TUSHARE_TASK_SPECS["bc_bestotcqt"],
+        provider,
+        {"trade_date": "20260810"},
+    )
+
+    assert rows == [
+        {
+            "ts_code": "200013.BC",
+            "best_buy_price": "101.2",
+            "best_sell_price": "101.4",
+            "trade_date": "20260810",
+        }
+    ]
+
+
 def test_config_supports_environment_token_and_base_url(tmp_path, monkeypatch):
     runtime_path = tmp_path / "runtime.local.yaml"
     runtime_path.write_text(
@@ -963,6 +1081,10 @@ def test_every_tushare_table_has_an_explicit_documented_business_key():
     assert TUSHARE_TASK_SPECS["bc_otcqt"].business_key_fields == (
         "trade_date",
         "bank",
+        "ts_code",
+    )
+    assert TUSHARE_TASK_SPECS["bc_bestotcqt"].business_key_fields == (
+        "trade_date",
         "ts_code",
     )
 

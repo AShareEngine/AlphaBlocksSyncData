@@ -204,15 +204,7 @@ class TushareProvider:
             )
         if frame is None:
             return []
-        if hasattr(frame, "reset_index"):
-            index_names = [
-                str(name)
-                for name in getattr(frame.index, "names", ())
-                if name is not None
-            ]
-            existing = {str(column) for column in getattr(frame, "columns", ())}
-            if not any(name in existing for name in index_names):
-                frame = frame.reset_index()
+        frame = _restore_named_index_columns(frame)
         if not hasattr(frame, "to_dict"):
             raise ValueError("Tushare pro_bar returned a non-DataFrame result")
         return [
@@ -265,6 +257,7 @@ def _frame_to_response(api_name: str, frame: Any) -> TushareResponse:
         return TushareResponse(fields=(), items=())
     if not hasattr(frame, "to_dict"):
         raise ValueError(f"Tushare api={api_name} returned a non-DataFrame result")
+    frame = _restore_named_index_columns(frame)
     records = frame.to_dict(orient="records")
     if not isinstance(records, list):
         raise ValueError(f"Tushare api={api_name} returned invalid DataFrame records")
@@ -280,6 +273,24 @@ def _frame_to_response(api_name: str, frame: Any) -> TushareResponse:
         fields=fields,
         items=items,
     )
+
+
+def _restore_named_index_columns(frame: Any) -> Any:
+    """Preserve business dimensions placed in a compatible gateway's index."""
+
+    if not hasattr(frame, "reset_index"):
+        return frame
+    index_names = [
+        str(name)
+        for name in getattr(getattr(frame, "index", None), "names", ())
+        if name is not None
+    ]
+    if not index_names:
+        return frame
+    existing = {str(column) for column in getattr(frame, "columns", ())}
+    if all(name in existing for name in index_names):
+        return frame
+    return frame.reset_index()
 
 
 def _clean_params(params: Mapping[str, Any]) -> dict[str, Any]:

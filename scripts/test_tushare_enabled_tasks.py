@@ -122,6 +122,7 @@ class PreflightResult:
     table: str
     status: str
     rows: int
+    raw_rows: int
     requests: int
     elapsed_ms: int
     table_status: str
@@ -136,6 +137,7 @@ class LimitedTushareProvider:
         self.provider = provider
         self.config = provider.config
         self.row_limit = max(1, int(row_limit))
+        self.raw_row_counts: dict[str, int] = {}
 
     @property
     def request_count(self) -> int:
@@ -159,7 +161,13 @@ class LimitedTushareProvider:
             page_size=min(max(1, int(page_size or self.row_limit)), self.row_limit),
             max_pages=1,
         )
+        self.raw_row_counts[api_name] = len(rows)
         return rows[: self.row_limit]
+
+    def raw_row_count(self, api_name: str) -> int:
+        """Return the upstream row count before the one-row preflight cap."""
+
+        return self.raw_row_counts.get(api_name, -1)
 
 
 class ReadOnlyPreflightRepository:
@@ -361,6 +369,7 @@ def run_preflight(argv: list[str] | None = None) -> int:
                 table=spec.table_name,
                 status=status,
                 rows=int(rows),
+                raw_rows=provider.raw_row_count(spec.task),
                 requests=provider.request_count - before_requests,
                 elapsed_ms=int((time.monotonic() - task_started) * 1000),
                 table_status=table_status,
@@ -492,9 +501,11 @@ def emit_result(
         emit(args, payload)
         return
     suffix = f" error_type={result.error_type} error={result.error}" if result.error else ""
+    raw_rows = "?" if result.raw_rows < 0 else str(result.raw_rows)
     print(
         f"[{index:03d}/{total:03d}] {result.status:<5} "
-        f"task={result.task} rows={result.rows} requests={result.requests} "
+        f"task={result.task} rows={result.rows} raw_rows={raw_rows} "
+        f"requests={result.requests} "
         f"table={result.table_status} elapsed_ms={result.elapsed_ms}{suffix}",
         flush=True,
     )

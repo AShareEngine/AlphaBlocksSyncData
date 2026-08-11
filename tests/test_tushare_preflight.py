@@ -67,6 +67,7 @@ def test_limited_provider_preserves_params_and_caps_real_pagination():
     rows = provider.query_all("daily", params={"trade_date": "20240329"})
 
     assert rows == [{"trade_date": "20240329"}]
+    assert provider.raw_row_count("daily") == 2
     assert raw.calls[0][1]["params"] == {"trade_date": "20240329"}
     assert raw.calls[0][1]["page_size"] == 1
     assert raw.calls[0][1]["max_pages"] == 1
