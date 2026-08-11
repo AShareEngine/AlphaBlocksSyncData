@@ -675,7 +675,7 @@ class SyncJobManager:
             )
             label = "scheduler" if job.child_job_ids else (job.source or "job")
             entries.extend(f"[{label}] {line}" for line in text.splitlines())
-        for child in self.get_child_jobs(job_id) if job.child_job_ids else []:
+        for child in self.get_child_jobs(job.job_id) if job.child_job_ids else []:
             child_path = Path(child.log_path)
             if not child_path.exists():
                 continue

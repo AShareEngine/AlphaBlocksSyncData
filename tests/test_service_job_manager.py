@@ -523,6 +523,56 @@ class SyncJobManagerTest(unittest.TestCase):
             self.assertIn("File \"sync.py\", line 8", error_log)
             self.assertIn("RuntimeError: upstream timeout", error_log)
 
+    def test_parent_job_log_aggregates_child_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            manager = SyncJobManager(root, state_dir=root / ".service_state")
+            parent_log_path = root / "parent.log"
+            child_log_path = root / "child.log"
+            parent_log_path.write_text(
+                "scheduler parent=parent status=running\n",
+                encoding="utf-8",
+            )
+            child_log_path.write_text(
+                "RuntimeError: child sync failed\n",
+                encoding="utf-8",
+            )
+            parent = JobRecord(
+                job_id="parent",
+                kind="task_batch",
+                status="failed",
+                created_at="2026-01-01T00:00:00+00:00",
+                started_at="2026-01-01T00:00:00+00:00",
+                finished_at="2026-01-01T00:01:00+00:00",
+                cwd=str(root),
+                command=[],
+                log_path=str(parent_log_path),
+                child_job_ids=["child"],
+            )
+            child = JobRecord(
+                job_id="child",
+                kind="provider_task",
+                status="failed",
+                created_at="2026-01-01T00:00:00+00:00",
+                started_at="2026-01-01T00:00:00+00:00",
+                finished_at="2026-01-01T00:01:00+00:00",
+                cwd=str(root),
+                command=["python"],
+                log_path=str(child_log_path),
+                source="tushare",
+                parent_job_id="parent",
+            )
+            manager._jobs.update({parent.job_id: parent, child.job_id: child})
+
+            log = manager.read_job_log(parent.job_id)
+
+            self.assertIn("[scheduler] scheduler parent=parent status=running", log)
+            self.assertIn(
+                "[provider=tushare job=child] RuntimeError: child sync failed",
+                log,
+            )
+
     def test_batch_failure_prefers_structured_task_error_over_log_tail(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "sync_project"
