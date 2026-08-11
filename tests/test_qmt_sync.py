@@ -107,15 +107,16 @@ class QmtProviderHelperTest(unittest.TestCase):
 
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["symbol"], "600000.SH")
-        self.assertEqual(rows[0]["period"], "1d")
+        self.assertNotIn("period", rows[0])
         self.assertEqual(rows[0]["time_ms"], 1704038400000)
 
-    def test_iter_sector_rows_expands_symbols(self) -> None:
+    def test_iter_sector_rows_preserves_qmt_symbols_collection(self) -> None:
         envelope = {"success": True, "data": {"items": [{"sector_name": "沪深A股", "symbols": ["sh.600000", "sz.000001"]}]}}
 
         rows = iter_qmt_rows(QMT_TASK_SPECS["sectors"], envelope, {"sector_name": "沪深A股"})
 
-        self.assertEqual([row["symbol"] for row in rows], ["600000.SH", "000001.SZ"])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["symbols"], ["600000.SH", "000001.SZ"])
         self.assertEqual(rows[0]["sector_name"], "沪深A股")
 
 
@@ -127,7 +128,19 @@ class QmtRepositoryTest(unittest.TestCase):
             with self.subTest(task=task):
                 columns = repository.table_columns_for_spec(spec)
                 self.assertTrue(
-                    {"source", "fetched_at", "ingested_at", "payload_json"}.isdisjoint(columns)
+                    {
+                        "task",
+                        "source",
+                        "fetched_at",
+                        "ingested_at",
+                        "payload_json",
+                        "request_start_time",
+                        "request_end_time",
+                        "record_index",
+                        "field_name",
+                        "field_value",
+                        "extra_fields",
+                    }.isdisjoint(columns)
                 )
                 ddl = repository._create_task_table_ddl(spec)
                 self.assertNotIn("source String", ddl)
@@ -135,6 +148,47 @@ class QmtRepositoryTest(unittest.TestCase):
                 self.assertNotIn("ingested_at", ddl)
                 self.assertNotIn("payload_json", ddl)
                 self.assertIn("ENGINE = ReplacingMergeTree()", ddl)
+
+    def test_kline_table_contains_only_qmt_bar_fields(self) -> None:
+        columns = QmtRepository.table_columns_for_spec(QMT_TASK_SPECS["kline_history"])
+
+        self.assertEqual(
+            columns,
+            (
+                "symbol",
+                "time_ms",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "amount",
+                "settle",
+                "open_interest",
+                "pre_close",
+                "suspend_flag",
+            ),
+        )
+
+    def test_latest_cursor_query_uses_only_real_table_columns(self) -> None:
+        client = _FakeClickHouseClient()
+        client.query_value_result = 1704038400000
+        repository = QmtRepository(client, database="qmt")
+
+        cursor = repository.load_latest_cursor("kline_history", symbol="sh.600000")
+
+        self.assertEqual(cursor, "1704038400000")
+        sql, parameters = client.query_value_calls[0]
+        self.assertNotIn("task =", sql)
+        self.assertIn("symbol =", sql)
+        self.assertEqual(parameters, {"symbol": "600000.SH"})
+
+    def test_nested_frame_cursor_is_not_queried_as_a_fake_column(self) -> None:
+        client = _FakeClickHouseClient()
+        repository = QmtRepository(client, database="qmt")
+
+        self.assertIsNone(repository.load_latest_cursor("market_data_ex", symbol="600000.SH"))
+        self.assertEqual(client.query_value_calls, [])
 
     def test_outdated_payload_table_is_dropped_for_resync(self) -> None:
         client = _FakeClickHouseClient()
@@ -234,7 +288,6 @@ class QmtRunnerTest(unittest.TestCase):
                                 {
                                     "time_ms": 1704038400000,
                                     "open": 8.1,
-                                    "custom_metric": "kept",
                                 }
                             ],
                         }
@@ -257,7 +310,7 @@ class QmtRunnerTest(unittest.TestCase):
         self.assertEqual(row["symbol"], "600000.SH")
         self.assertEqual(row["time_ms"], 1704038400000)
         self.assertEqual(row["open"], 8.1)
-        self.assertEqual(row["extra_fields"], {"custom_metric": "kept"})
+        self.assertNotIn("extra_fields", row)
 
     def test_tick_payload_is_materialized_into_typed_columns(self) -> None:
         provider = _FakeQmtProvider(
@@ -290,10 +343,10 @@ class QmtRunnerTest(unittest.TestCase):
         row = dict(zip(columns, rows[0]))
         self.assertEqual(row["last_price"], 8.2)
         self.assertEqual(row["ask_price"], [8.21, 8.22])
-        self.assertEqual(row["ask_vol"], [1000.0, 2000.0])
-        self.assertNotIn("ask_price[0]", row["extra_fields"])
+        self.assertEqual(row["ask_vol"], [1000, 2000])
+        self.assertNotIn("extra_fields", row)
 
-    def test_dynamic_payload_is_split_into_field_rows(self) -> None:
+    def test_instrument_preserves_exact_symbol_and_fields_response(self) -> None:
         provider = _FakeQmtProvider(
             {
                 "success": True,
@@ -315,11 +368,12 @@ class QmtRunnerTest(unittest.TestCase):
             repository,
         )
 
-        self.assertEqual(inserted, 3)
+        self.assertEqual(inserted, 1)
         _, columns, rows = client.insert_calls[0]
-        field_rows = {row[columns.index("field_name")]: row[columns.index("field_value")] for row in rows}
-        self.assertEqual(field_rows["fields.InstrumentName"], "浦发银行")
-        self.assertNotIn("payload_json", columns)
+        self.assertEqual(columns, ["symbol", "fields"])
+        row = dict(zip(columns, rows[0]))
+        self.assertEqual(row["symbol"], "600000.SH")
+        self.assertEqual(row["fields"]["InstrumentName"], "浦发银行")
 
     def test_run_sync_args_auto_resolves_qmt_symbol_universe(self) -> None:
         provider = _FakeQmtProvider(
@@ -347,7 +401,13 @@ class QmtRunnerTest(unittest.TestCase):
 
     def test_cb_info_uses_historical_convertible_bond_universe(self) -> None:
         provider = _FakeQmtProvider(
-            {"success": True, "data": {"bondCode": "113001.SH"}},
+            {
+                "success": True,
+                "data": {
+                    "symbol": "113001.SH",
+                    "fields": {"bondCode": "113001.SH"},
+                },
+            },
             sector_envelopes={
                 "沪深转债": {
                     "success": True,
@@ -395,21 +455,33 @@ class QmtRunnerTest(unittest.TestCase):
 
         self.assertEqual([task.symbol for task in tasks], ["113001.SH", "123001.SZ"])
 
-    def test_run_sync_args_requires_codes_when_task_has_no_auto_universe(self) -> None:
-        provider = _FakeQmtProvider({"success": True, "data": {"items": []}})
-        repository = QmtRepository(_FakeClickHouseClient(), database="qmt")
+    def test_etf_info_uses_qmt_all_etf_response_without_external_codes(self) -> None:
+        provider = _FakeQmtProvider(
+            {
+                "success": True,
+                "data": {
+                    "510300.SH": {"stockCode": "510300.SH", "stockName": "沪深300ETF"}
+                },
+            }
+        )
+        client = _FakeClickHouseClient()
+        repository = QmtRepository(client, database="qmt")
 
-        with self.assertRaisesRegex(ValueError, "需要 codes 参数"):
-            run_sync_args(
-                self._args(
-                    task="etf_info",
-                    symbols_raw="",
-                    begin_time="",
-                    end_time="",
-                ),
-                provider,
-                repository,
-            )
+        inserted = run_sync_args(
+            self._args(
+                task="etf_info",
+                symbols_raw="",
+                symbol="",
+                begin_time="",
+                end_time="",
+            ),
+            provider,
+            repository,
+        )
+
+        self.assertEqual(inserted, 1)
+        _, columns, rows = client.insert_calls[0]
+        self.assertEqual(dict(zip(columns, rows[0]))["fields"]["stockName"], "沪深300ETF")
 
     def test_registered_qmt_tasks_resolve_required_defaults_without_ui_params(self) -> None:
         provider = _FakeQmtProvider(

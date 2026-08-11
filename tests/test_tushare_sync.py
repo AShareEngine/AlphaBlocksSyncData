@@ -1380,6 +1380,58 @@ def test_code_incremental_uses_each_security_cursor_and_2010_for_missing_securit
     ]
 
 
+def test_code_resume_skips_securities_already_at_requested_end():
+    class ResumeRepository(FakeRangeRepository):
+        def load_latest_cursors(self, spec, codes):
+            return {
+                "000001.SZ": "20240105",
+                "000002.SZ": "20240102",
+            }
+
+    provider = FakeRangeProvider()
+    repository = ResumeRepository()
+    inserted = _run_code_range(
+        SyncArgs(
+            task="daily",
+            codes_raw="000001.SZ,000002.SZ",
+            end_date="20240105",
+            resume=True,
+        ),
+        TUSHARE_TASK_SPECS["daily"],
+        provider,
+        repository,
+        context=None,
+    )
+
+    assert inserted == 1
+    assert [call[1]["params"]["ts_code"] for call in provider.calls] == [
+        "000002.SZ"
+    ]
+    assert provider.calls[0][1]["params"]["start_date"] == "20240102"
+
+
+def test_date_slice_resume_skips_task_already_at_requested_end():
+    class ResumeRepository(FakeDateSliceRepository):
+        def load_latest_cursor(self, spec):
+            return "20260730"
+
+    provider = FakeDateSliceProvider()
+    inserted = _run_date_slice(
+        SyncArgs(
+            task="anns_d",
+            begin_date="20260729",
+            end_date="20260730",
+            resume=True,
+        ),
+        TUSHARE_TASK_SPECS["anns_d"],
+        provider,
+        ResumeRepository(),
+    )
+
+    assert inserted == 0
+    assert provider.calls == []
+
+
 def test_generated_plans_are_executable_and_start_in_2010():
     daily = load_execution_plan_from_toml(
         str(PROJECT_ROOT / "providers" / "tushare" / "plans" / "daily.toml")

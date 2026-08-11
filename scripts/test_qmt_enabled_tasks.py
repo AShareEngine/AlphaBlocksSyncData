@@ -354,6 +354,9 @@ def check_table_layout(client: Any, *, database: str, spec: QmtTaskSpec) -> str:
     missing = sorted(expected_columns - actual_columns)
     if missing:
         return f"outdated:missing_columns={','.join(missing)}"
+    unexpected = sorted(actual_columns - expected_columns)
+    if unexpected:
+        return f"outdated:unexpected_columns={','.join(unexpected)}"
     return "ok"
 
 

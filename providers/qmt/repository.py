@@ -10,12 +10,7 @@ from datetime import date
 from typing import Any, Mapping, Sequence
 
 from sync_data_system.providers.qmt.provider import iter_qmt_rows, normalize_qmt_code
-from sync_data_system.providers.qmt.specs import (
-    QMT_DYNAMIC_ROW_KINDS,
-    QMT_TASK_SPECS,
-    QmtTaskSpec,
-    order_by_columns_for_spec,
-)
+from sync_data_system.providers.qmt.specs import QMT_TASK_SPECS, QmtTaskSpec, order_by_columns_for_spec
 from sync_data_system.sync_core.clickhouse import ClickHouseConnection
 from sync_data_system.sync_core.sync_models import SyncCheckpointRow, SyncTaskLogRow
 
@@ -25,103 +20,137 @@ logger = logging.getLogger(__name__)
 QMT_SYNC_TASK_LOG_TABLE = "qmt_sync_task_log"
 QMT_SYNC_CHECKPOINT_TABLE = "qmt_sync_checkpoint"
 
-COMMON_TASK_COLUMN_DEFINITIONS = (
-    ("task", "String"),
-    ("symbol", "String"),
-    ("stock_code", "String"),
-    ("index_code", "String"),
-    ("market", "String"),
-    ("sector_name", "String"),
-    ("table_name", "String"),
-    ("period", "String"),
-    ("date", "String"),
-    ("time_ms", "Int64"),
-    ("request_start_time", "String"),
-    ("request_end_time", "String"),
-)
-
 ROW_KIND_COLUMN_DEFINITIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "bar": (
+        ("symbol", "String"),
+        ("time_ms", "Int64"),
         ("open", "Float64"),
         ("high", "Float64"),
         ("low", "Float64"),
         ("close", "Float64"),
-        ("volume", "Float64"),
+        ("volume", "Int64"),
         ("amount", "Float64"),
         ("settle", "Float64"),
-        ("open_interest", "Float64"),
+        ("open_interest", "Int64"),
         ("pre_close", "Float64"),
         ("suspend_flag", "Int64"),
-        ("extra_fields", "Map(String, String)"),
     ),
     "tick": (
+        ("symbol", "String"),
+        ("time_ms", "Int64"),
         ("last_price", "Float64"),
         ("open", "Float64"),
         ("high", "Float64"),
         ("low", "Float64"),
         ("last_close", "Float64"),
         ("amount", "Float64"),
-        ("volume", "Float64"),
-        ("pvolume", "Float64"),
-        ("open_int", "Float64"),
+        ("volume", "Int64"),
+        ("pvolume", "Int64"),
+        ("open_int", "Int64"),
         ("stock_status", "Int64"),
         ("last_settlement_price", "Float64"),
         ("ask_price", "Array(Float64)"),
         ("bid_price", "Array(Float64)"),
-        ("ask_vol", "Array(Float64)"),
-        ("bid_vol", "Array(Float64)"),
+        ("ask_vol", "Array(Int64)"),
+        ("bid_vol", "Array(Int64)"),
         ("transaction_num", "Int64"),
-        ("extra_fields", "Map(String, String)"),
     ),
     "quote": (
+        ("symbol", "String"),
+        ("time_ms", "Int64"),
         ("last_price", "Float64"),
         ("open", "Float64"),
         ("high", "Float64"),
         ("low", "Float64"),
         ("last_close", "Float64"),
         ("amount", "Float64"),
-        ("volume", "Float64"),
-        ("pvolume", "Float64"),
-        ("open_int", "Float64"),
+        ("volume", "Int64"),
+        ("pvolume", "Int64"),
+        ("open_int", "Int64"),
         ("stock_status", "Int64"),
         ("last_settlement_price", "Float64"),
         ("ask_price", "Array(Float64)"),
         ("bid_price", "Array(Float64)"),
-        ("ask_vol", "Array(Float64)"),
-        ("bid_vol", "Array(Float64)"),
+        ("ask_vol", "Array(Int64)"),
+        ("bid_vol", "Array(Int64)"),
         ("transaction_num", "Int64"),
-        ("extra_fields", "Map(String, String)"),
     ),
     "order": (
+        ("symbol", "String"),
+        ("time_ms", "Int64"),
         ("price", "Float64"),
-        ("volume", "Float64"),
+        ("volume", "Int64"),
         ("entrust_no", "Int64"),
         ("entrust_type", "Int64"),
         ("entrust_direction", "Int64"),
-        ("extra_fields", "Map(String, String)"),
     ),
     "transaction": (
+        ("symbol", "String"),
+        ("time_ms", "Int64"),
         ("price", "Float64"),
-        ("volume", "Float64"),
+        ("volume", "Int64"),
         ("amount", "Float64"),
         ("trade_index", "Int64"),
         ("buy_no", "Int64"),
         ("sell_no", "Int64"),
         ("trade_type", "Int64"),
         ("trade_flag", "Int64"),
-        ("extra_fields", "Map(String, String)"),
     ),
     "component": (
+        ("index_code", "String"),
+        ("symbol", "String"),
         ("weight", "Float64"),
-        ("extra_fields", "Map(String, String)"),
+    ),
+    "sector": (("sector_name", "String"), ("symbols", "Array(String)")),
+    "financial": (
+        ("symbol", "String"),
+        ("table_name", "String"),
+        ("columns", "Array(String)"),
+        ("rows", "Array(Map(String, String))"),
+    ),
+    "fields": (("symbol", "String"), ("fields", "Map(String, String)")),
+    "type": (("symbol", "String"), ("type", "Map(String, String)")),
+    "trade_times": (("symbol", "String"), ("trade_times", "Array(Array(Int64))")),
+    "main_contract": (("code_market", "String"), ("main_contract", "String")),
+    "calendar_date": (("market", "String"), ("date", "String")),
+    "frame": (
+        ("symbol", "String"),
+        ("fields", "Array(String)"),
+        ("rows", "Array(Map(String, String))"),
+    ),
+    "holiday": (("date", "String"),),
+    "period": (("period", "String"),),
+    "data_dir": (("data_dir", "String"),),
+    "factor_collection": (
+        ("stock_code", "String"),
+        ("items", "Array(Map(String, String))"),
+    ),
+    "ipo": (
+        ("securityCode", "String"),
+        ("codeName", "String"),
+        ("market", "String"),
+        ("actIssueQty", "Int64"),
+        ("onlineIssueQty", "Int64"),
+        ("onlineSubCode", "String"),
+        ("onlineSubMaxQty", "Int64"),
+        ("publishPrice", "Float64"),
+        ("startDate", "String"),
+        ("onlineSubMinQty", "Int64"),
+        ("isProfit", "Int64"),
+        ("industryPe", "Float64"),
+        ("beforePE", "Float64"),
+        ("afterPE", "Float64"),
+        ("listedDate", "String"),
+        ("declareDate", "String"),
+        ("paymentDate", "String"),
+        ("lwr", "Float64"),
+    ),
+    "download_result": (
+        ("function", "String"),
+        ("success", "Bool"),
+        ("result", "String"),
     ),
 }
-
-DYNAMIC_COLUMN_DEFINITIONS = (
-    ("record_index", "UInt32"),
-    ("field_name", "String"),
-    ("field_value", "String"),
-)
 
 
 class QmtRepository:
@@ -220,7 +249,6 @@ class QmtRepository:
         rows = self._materialize_rows(
             spec,
             iter_qmt_rows(spec, envelope, request_meta),
-            columns,
         )
         if not rows:
             return 0
@@ -284,28 +312,43 @@ class QmtRepository:
 
     def has_task_data_for_request(self, task: str, request_meta: Mapping[str, Any]) -> bool:
         spec = QMT_TASK_SPECS[task]
-        clauses: list[str] = []
-        parameters: dict[str, Any] = {"task": task}
+        columns = set(self.table_columns_for_spec(spec))
 
-        clauses.append("task = {task:String}")
+        # A response row cannot identify request options that QMT does not
+        # return. In those cases the sync log, not invented business columns,
+        # is responsible for request-level deduplication.
+        if (
+            spec.uses_begin_end
+            or spec.uses_period
+            or spec.uses_fields
+            or spec.uses_adjust_type
+            or spec.uses_fill_data
+            or spec.uses_count
+            or spec.uses_incrementally
+            or spec.uses_complete
+            or spec.uses_table_names
+        ):
+            return False
+
+        clauses: list[str] = []
+        parameters: dict[str, Any] = {}
         for key, column in (
             ("symbol", "symbol"),
             ("stock_code", "stock_code"),
             ("index_code", "index_code"),
             ("market", "market"),
             ("sector_name", "sector_name"),
-            ("table_name", "table_name"),
-            ("period", "period"),
-            ("start_time", "request_start_time"),
-            ("end_time", "request_end_time"),
+            ("code_market", "code_market"),
         ):
+            if column not in columns:
+                continue
             value = self._normalize_lookup_value(key, request_meta.get(key))
             if value == "":
                 continue
             clauses.append(f"{column} = {{{column}:String}}")
             parameters[column] = value
 
-        if len(clauses) <= 1:
+        if not clauses:
             return False
 
         sql = f"""
@@ -320,20 +363,25 @@ class QmtRepository:
         spec = QMT_TASK_SPECS[task]
         if not spec.cursor_path:
             return None
-        clauses = ["task = {task:String}"]
-        parameters: dict[str, Any] = {"task": task}
-        if symbol:
+        column = "time_ms" if spec.cursor_path == ("time_ms",) else "date"
+        columns = set(self.table_columns_for_spec(spec))
+        if column not in columns:
+            return None
+
+        clauses: list[str] = []
+        parameters: dict[str, Any] = {}
+        if symbol and "symbol" in columns:
             clauses.append("symbol = {symbol:String}")
             parameters["symbol"] = normalize_qmt_code(symbol)
-        column = "time_ms" if spec.cursor_path == ("time_ms",) else "date"
         if column == "date":
             clauses.append("date != ''")
         else:
             clauses.append("time_ms != 0")
+        where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = f"""
         SELECT max({column})
         FROM {self._table_ref(spec.table_name)}
-        WHERE {' AND '.join(clauses)}
+        {where_clause}
         """
         value = self.client.query_value(sql, parameters)
         text = str(value or "").strip()
@@ -365,11 +413,7 @@ class QmtRepository:
         cls,
         spec: QmtTaskSpec,
     ) -> tuple[tuple[str, str], ...]:
-        if spec.row_kind in QMT_DYNAMIC_ROW_KINDS:
-            business = DYNAMIC_COLUMN_DEFINITIONS
-        else:
-            business = ROW_KIND_COLUMN_DEFINITIONS.get(spec.row_kind, ())
-        return (*COMMON_TASK_COLUMN_DEFINITIONS, *business)
+        return ROW_KIND_COLUMN_DEFINITIONS[spec.row_kind]
 
     @classmethod
     def table_columns_for_spec(cls, spec: QmtTaskSpec) -> tuple[str, ...]:
@@ -379,80 +423,15 @@ class QmtRepository:
         self,
         spec: QmtTaskSpec,
         source_rows: Sequence[Mapping[str, Any]],
-        columns: Sequence[str],
     ) -> list[tuple[Any, ...]]:
-        materialized: list[tuple[Any, ...]] = []
-        for record_index, source in enumerate(source_rows):
-            base = self._common_values(source)
-            payload = source.get("payload")
-            if spec.row_kind in QMT_DYNAMIC_ROW_KINDS:
-                fields = self._flatten_payload(payload)
-                if not fields:
-                    fields = [("value", self._string_value(payload))]
-                for field_name, field_value in fields:
-                    values = {
-                        **base,
-                        "record_index": record_index,
-                        "field_name": field_name,
-                        "field_value": field_value,
-                    }
-                    materialized.append(tuple(values.get(column, "") for column in columns))
-                continue
-
-            business_definitions = ROW_KIND_COLUMN_DEFINITIONS.get(spec.row_kind, ())
-            business_names = {name for name, _ in business_definitions}
-            payload_map = payload if isinstance(payload, Mapping) else {}
-            values = dict(base)
-            for name, column_type in business_definitions:
-                if name == "extra_fields":
-                    continue
-                values[name] = self._coerce_value(payload_map.get(name), column_type)
-            if "extra_fields" in business_names:
-                ignored = business_names | {"symbol", "date", "time_ms"}
-                values["extra_fields"] = {
-                    name: value
-                    for name, value in self._flatten_payload(payload_map)
-                    if self._field_root(name) not in ignored
-                }
-            materialized.append(tuple(values.get(column, self._default_value(column)) for column in columns))
-        return materialized
-
-    @staticmethod
-    def _common_values(row: Mapping[str, Any]) -> dict[str, Any]:
-        return {
-            "task": str(row.get("task") or ""),
-            "symbol": normalize_qmt_code(row.get("symbol")),
-            "stock_code": normalize_qmt_code(row.get("stock_code")),
-            "index_code": str(row.get("index_code") or ""),
-            "market": str(row.get("market") or ""),
-            "sector_name": str(row.get("sector_name") or ""),
-            "table_name": str(row.get("table_name") or ""),
-            "period": str(row.get("period") or ""),
-            "date": str(row.get("date") or ""),
-            "time_ms": int(row.get("time_ms") or 0),
-            "request_start_time": str(row.get("request_start_time") or ""),
-            "request_end_time": str(row.get("request_end_time") or ""),
-        }
-
-    @classmethod
-    def _flatten_payload(cls, value: Any, prefix: str = "") -> list[tuple[str, str]]:
-        if isinstance(value, Mapping):
-            if not value:
-                return [(prefix or "value", "{}")]
-            fields: list[tuple[str, str]] = []
-            for key, item in value.items():
-                name = f"{prefix}.{key}" if prefix else str(key)
-                fields.extend(cls._flatten_payload(item, name))
-            return fields
-        if isinstance(value, (list, tuple)):
-            if not value:
-                return [(prefix or "value", "[]")]
-            fields = []
-            for index, item in enumerate(value):
-                name = f"{prefix}[{index}]" if prefix else f"value[{index}]"
-                fields.extend(cls._flatten_payload(item, name))
-            return fields
-        return [(prefix or "value", cls._string_value(value))]
+        definitions = self.table_column_definitions_for_spec(spec)
+        return [
+            tuple(
+                self._coerce_value(source.get(name), column_type)
+                for name, column_type in definitions
+            )
+            for source in source_rows
+        ]
 
     @staticmethod
     def _string_value(value: Any) -> str:
@@ -464,10 +443,6 @@ class QmtRepository:
             return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
         return str(value)
 
-    @staticmethod
-    def _field_root(name: str) -> str:
-        return str(name).split(".", 1)[0].split("[", 1)[0]
-
     @classmethod
     def _coerce_value(cls, value: Any, column_type: str) -> Any:
         if column_type == "Float64":
@@ -475,30 +450,55 @@ class QmtRepository:
                 return float(value or 0)
             except (TypeError, ValueError):
                 return 0.0
-        if column_type in {"Int64", "UInt32"}:
+        if column_type == "Int64":
             try:
                 return int(value or 0)
             except (TypeError, ValueError):
                 return 0
-        if column_type == "Array(Float64)":
+        if column_type in {"Array(Float64)", "Array(Int64)"}:
             if not isinstance(value, (list, tuple)):
                 return []
-            result: list[float] = []
+            result: list[float | int] = []
             for item in value:
                 try:
-                    result.append(float(item))
+                    result.append(float(item) if column_type == "Array(Float64)" else int(float(item)))
                 except (TypeError, ValueError):
                     continue
             return result
+        if column_type == "Array(String)":
+            return [cls._string_value(item) for item in value] if isinstance(value, (list, tuple)) else []
+        if column_type == "Array(Array(Int64))":
+            if not isinstance(value, (list, tuple)):
+                return []
+            result: list[list[int]] = []
+            for row in value:
+                if not isinstance(row, (list, tuple)):
+                    continue
+                normalized_row: list[int] = []
+                for item in row:
+                    try:
+                        normalized_row.append(int(float(item)))
+                    except (TypeError, ValueError):
+                        continue
+                result.append(normalized_row)
+            return result
         if column_type == "Map(String, String)":
-            return {}
+            if not isinstance(value, Mapping):
+                return {}
+            return {str(key): cls._string_value(item) for key, item in value.items()}
+        if column_type == "Array(Map(String, String))":
+            if not isinstance(value, (list, tuple)):
+                return []
+            return [
+                {str(key): cls._string_value(item) for key, item in row.items()}
+                for row in value
+                if isinstance(row, Mapping)
+            ]
+        if column_type == "Bool":
+            if isinstance(value, str):
+                return value.strip().lower() in {"1", "true", "yes", "on"}
+            return bool(value)
         return cls._string_value(value)
-
-    @staticmethod
-    def _default_value(column: str) -> Any:
-        if column == "extra_fields":
-            return {}
-        return ""
 
     def _table_ref(self, table_name: str) -> str:
         return f"{self.database}.{table_name}"

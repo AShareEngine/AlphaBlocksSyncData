@@ -105,7 +105,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         uses_symbols=True,
         uses_table_names=True,
         uses_begin_end=True,
-        row_kind="financial_row",
+        row_kind="financial",
         default_table_names=("Balance", "Income", "CashFlow"),
         auto_symbol_universe=True,
     ),
@@ -117,6 +117,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         response_key="",
         uses_symbol=True,
         uses_complete=True,
+        row_kind="fields",
         auto_symbol_universe=True,
     ),
     "trading_calendar": QmtTaskSpec(
@@ -146,7 +147,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         table_name="qmt_sectors",
         item_collection_key="items",
         uses_sector_name=True,
-        row_kind="sector_symbol",
+        row_kind="sector",
     ),
     "l2_quote": QmtTaskSpec(
         task="l2_quote",
@@ -201,7 +202,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         uses_adjust_type=True,
         uses_fill_data=True,
         default_period="1d",
-        row_kind="bar",
+        row_kind="frame",
         cursor_path=("time_ms",),
         auto_symbol_universe=True,
     ),
@@ -219,7 +220,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         uses_adjust_type=True,
         uses_fill_data=True,
         default_period="1d",
-        row_kind="bar",
+        row_kind="frame",
         cursor_path=("time_ms",),
         auto_symbol_universe=True,
     ),
@@ -246,6 +247,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         path="/instrument-type/{symbol}",
         table_name="qmt_instrument_type",
         uses_symbol=True,
+        row_kind="type",
         auto_symbol_universe=True,
     ),
     "trade_times": QmtTaskSpec(
@@ -254,6 +256,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         path="/trade-times/{symbol}",
         table_name="qmt_trade_times",
         uses_symbol=True,
+        row_kind="trade_times",
         auto_symbol_universe=True,
         auto_include_historical_universe=False,
     ),
@@ -263,6 +266,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         path="/main-contract/{code_market}",
         table_name="qmt_main_contract",
         uses_code_market=True,
+        row_kind="main_contract",
         default_code_markets=("IF.CFFEX",),
     ),
     "trading_dates": QmtTaskSpec(
@@ -282,7 +286,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         method="GET",
         path="/holidays",
         table_name="qmt_holidays",
-        row_kind="calendar_date",
+        row_kind="holiday",
     ),
     "periods": QmtTaskSpec(
         task="periods",
@@ -296,6 +300,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         method="GET",
         path="/data-dir",
         table_name="qmt_data_dir",
+        row_kind="data_dir",
     ),
     "divid_factors": QmtTaskSpec(
         task="divid_factors",
@@ -304,7 +309,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         table_name="qmt_divid_factors",
         uses_stock_code=True,
         uses_begin_end=True,
-        row_kind="factor",
+        row_kind="factor_collection",
         auto_symbol_universe=True,
     ),
     "cb_info": QmtTaskSpec(
@@ -313,6 +318,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         path="/cb-info/{symbol}",
         table_name="qmt_cb_info",
         uses_symbol=True,
+        row_kind="fields",
         auto_symbol_universe=True,
         auto_symbol_universe_sector="沪深转债",
         auto_historical_symbol_universe_sector="过期沪深转债",
@@ -322,14 +328,14 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         method="GET",
         path="/ipo-info",
         table_name="qmt_ipo_info",
-        row_kind="item",
+        row_kind="ipo",
     ),
     "etf_info": QmtTaskSpec(
         task="etf_info",
         method="GET",
-        path="/etf-info/{symbol}",
+        path="/etf-info",
         table_name="qmt_etf_info",
-        uses_symbol=True,
+        row_kind="fields",
     ),
     "download_history": QmtTaskSpec(
         task="download_history",
@@ -418,35 +424,42 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
 }
 
 QMT_TASK_CHOICES = tuple(QMT_TASK_SPECS.keys())
-QMT_DYNAMIC_ROW_KINDS = frozenset({"financial_row", "download_result", "factor", "item"})
-
-
 def order_by_columns_for_spec(spec: QmtTaskSpec) -> tuple[str, ...]:
-    candidates = (
-        "task",
-        "symbol",
-        "stock_code",
-        "index_code",
-        "market",
-        "sector_name",
-        "table_name",
-        "period",
-        "date",
-        "time_ms",
-        "request_start_time",
-    )
-    if spec.row_kind in QMT_DYNAMIC_ROW_KINDS:
-        return (*candidates, "record_index", "field_name")
+    if spec.row_kind in {"bar", "tick", "quote"}:
+        return ("symbol", "time_ms")
     if spec.row_kind == "order":
-        return (*candidates, "entrust_no")
+        return ("symbol", "time_ms", "entrust_no")
     if spec.row_kind == "transaction":
-        return (*candidates, "trade_index")
-    return tuple(candidates)
+        return ("symbol", "time_ms", "trade_index")
+    if spec.row_kind == "component":
+        return ("index_code", "symbol")
+    if spec.row_kind == "sector":
+        return ("sector_name",)
+    if spec.row_kind == "financial":
+        return ("symbol", "table_name")
+    if spec.row_kind in {"fields", "type", "trade_times", "frame"}:
+        return ("symbol",)
+    if spec.row_kind == "calendar_date":
+        return ("market", "date")
+    if spec.row_kind == "main_contract":
+        return ("code_market",)
+    if spec.row_kind == "factor_collection":
+        return ("stock_code",)
+    if spec.row_kind == "ipo":
+        return ("securityCode",)
+    if spec.row_kind == "holiday":
+        return ("date",)
+    if spec.row_kind == "period":
+        return ("period",)
+    if spec.row_kind == "data_dir":
+        return ("data_dir",)
+    if spec.row_kind == "download_result":
+        return ("function",)
+    return ("symbol",)
 
 
 __all__ = [
     "QMT_TASK_CHOICES",
-    "QMT_DYNAMIC_ROW_KINDS",
     "QMT_TASK_SPECS",
     "QmtTaskSpec",
     "order_by_columns_for_spec",

@@ -41,6 +41,9 @@ class ControlledProcess:
         self.terminated = True
         self.finish(-15)
 
+    def kill(self) -> None:
+        self.finish(-9)
+
 
 def wait_for_status(
     manager: SyncJobManager,
@@ -890,6 +893,37 @@ class SyncJobManagerTest(unittest.TestCase):
             self.assertIn("--resume", job.command)
             self.assertFalse(job.request_payload["force"])
             self.assertTrue(job.request_payload["resume"])
+
+    def test_graceful_restart_requeues_running_tushare_before_terminating(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            manager = SyncJobManager(root, state_dir=root / ".service_state")
+            process = ControlledProcess()
+            with patch(
+                "sync_data_system.service.job_manager.subprocess.Popen",
+                return_value=process,
+            ):
+                parent = manager.create_registered_task_job(
+                    task="tushare.daily",
+                    force=True,
+                )
+            child = manager.get_child_jobs(parent.job_id)[0]
+            self.assertEqual(child.status, "running")
+
+            manager.prepare_for_restart(timeout_seconds=1)
+
+            child = manager.get_job(child.job_id)
+            self.assertTrue(process.terminated)
+            self.assertEqual(child.status, "queued")
+            self.assertEqual(child.restart_count, 1)
+            self.assertIn("--resume", child.command)
+            self.assertNotIn("--force", child.command)
+            self.assertTrue(child.request_payload["resume"])
+            self.assertFalse(child.request_payload["force"])
+            self.assertEqual(manager.queue_position(child.job_id), 1)
+            time.sleep(0.02)
+            self.assertEqual(manager.get_job(child.job_id).status, "queued")
 
     def test_list_jobs_supports_filters(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

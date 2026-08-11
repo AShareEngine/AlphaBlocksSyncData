@@ -110,6 +110,8 @@ class SyncJobManager:
         self._lock = threading.RLock()
         self._jobs: dict[str, JobRecord] = {}
         self._processes: dict[str, subprocess.Popen] = {}
+        self._restart_job_ids: set[str] = set()
+        self._shutting_down = False
         # Only executable jobs live in this queue. Parent jobs aggregate child state.
         self._queue: list[str] = []
         self._orphaned_job_ids: list[str] = []
@@ -836,6 +838,12 @@ class SyncJobManager:
         self._dispatch_next()
 
     def _finish_executable_locked(self, job: JobRecord, return_code: int) -> None:
+        if job.job_id in self._restart_job_ids:
+            # prepare_for_restart() has already persisted this job as queued.
+            # The old process exits only to let the service shut down cleanly;
+            # its signal return code must not overwrite the resumable state.
+            self._processes.pop(job.job_id, None)
+            return
         if job.job_id not in self._processes and job.status in TERMINAL_STATUSES:
             return
         job.return_code = return_code
@@ -1141,6 +1149,69 @@ class SyncJobManager:
             if job.child_job_ids:
                 self._refresh_parent_locked(job)
 
+    def prepare_for_restart(self, *, timeout_seconds: float = 5.0) -> None:
+        """Persist running jobs as resumable work before service shutdown.
+
+        Without this transition, the child process can receive SIGINT/SIGTERM
+        before the API process exits and its watcher records a business failure.
+        Persisting the queued state first makes a graceful service restart follow
+        the same recovery path as an abrupt machine restart.
+        """
+
+        processes: list[subprocess.Popen] = []
+        with self._lock:
+            if self._shutting_down:
+                return
+            self._shutting_down = True
+            running = sorted(
+                (
+                    job
+                    for job in self._jobs.values()
+                    if not job.child_job_ids
+                    and job.status == "running"
+                    and job.job_id in self._processes
+                ),
+                key=lambda item: (item.started_at or item.created_at, item.job_id),
+            )
+            resumed_ids: list[str] = []
+            for job in running:
+                process = self._processes[job.job_id]
+                processes.append(process)
+                self._restart_job_ids.add(job.job_id)
+                self._requeue_after_restart_locked(job)
+                resumed_ids.append(job.job_id)
+                if job.parent_job_id:
+                    parent = self._jobs.get(job.parent_job_id)
+                    if parent is not None:
+                        self._refresh_parent_locked(parent)
+            if resumed_ids:
+                resumed_set = set(resumed_ids)
+                # A task that was already running must remain ahead of later
+                # queued work in the same provider lane after the restart.
+                self._queue = resumed_ids + [
+                    job_id for job_id in self._queue if job_id not in resumed_set
+                ]
+                self._save_queue()
+
+        for process in processes:
+            try:
+                if process.poll() is None:
+                    process.terminate()
+            except (OSError, ProcessLookupError):
+                continue
+
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        pending = list(processes)
+        while pending and time.monotonic() < deadline:
+            pending = [process for process in pending if process.poll() is None]
+            if pending:
+                time.sleep(0.05)
+        for process in pending:
+            try:
+                process.kill()
+            except (AttributeError, OSError, ProcessLookupError):
+                pass
+
     def _requeue_after_restart_locked(self, job: JobRecord) -> None:
         restarted_at = utc_now_iso()
         self._enable_resume_for_job_locked(job)
@@ -1290,6 +1361,8 @@ class SyncJobManager:
         while True:
             watcher: Optional[threading.Thread] = None
             with self._lock:
+                if self._shutting_down:
+                    return
                 active_jobs = [
                     job
                     for job in self._jobs.values()

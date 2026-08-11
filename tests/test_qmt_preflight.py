@@ -110,6 +110,19 @@ def test_qmt_table_layout_rejects_payload_json_schema():
     assert status == "outdated:legacy_columns=payload_json"
 
 
+def test_qmt_table_layout_rejects_invented_generic_columns():
+    spec = QMT_TASK_SPECS["kline_history"]
+    key = ", ".join(order_by_columns_for_spec(spec))
+    client = FakeClient(
+        table_rows=[("ReplacingMergeTree", key, key, "")],
+        columns=(*QmtRepository.table_columns_for_spec(spec), "task", "request_start_time"),
+    )
+
+    status = check_table_layout(client, database="qmt", spec=spec)
+
+    assert status == "outdated:unexpected_columns=request_start_time,task"
+
+
 def test_qmt_empty_response_detection_uses_nested_collections():
     assert response_is_empty({"data": {"items": []}})
     assert not response_is_empty({"data": {"items": [{"symbol": "600000.SH"}]}})

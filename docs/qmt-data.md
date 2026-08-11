@@ -2,12 +2,12 @@
 
 本文档只覆盖 REST 版 11 个查询类数据接口，不包含订阅管理、WebSocket、gRPC 和交易接口。
 
-QMT 业务表不保存 `source`、`fetched_at` 或 `ingested_at`。数据身份由任务、证券代码、
-市场、周期、业务日期/时间等 `ORDER BY` 业务字段决定；由于接口没有统一可靠的业务更新时间，
-业务表使用无版本参数的 `ReplacingMergeTree()`。固定结构的数据会直接写入类型化业务列，
-例如 K 线表的 `open/high/low/close/volume/amount` 和 Tick 表的盘口数组；字段随 QMT
-版本变化的数据会拆成 `record_index/field_name/field_value` 明细行。业务表不再包含
-`payload_json`。
+QMT 业务表只保存 QMT REST 接口实际返回的核心业务字段，不添加 `task`、请求起止时间、
+同步来源或抓取时间等通用列。固定结构的数据直接写入类型化业务列，例如 K 线表只包含
+`symbol/time_ms/open/high/low/close/volume/amount/settle/open_interest/pre_close/suspend_flag`；
+Tick 和 Level-2 表同样只使用网关标准化后返回的字段。QMT 原样返回动态字典或记录集合的接口，
+按接口本身的 `fields`、`columns`、`rows` 或 `items` 字段保存，不拆成自定义 EAV 明细，
+也不添加 `extra_fields` 或 `payload_json`。业务表使用无版本参数的 `ReplacingMergeTree()`。
 
 同步初始化发现旧表结构时会直接删除并重建对应 QMT 业务表，不迁移旧数据；部署新版本后需要
 重新执行 QMT 同步任务。发生结构重建时会同时清空 QMT 自己的任务日志和 checkpoint，避免旧的

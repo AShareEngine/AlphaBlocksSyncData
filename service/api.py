@@ -73,6 +73,7 @@ def start_schedule_runner() -> None:
 @app.on_event("shutdown")
 def stop_schedule_runner() -> None:
     SCHEDULE_MANAGER.stop_scheduler()
+    JOB_MANAGER.prepare_for_restart()
 
 DATE_FIELD_CANDIDATES = (
     "trade_time",

@@ -305,7 +305,8 @@ def resolve_auto_symbol_universe(
             envelope,
             {"sector_name": resolved_sector},
         )
-        symbols.extend(str(row.get("symbol") or "") for row in rows)
+        for row in rows:
+            symbols.extend(str(symbol) for symbol in (row.get("symbols") or []))
     symbols = normalize_qmt_code_list(symbols)
     if not symbols:
         raise ValueError(
@@ -419,7 +420,12 @@ def run_single_request(
     if not args.force and repository.has_successful_sync_today(args.task, scope_key, run_date):
         logger.info("skip task=%s scope=%s reason=already_success_today", args.task, scope_key)
         return 0
-    if not args.force and request_identity_is_complete(args, request_meta) and repository.has_task_data_for_request(args.task, request_meta):
+    if (
+        not args.force
+        and not spec.supports_incremental
+        and request_identity_is_complete(args, request_meta)
+        and repository.has_task_data_for_request(args.task, request_meta)
+    ):
         logger.info("skip task=%s scope=%s reason=request_already_exists", args.task, scope_key)
         return 0
 

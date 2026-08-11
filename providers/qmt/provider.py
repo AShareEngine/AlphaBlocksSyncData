@@ -219,114 +219,147 @@ def iter_qmt_rows(spec: QmtTaskSpec, envelope: Mapping[str, Any], request_meta: 
         for item in _iter_items(data, spec.item_collection_key):
             symbol = normalize_qmt_code(item.get("symbol") or request_meta.get("symbol"))
             for bar in _as_list(item.get("bars")):
-                rows.append(_build_row(spec, request_meta, symbol=symbol, payload=bar))
+                if isinstance(bar, Mapping):
+                    rows.append({"symbol": symbol, **bar})
     elif spec.row_kind == "tick":
         for item in _iter_items(data, spec.item_collection_key):
             symbol = normalize_qmt_code(item.get("symbol") or request_meta.get("symbol"))
             if isinstance(item.get("tick"), Mapping):
-                rows.append(_build_row(spec, request_meta, symbol=symbol, payload=item.get("tick")))
+                rows.append({"symbol": symbol, **item["tick"]})
             for tick in _as_list(item.get("ticks")):
-                rows.append(_build_row(spec, request_meta, symbol=symbol, payload=tick))
-    elif spec.row_kind == "financial_row":
+                if isinstance(tick, Mapping):
+                    rows.append({"symbol": symbol, **tick})
+    elif spec.row_kind == "financial":
         for item in _iter_items(data, spec.item_collection_key):
-            symbol = normalize_qmt_code(item.get("symbol") or request_meta.get("symbol"))
-            table_name = str(item.get("table_name") or request_meta.get("table_name") or "").strip()
-            for row in _as_list(item.get("rows")):
-                rows.append(_build_row(spec, request_meta, symbol=symbol, table_name=table_name, payload=row))
+            rows.append(
+                {
+                    "symbol": normalize_qmt_code(item.get("symbol")),
+                    "table_name": str(item.get("table_name") or ""),
+                    "columns": [str(value) for value in _as_list(item.get("columns"))],
+                    "rows": _as_list(item.get("rows")),
+                }
+            )
+    elif spec.row_kind == "fields":
+        payload = data if isinstance(data, Mapping) else {}
+        if "symbol" in payload or "fields" in payload:
+            rows.append(
+                {
+                    "symbol": normalize_qmt_code(payload.get("symbol") or request_meta.get("symbol")),
+                    "fields": payload.get("fields") if isinstance(payload.get("fields"), Mapping) else {},
+                }
+            )
+        else:
+            rows.extend(
+                {
+                    "symbol": normalize_qmt_code(symbol),
+                    "fields": fields,
+                }
+                for symbol, fields in payload.items()
+                if isinstance(fields, Mapping)
+            )
+    elif spec.row_kind == "type":
+        payload = data if isinstance(data, Mapping) else {}
+        rows.append(
+            {
+                "symbol": normalize_qmt_code(payload.get("symbol") or request_meta.get("symbol")),
+                "type": payload.get("type") if isinstance(payload.get("type"), Mapping) else {},
+            }
+        )
+    elif spec.row_kind == "trade_times":
+        payload = data if isinstance(data, Mapping) else {}
+        rows.append(
+            {
+                "symbol": normalize_qmt_code(payload.get("symbol") or request_meta.get("symbol")),
+                "trade_times": _as_list(payload.get("trade_times")),
+            }
+        )
+    elif spec.row_kind == "main_contract":
+        payload = data if isinstance(data, Mapping) else {}
+        rows.append(
+            {
+                "code_market": str(payload.get("code_market") or request_meta.get("code_market") or ""),
+                "main_contract": payload.get("main_contract"),
+            }
+        )
     elif spec.row_kind == "calendar_date":
-        for day in _extract_dates(data):
-            rows.append(_build_row(spec, request_meta, date=str(day), payload={"date": str(day)}))
+        payload = data if isinstance(data, Mapping) else {}
+        market = str(payload.get("market") or request_meta.get("market") or "")
+        rows.extend({"market": market, "date": str(value)} for value in _as_list(payload.get("dates")))
     elif spec.row_kind == "component":
         payload = data if isinstance(data, Mapping) else {}
         index_code = str(payload.get("index_code") or request_meta.get("index_code") or "").strip()
         for component in _as_list(payload.get("components")):
-            rows.append(_build_row(spec, request_meta, index_code=index_code, symbol=normalize_qmt_code(component.get("symbol")), payload=component))
-    elif spec.row_kind == "sector_symbol":
+            if isinstance(component, Mapping):
+                rows.append(
+                    {
+                        "index_code": index_code,
+                        "symbol": normalize_qmt_code(component.get("symbol")),
+                        "weight": component.get("weight"),
+                    }
+                )
+    elif spec.row_kind == "sector":
         for item in _iter_items(data, spec.item_collection_key):
-            sector_name = str(item.get("sector_name") or request_meta.get("sector_name") or "").strip()
-            symbols = _as_list(item.get("symbols"))
-            if not symbols:
-                rows.append(_build_row(spec, request_meta, sector_name=sector_name, payload=item))
-            for symbol in symbols:
-                rows.append(_build_row(spec, request_meta, sector_name=sector_name, symbol=normalize_qmt_code(symbol), payload={"symbol": normalize_qmt_code(symbol)}))
+            rows.append(
+                {
+                    "sector_name": str(item.get("sector_name") or request_meta.get("sector_name") or ""),
+                    "symbols": normalize_qmt_code_list([str(value) for value in _as_list(item.get("symbols"))]),
+                }
+            )
     elif spec.row_kind == "quote":
         for item in _iter_items(data, spec.item_collection_key):
-            rows.append(_build_row(spec, request_meta, symbol=normalize_qmt_code(item.get("symbol")), payload=item.get("quote") or item))
+            payload = item.get("quote") if isinstance(item.get("quote"), Mapping) else item
+            rows.append({"symbol": normalize_qmt_code(item.get("symbol")), **payload})
     elif spec.row_kind == "order":
         for item in _iter_items(data, spec.item_collection_key):
             symbol = normalize_qmt_code(item.get("symbol") or request_meta.get("symbol"))
             for order in _as_list(item.get("orders")):
-                rows.append(_build_row(spec, request_meta, symbol=symbol, payload=order))
+                if isinstance(order, Mapping):
+                    rows.append({"symbol": symbol, **order})
     elif spec.row_kind == "transaction":
         for item in _iter_items(data, spec.item_collection_key):
             symbol = normalize_qmt_code(item.get("symbol") or request_meta.get("symbol"))
             for transaction in _as_list(item.get("transactions")):
-                rows.append(_build_row(spec, request_meta, symbol=symbol, payload=transaction))
-    elif spec.row_kind == "period":
-        for period in _extract_sequence(data):
-            rows.append(_build_row(spec, request_meta, period=str(period), payload={"period": period}))
-    elif spec.row_kind in {"download_result", "factor", "item"}:
-        items = _iter_items(data, spec.item_collection_key)
-        if items:
-            for item in items:
-                rows.append(_build_row(spec, request_meta, symbol=normalize_qmt_code(item.get("symbol")), payload=item))
-        elif isinstance(data, list):
-            for item in data:
-                rows.append(_build_row(spec, request_meta, payload=item))
-        else:
-            rows.append(_build_row(spec, request_meta, payload=data))
-    else:
-        rows.append(_build_row(spec, request_meta, payload=data))
-
-    if not rows:
-        rows.append(_build_row(spec, request_meta, payload=data))
-    return rows
-
-
-def _build_row(
-    spec: QmtTaskSpec,
-    request_meta: Mapping[str, Any],
-    *,
-    symbol: str = "",
-    table_name: str = "",
-    index_code: str = "",
-    sector_name: str = "",
-    date: str = "",
-    period: str = "",
-    payload: Any,
-) -> dict[str, Any]:
-    payload_map = payload if isinstance(payload, Mapping) else {}
-    payload_symbol = next(
-        (
-            payload_map.get(key)
-            for key in (
-                "symbol",
-                "security_code",
-                "securityCode",
-                "bond_code",
-                "bondCode",
-                "stock_code",
-                "stockCode",
+                if isinstance(transaction, Mapping):
+                    rows.append({"symbol": symbol, **transaction})
+    elif spec.row_kind == "frame":
+        for item in _iter_items(data, spec.item_collection_key):
+            rows.append(
+                {
+                    "symbol": normalize_qmt_code(item.get("symbol")),
+                    "fields": [str(value) for value in _as_list(item.get("fields"))],
+                    "rows": _as_list(item.get("rows")),
+                }
             )
-            if payload_map.get(key)
-        ),
-        "",
-    )
-    return {
-        "task": spec.task,
-        "symbol": normalize_qmt_code(symbol or payload_symbol or request_meta.get("symbol")),
-        "stock_code": normalize_qmt_code(request_meta.get("stock_code")),
-        "index_code": str(index_code or request_meta.get("index_code") or "").strip(),
-        "market": str(request_meta.get("market") or "").strip(),
-        "sector_name": str(sector_name or request_meta.get("sector_name") or "").strip(),
-        "table_name": str(table_name or request_meta.get("table_name") or "").strip(),
-        "period": str(period or request_meta.get("period") or "").strip(),
-        "date": str(date or payload_map.get("date") or "").strip(),
-        "time_ms": _as_optional_int(payload_map.get("time_ms")),
-        "request_start_time": str(request_meta.get("start_time") or "").strip(),
-        "request_end_time": str(request_meta.get("end_time") or "").strip(),
-        "payload": payload,
-    }
+    elif spec.row_kind == "holiday":
+        rows.extend({"date": str(value)} for value in _extract_sequence(data))
+    elif spec.row_kind == "period":
+        rows.extend({"period": str(value)} for value in _extract_sequence(data))
+    elif spec.row_kind == "data_dir":
+        payload = data if isinstance(data, Mapping) else {}
+        rows.append({"data_dir": str(payload.get("data_dir") or "")})
+    elif spec.row_kind == "factor_collection":
+        payload = data if isinstance(data, Mapping) else {}
+        rows.append(
+            {
+                "stock_code": normalize_qmt_code(payload.get("stock_code") or request_meta.get("stock_code")),
+                "items": _as_list(payload.get("items")),
+            }
+        )
+    elif spec.row_kind == "ipo":
+        items = data if isinstance(data, list) else _as_list(data.get("items") if isinstance(data, Mapping) else [])
+        for item in items:
+            if isinstance(item, Mapping):
+                rows.append(dict(item))
+    elif spec.row_kind == "download_result":
+        payload = data if isinstance(data, Mapping) else {}
+        rows.append(
+            {
+                "function": str(payload.get("function") or ""),
+                "success": bool(payload.get("success")),
+                "result": payload.get("result"),
+            }
+        )
+    return rows
 
 
 def _format_path(path: str, *, symbol: str | None = None, code_market: str | None = None) -> str:

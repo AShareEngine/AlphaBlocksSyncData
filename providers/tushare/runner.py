@@ -431,6 +431,14 @@ def _run_code_range(
         begin_date = base_begin
         if latest.get(code):
             cursor_date = _cursor_to_date(latest[code])
+            if args.resume and cursor_date and cursor_date >= end_date:
+                logger.info(
+                    "skip Tushare code task=%s code=%s "
+                    "reason=resume_cursor_at_requested_end",
+                    spec.task,
+                    code,
+                )
+                continue
             if cursor_date and cursor_date > end_date:
                 logger.info(
                     "skip Tushare code task=%s code=%s reason=cursor_after_requested_end",
@@ -496,6 +504,13 @@ def _run_date_range(
     if not args.force:
         latest = repository.load_latest_cursor(spec)
         cursor_date = _cursor_to_date(latest or "")
+        if args.resume and cursor_date and cursor_date >= end_date:
+            logger.info(
+                "skip Tushare date range task=%s "
+                "reason=resume_cursor_at_requested_end",
+                spec.task,
+            )
+            return 0
         if cursor_date and cursor_date > end_date:
             return 0
         if cursor_date and cursor_date > begin_date:
@@ -523,6 +538,13 @@ def _run_date_slice(
     if not args.force:
         latest = repository.load_latest_cursor(spec)
         cursor_date = _cursor_to_date(latest or "")
+        if args.resume and cursor_date and cursor_date >= end_date:
+            logger.info(
+                "skip Tushare date slices task=%s "
+                "reason=resume_cursor_at_requested_end",
+                spec.task,
+            )
+            return 0
         if cursor_date and cursor_date > end_date:
             return 0
         if cursor_date and cursor_date > begin_date:
