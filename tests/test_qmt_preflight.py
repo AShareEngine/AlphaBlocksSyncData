@@ -76,7 +76,7 @@ def test_qmt_table_layout_accepts_current_business_key_and_columns():
     key = ", ".join(order_by_columns_for_spec(spec))
     client = FakeClient(
         table_rows=[("ReplacingMergeTree", key, key, "")],
-        columns=QmtRepository.TASK_TABLE_COLUMNS,
+        columns=QmtRepository.table_columns_for_spec(spec),
     )
 
     assert check_table_layout(client, database="qmt", spec=spec) == "ok"
@@ -88,12 +88,26 @@ def test_qmt_table_layout_rejects_ingestion_metadata():
     client = FakeClient(
         table_rows=[("ReplacingMergeTree", key, key, "")],
         legacy_rows=[("ingested_at",)],
-        columns=(*QmtRepository.TASK_TABLE_COLUMNS, "ingested_at"),
+        columns=(*QmtRepository.table_columns_for_spec(spec), "ingested_at"),
     )
 
     status = check_table_layout(client, database="qmt", spec=spec)
 
     assert status == "outdated:legacy_columns=ingested_at"
+
+
+def test_qmt_table_layout_rejects_payload_json_schema():
+    spec = QMT_TASK_SPECS["kline_history"]
+    key = ", ".join(order_by_columns_for_spec(spec))
+    client = FakeClient(
+        table_rows=[("ReplacingMergeTree", key, key, "")],
+        legacy_rows=[("payload_json",)],
+        columns=("task", "payload_json"),
+    )
+
+    status = check_table_layout(client, database="qmt", spec=spec)
+
+    assert status == "outdated:legacy_columns=payload_json"
 
 
 def test_qmt_empty_response_detection_uses_nested_collections():

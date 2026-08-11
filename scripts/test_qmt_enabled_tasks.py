@@ -53,7 +53,7 @@ from sync_data_system.sync_core.clickhouse import (
 
 
 DOWNLOAD_TASK_PREFIX = "download_"
-LEGACY_QMT_COLUMNS = ("source", "fetched_at", "ingested_at")
+LEGACY_QMT_COLUMNS = ("source", "fetched_at", "ingested_at", "payload_json")
 FRESHNESS_DEFAULT_LOCKED_TASKS = frozenset(
     {
         # The deployed QMT REST service reports these xtdata methods as
@@ -340,7 +340,7 @@ def check_table_layout(client: Any, *, database: str, spec: QmtTaskSpec) -> str:
     if legacy_rows:
         columns = ",".join(str(row[0]) for row in legacy_rows if row)
         return f"outdated:legacy_columns={columns}"
-    expected_columns = set(QmtRepository.TASK_TABLE_COLUMNS)
+    expected_columns = set(QmtRepository.table_columns_for_spec(spec))
     actual_rows = client.query_rows(
         """
         SELECT name

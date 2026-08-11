@@ -4,9 +4,15 @@
 
 QMT 业务表不保存 `source`、`fetched_at` 或 `ingested_at`。数据身份由任务、证券代码、
 市场、周期、业务日期/时间等 `ORDER BY` 业务字段决定；由于接口没有统一可靠的业务更新时间，
-业务表使用无版本参数的 `ReplacingMergeTree()`。同步初始化会自动将旧的
-`ReplacingMergeTree(ingested_at)` 表迁移为新结构并保留已有业务数据。任务日志和 checkpoint
-仍使用 `finished_at`，因为它是任务状态本身的业务时间。
+业务表使用无版本参数的 `ReplacingMergeTree()`。固定结构的数据会直接写入类型化业务列，
+例如 K 线表的 `open/high/low/close/volume/amount` 和 Tick 表的盘口数组；字段随 QMT
+版本变化的数据会拆成 `record_index/field_name/field_value` 明细行。业务表不再包含
+`payload_json`。
+
+同步初始化发现旧表结构时会直接删除并重建对应 QMT 业务表，不迁移旧数据；部署新版本后需要
+重新执行 QMT 同步任务。发生结构重建时会同时清空 QMT 自己的任务日志和 checkpoint，避免旧的
+成功状态阻止全量重跑；不会处理其他提供商的表或状态。后续新任务日志和 checkpoint 仍使用
+`finished_at`，因为它是任务状态本身的业务时间。
 
 全量同步前可以运行只读小样本预检：
 

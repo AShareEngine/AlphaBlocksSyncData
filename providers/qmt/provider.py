@@ -296,9 +296,25 @@ def _build_row(
     payload: Any,
 ) -> dict[str, Any]:
     payload_map = payload if isinstance(payload, Mapping) else {}
+    payload_symbol = next(
+        (
+            payload_map.get(key)
+            for key in (
+                "symbol",
+                "security_code",
+                "securityCode",
+                "bond_code",
+                "bondCode",
+                "stock_code",
+                "stockCode",
+            )
+            if payload_map.get(key)
+        ),
+        "",
+    )
     return {
         "task": spec.task,
-        "symbol": normalize_qmt_code(symbol or payload_map.get("symbol") or request_meta.get("symbol")),
+        "symbol": normalize_qmt_code(symbol or payload_symbol or request_meta.get("symbol")),
         "stock_code": normalize_qmt_code(request_meta.get("stock_code")),
         "index_code": str(index_code or request_meta.get("index_code") or "").strip(),
         "market": str(request_meta.get("market") or "").strip(),

@@ -418,6 +418,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
 }
 
 QMT_TASK_CHOICES = tuple(QMT_TASK_SPECS.keys())
+QMT_DYNAMIC_ROW_KINDS = frozenset({"financial_row", "download_result", "factor", "item"})
 
 
 def order_by_columns_for_spec(spec: QmtTaskSpec) -> tuple[str, ...]:
@@ -434,11 +435,18 @@ def order_by_columns_for_spec(spec: QmtTaskSpec) -> tuple[str, ...]:
         "time_ms",
         "request_start_time",
     )
+    if spec.row_kind in QMT_DYNAMIC_ROW_KINDS:
+        return (*candidates, "record_index", "field_name")
+    if spec.row_kind == "order":
+        return (*candidates, "entrust_no")
+    if spec.row_kind == "transaction":
+        return (*candidates, "trade_index")
     return tuple(candidates)
 
 
 __all__ = [
     "QMT_TASK_CHOICES",
+    "QMT_DYNAMIC_ROW_KINDS",
     "QMT_TASK_SPECS",
     "QmtTaskSpec",
     "order_by_columns_for_spec",

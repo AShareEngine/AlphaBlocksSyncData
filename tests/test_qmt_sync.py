@@ -123,40 +123,53 @@ class QmtRepositoryTest(unittest.TestCase):
     def test_business_tables_exclude_ingestion_metadata(self) -> None:
         repository = QmtRepository(_FakeClickHouseClient(), database="qmt")
 
-        self.assertTrue(
-            {"source", "fetched_at", "ingested_at"}.isdisjoint(
-                repository.TASK_TABLE_COLUMNS
-            )
-        )
         for task, spec in QMT_TASK_SPECS.items():
             with self.subTest(task=task):
+                columns = repository.table_columns_for_spec(spec)
+                self.assertTrue(
+                    {"source", "fetched_at", "ingested_at", "payload_json"}.isdisjoint(columns)
+                )
                 ddl = repository._create_task_table_ddl(spec)
                 self.assertNotIn("source String", ddl)
                 self.assertNotIn("fetched_at", ddl)
                 self.assertNotIn("ingested_at", ddl)
+                self.assertNotIn("payload_json", ddl)
                 self.assertIn("ENGINE = ReplacingMergeTree()", ddl)
 
-    def test_legacy_ingested_at_table_is_rebuilt_without_metadata(self) -> None:
+    def test_outdated_payload_table_is_dropped_for_resync(self) -> None:
         client = _FakeClickHouseClient()
 
         def query_rows(sql: str, parameters=None):
             if "system.columns" in sql:
-                return [("ingested_at",)]
+                return [("task",), ("payload_json",)]
             return []
 
         client.query_rows = query_rows
         repository = QmtRepository(client, database="qmt")
         spec = QMT_TASK_SPECS["kline_history"]
 
-        repository._migrate_removed_ingested_at(spec)
+        repository._recreate_outdated_task_table(spec)
 
         commands = "\n".join(client.commands)
-        self.assertIn("qmt_kline_history__without_ingested_at_v1", commands)
-        self.assertIn("SELECT task, symbol, stock_code", commands)
-        self.assertIn(
-            "EXCHANGE TABLES qmt.qmt_kline_history",
-            commands,
-        )
+        self.assertIn("DROP TABLE IF EXISTS qmt.qmt_kline_history", commands)
+        self.assertIn("open Float64", commands)
+
+    def test_ensure_tables_clears_qmt_progress_after_schema_rebuild(self) -> None:
+        client = _FakeClickHouseClient()
+
+        def query_rows(sql: str, parameters=None):
+            if "system.columns" in sql:
+                return [("task",), ("payload_json",)]
+            return []
+
+        client.query_rows = query_rows
+        repository = QmtRepository(client, database="qmt")
+
+        repository.ensure_tables()
+
+        commands = "\n".join(client.commands)
+        self.assertIn("TRUNCATE TABLE qmt.qmt_sync_task_log", commands)
+        self.assertIn("TRUNCATE TABLE qmt.qmt_sync_checkpoint", commands)
 
 
 class QmtRunnerTest(unittest.TestCase):
@@ -211,7 +224,23 @@ class QmtRunnerTest(unittest.TestCase):
 
     def test_run_sync_args_saves_response(self) -> None:
         provider = _FakeQmtProvider(
-            {"success": True, "data": {"items": [{"symbol": "600000.SH", "bars": [{"time_ms": 1704038400000, "open": 8.1}]}]}}
+            {
+                "success": True,
+                "data": {
+                    "items": [
+                        {
+                            "symbol": "600000.SH",
+                            "bars": [
+                                {
+                                    "time_ms": 1704038400000,
+                                    "open": 8.1,
+                                    "custom_metric": "kept",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
         )
         client = _FakeClickHouseClient()
         repository = QmtRepository(client, database="qmt")
@@ -222,10 +251,75 @@ class QmtRunnerTest(unittest.TestCase):
         self.assertEqual(provider.fetch_calls[0]["symbols"], ["600000.SH"])
         table, columns, rows = client.insert_calls[0]
         self.assertEqual(table, "qmt.qmt_kline_history")
-        self.assertIn("payload_json", columns)
+        self.assertNotIn("payload_json", columns)
+        self.assertIn("open", columns)
         row = dict(zip(columns, rows[0]))
         self.assertEqual(row["symbol"], "600000.SH")
         self.assertEqual(row["time_ms"], 1704038400000)
+        self.assertEqual(row["open"], 8.1)
+        self.assertEqual(row["extra_fields"], {"custom_metric": "kept"})
+
+    def test_tick_payload_is_materialized_into_typed_columns(self) -> None:
+        provider = _FakeQmtProvider(
+            {
+                "success": True,
+                "data": {
+                    "items": [
+                        {
+                            "symbol": "600000.SH",
+                            "ticks": [
+                                {
+                                    "time_ms": 1704072600000,
+                                    "last_price": 8.2,
+                                    "ask_price": [8.21, 8.22],
+                                    "ask_vol": [1000, 2000],
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        )
+        client = _FakeClickHouseClient()
+        repository = QmtRepository(client, database="qmt")
+
+        inserted = run_sync_args(self._args(task="tick_history"), provider, repository)
+
+        self.assertEqual(inserted, 1)
+        _, columns, rows = client.insert_calls[0]
+        row = dict(zip(columns, rows[0]))
+        self.assertEqual(row["last_price"], 8.2)
+        self.assertEqual(row["ask_price"], [8.21, 8.22])
+        self.assertEqual(row["ask_vol"], [1000.0, 2000.0])
+        self.assertNotIn("ask_price[0]", row["extra_fields"])
+
+    def test_dynamic_payload_is_split_into_field_rows(self) -> None:
+        provider = _FakeQmtProvider(
+            {
+                "success": True,
+                "data": {
+                    "symbol": "600000.SH",
+                    "fields": {
+                        "InstrumentID": "600000.SH",
+                        "InstrumentName": "浦发银行",
+                    },
+                },
+            }
+        )
+        client = _FakeClickHouseClient()
+        repository = QmtRepository(client, database="qmt")
+
+        inserted = run_sync_args(
+            self._args(task="instrument", symbols_raw="600000.SH", begin_time="", end_time=""),
+            provider,
+            repository,
+        )
+
+        self.assertEqual(inserted, 3)
+        _, columns, rows = client.insert_calls[0]
+        field_rows = {row[columns.index("field_name")]: row[columns.index("field_value")] for row in rows}
+        self.assertEqual(field_rows["fields.InstrumentName"], "浦发银行")
+        self.assertNotIn("payload_json", columns)
 
     def test_run_sync_args_auto_resolves_qmt_symbol_universe(self) -> None:
         provider = _FakeQmtProvider(
