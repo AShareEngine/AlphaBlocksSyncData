@@ -656,6 +656,56 @@ sync:
         self.assertEqual(payload["job_id"], "job1")
         self.assertEqual(payload["logs_tail"], "line1\nline2")
 
+    def test_get_job_error_logs_returns_failed_tasks_and_filtered_log(self) -> None:
+        client = TestClient(app)
+        fake_job = JobRecord(
+            job_id="job1",
+            kind="task_batch",
+            status="partial_success",
+            created_at="2026-01-01T00:00:00+00:00",
+            started_at="2026-01-01T00:00:00+00:00",
+            finished_at="2026-01-01T00:01:00+00:00",
+            cwd="/tmp",
+            command=["python"],
+            log_path="/tmp/job1.log",
+            error="tushare.cb_call: upstream timeout",
+        )
+        task_results = {
+            "tasks": [
+                {
+                    "task_id": "cb_call",
+                    "name": "tushare.cb_call",
+                    "status": "failed",
+                    "error": "upstream timeout",
+                },
+                {
+                    "task_id": "cb_basic",
+                    "name": "tushare.cb_basic",
+                    "status": "success",
+                    "error": None,
+                },
+            ]
+        }
+        with patch(
+            "sync_data_system.service.api.JOB_MANAGER.get_job",
+            return_value=fake_job,
+        ), patch(
+            "sync_data_system.service.api.JOB_MANAGER.read_task_results",
+            return_value=task_results,
+        ), patch(
+            "sync_data_system.service.api.JOB_MANAGER.read_job_error_log",
+            return_value="Traceback\nRuntimeError: upstream timeout",
+        ):
+            response = client.get("/api/sync/jobs/job1/errors?max_lines=100")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["job_id"], "job1")
+        self.assertEqual(payload["status"], "partial_success")
+        self.assertEqual(len(payload["failed_tasks"]), 1)
+        self.assertEqual(payload["failed_tasks"][0]["name"], "tushare.cb_call")
+        self.assertIn("RuntimeError", payload["error_logs"])
+
     def test_list_jobs_supports_status_filter(self) -> None:
         client = TestClient(app)
         fake_job = JobRecord(

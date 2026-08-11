@@ -484,6 +484,45 @@ class SyncJobManagerTest(unittest.TestCase):
                 "ImportError: missing tables package",
             )
 
+    def test_read_job_error_log_filters_noise_and_keeps_traceback_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            manager = SyncJobManager(root, state_dir=root / ".service_state")
+            log_path = root / "failed.log"
+            log_path.write_text(
+                "task=one status=success\n"
+                "task=two status=started\n"
+                "Traceback (most recent call last):\n"
+                "  File \"sync.py\", line 8, in run\n"
+                "    raise RuntimeError('upstream timeout')\n"
+                "RuntimeError: upstream timeout\n"
+                "task=three status=started\n"
+                "task=three progress=1/100\n",
+                encoding="utf-8",
+            )
+            job = JobRecord(
+                job_id="error_log_job",
+                kind="provider_task",
+                status="failed",
+                created_at="2026-01-01T00:00:00+00:00",
+                started_at="2026-01-01T00:00:00+00:00",
+                finished_at="2026-01-01T00:01:00+00:00",
+                cwd=str(root),
+                command=["python"],
+                log_path=str(log_path),
+                error="RuntimeError: upstream timeout",
+            )
+            manager._jobs[job.job_id] = job
+
+            error_log = manager.read_job_error_log(job.job_id)
+
+            self.assertNotIn("task=one status=success", error_log)
+            self.assertIn("task=two status=started", error_log)
+            self.assertIn("Traceback (most recent call last):", error_log)
+            self.assertIn("File \"sync.py\", line 8", error_log)
+            self.assertIn("RuntimeError: upstream timeout", error_log)
+
     def test_batch_failure_prefers_structured_task_error_over_log_tail(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "sync_project"

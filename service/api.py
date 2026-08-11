@@ -1310,6 +1310,32 @@ def get_job_logs(job_id: str, tail_lines: int = Query(200, ge=1, le=5000)):
         raise HTTPException(status_code=404, detail="job not found")
 
 
+@app.get("/api/sync/jobs/{job_id}/errors")
+@app.get("/api/jobs/{job_id}/errors")
+def get_job_error_logs(job_id: str, max_lines: int = Query(500, ge=1, le=5000)):
+    try:
+        job = JOB_MANAGER.get_job(job_id)
+        task_results = JOB_MANAGER.read_task_results(job_id).get("tasks", [])
+        failed_tasks = [
+            item
+            for item in task_results
+            if str(item.get("status") or "").strip().lower()
+            in {"failed", "partial_success"}
+        ]
+        return {
+            "job_id": job.job_id,
+            "status": job.status,
+            "error": job.error,
+            "failed_tasks": failed_tasks,
+            "error_logs": JOB_MANAGER.read_job_error_log(
+                job_id,
+                max_lines=max_lines,
+            ),
+        }
+    except KeyError:
+        raise HTTPException(status_code=404, detail="job not found")
+
+
 @app.post("/api/sync/jobs/run-batch")
 @app.post("/api/jobs/run-batch")
 def run_task_batch(request: RunTaskBatchRequest):

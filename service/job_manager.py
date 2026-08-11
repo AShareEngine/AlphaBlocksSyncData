@@ -32,6 +32,14 @@ from sync_data_system.service.task_registry import TASK_REGISTRY
 
 DEFAULT_MAX_PARALLEL_PROVIDERS = 3
 ERROR_SUMMARY_MAX_CHARS = 2000
+ERROR_LOG_PATTERN = re.compile(
+    r"traceback|exception|\berror\b|\bfailed\b|\bfailure\b|\bfatal\b|\bcritical\b|"
+    r"timed?\s*out|timeout|permission\s+denied|connectionerror|"
+    r"请求失败|登录失败|同步失败|错误|异常|无可用代码池|找不到",
+    re.IGNORECASE,
+)
+ERROR_LOG_CONTEXT_BEFORE = 1
+ERROR_LOG_CONTEXT_AFTER = 6
 ACTIVE_STATUSES = {"queued", "running", "cancelling"}
 PROCESS_ACTIVE_STATUSES = {"running", "cancelling"}
 TERMINAL_STATUSES = {
@@ -624,6 +632,41 @@ class SyncJobManager:
 
     def read_job_log(self, job_id: str, tail_lines: int = 200) -> str:
         job = self.get_job(job_id)
+        entries = self._read_job_log_entries(job)
+        if tail_lines <= 0:
+            return "\n".join(entries)
+        return "\n".join(entries[-tail_lines:])
+
+    def read_job_error_log(self, job_id: str, max_lines: int = 500) -> str:
+        """Return error-related log segments with enough surrounding context."""
+
+        job = self.get_job(job_id)
+        entries = self._read_job_log_entries(job)
+        matched = [
+            index
+            for index, line in enumerate(entries)
+            if ERROR_LOG_PATTERN.search(line)
+        ]
+        if not matched:
+            return ""
+        selected_indexes: set[int] = set()
+        for index in matched:
+            start = max(0, index - ERROR_LOG_CONTEXT_BEFORE)
+            end = min(len(entries), index + ERROR_LOG_CONTEXT_AFTER + 1)
+            selected_indexes.update(range(start, end))
+        selected: list[str] = []
+        previous_index: int | None = None
+        for index, line in enumerate(entries):
+            if index not in selected_indexes:
+                continue
+            if previous_index is not None and index > previous_index + 1:
+                selected.append("…")
+            selected.append(line)
+            previous_index = index
+        limit = max(1, int(max_lines or 500))
+        return "\n".join(selected[-limit:])
+
+    def _read_job_log_entries(self, job: JobRecord) -> list[str]:
         entries: list[str] = []
         path = Path(job.log_path)
         if path.exists():
@@ -641,9 +684,7 @@ class SyncJobManager:
             )
             label = f"provider={child.source or 'unknown'} job={child.job_id}"
             entries.extend(f"[{label}] {line}" for line in text.splitlines())
-        if tail_lines <= 0:
-            return "\n".join(entries)
-        return "\n".join(entries[-tail_lines:])
+        return entries
 
     def read_task_results(self, job_id: str) -> dict[str, Any]:
         job = self.get_job(job_id)
