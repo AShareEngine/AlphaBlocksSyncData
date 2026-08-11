@@ -36,12 +36,17 @@ class QmtTaskSpec:
     default_fill_data: bool = True
     default_count: int = -1
     default_incrementally: bool = False
+    default_markets: tuple[str, ...] = ()
+    default_index_codes: tuple[str, ...] = ()
+    default_table_names: tuple[str, ...] = ()
+    default_code_markets: tuple[str, ...] = ()
     row_kind: str = "item"
     cursor_path: tuple[str, ...] = ()
     cursor_granularity: str = "day"
     auto_symbol_universe: bool = False
     auto_symbol_universe_sector: str = ""
     auto_historical_symbol_universe_sector: str = ""
+    auto_include_historical_universe: bool = True
 
     @property
     def supports_incremental(self) -> bool:
@@ -78,6 +83,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         uses_adjust_type=True,
         row_kind="tick",
         cursor_path=("time_ms",),
+        auto_symbol_universe=True,
     ),
     "full_tick": QmtTaskSpec(
         task="full_tick",
@@ -87,6 +93,8 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         item_collection_key="items",
         uses_symbols=True,
         row_kind="tick",
+        auto_symbol_universe=True,
+        auto_include_historical_universe=False,
     ),
     "financial": QmtTaskSpec(
         task="financial",
@@ -98,6 +106,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         uses_table_names=True,
         uses_begin_end=True,
         row_kind="financial_row",
+        default_table_names=("Balance", "Income", "CashFlow"),
         auto_symbol_universe=True,
     ),
     "instrument": QmtTaskSpec(
@@ -108,6 +117,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         response_key="",
         uses_symbol=True,
         uses_complete=True,
+        auto_symbol_universe=True,
     ),
     "trading_calendar": QmtTaskSpec(
         task="trading_calendar",
@@ -118,6 +128,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         uses_begin_end=True,
         row_kind="calendar_date",
         cursor_path=("date",),
+        default_markets=("SH", "SZ"),
     ),
     "index_weight": QmtTaskSpec(
         task="index_weight",
@@ -126,6 +137,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         table_name="qmt_index_weight",
         uses_index_code=True,
         row_kind="component",
+        default_index_codes=("000300.SH",),
     ),
     "sectors": QmtTaskSpec(
         task="sectors",
@@ -146,6 +158,8 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         uses_begin_end=True,
         row_kind="quote",
         cursor_path=("time_ms",),
+        auto_symbol_universe=True,
+        auto_include_historical_universe=False,
     ),
     "l2_order": QmtTaskSpec(
         task="l2_order",
@@ -157,6 +171,8 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         uses_begin_end=True,
         row_kind="order",
         cursor_path=("time_ms",),
+        auto_symbol_universe=True,
+        auto_include_historical_universe=False,
     ),
     "l2_transaction": QmtTaskSpec(
         task="l2_transaction",
@@ -168,6 +184,8 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         uses_begin_end=True,
         row_kind="transaction",
         cursor_path=("time_ms",),
+        auto_symbol_universe=True,
+        auto_include_historical_universe=False,
     ),
     "market_data_ex": QmtTaskSpec(
         task="market_data_ex",
@@ -219,6 +237,8 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         uses_fill_data=True,
         default_period="1d",
         row_kind="bar",
+        auto_symbol_universe=True,
+        auto_include_historical_universe=False,
     ),
     "instrument_type": QmtTaskSpec(
         task="instrument_type",
@@ -226,6 +246,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         path="/instrument-type/{symbol}",
         table_name="qmt_instrument_type",
         uses_symbol=True,
+        auto_symbol_universe=True,
     ),
     "trade_times": QmtTaskSpec(
         task="trade_times",
@@ -233,6 +254,8 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         path="/trade-times/{symbol}",
         table_name="qmt_trade_times",
         uses_symbol=True,
+        auto_symbol_universe=True,
+        auto_include_historical_universe=False,
     ),
     "main_contract": QmtTaskSpec(
         task="main_contract",
@@ -240,6 +263,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         path="/main-contract/{code_market}",
         table_name="qmt_main_contract",
         uses_code_market=True,
+        default_code_markets=("IF.CFFEX",),
     ),
     "trading_dates": QmtTaskSpec(
         task="trading_dates",
@@ -251,6 +275,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         uses_count=True,
         row_kind="calendar_date",
         cursor_path=("date",),
+        default_markets=("SH", "SZ"),
     ),
     "holidays": QmtTaskSpec(
         task="holidays",
@@ -280,6 +305,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         uses_stock_code=True,
         uses_begin_end=True,
         row_kind="factor",
+        auto_symbol_universe=True,
     ),
     "cb_info": QmtTaskSpec(
         task="cb_info",
@@ -316,6 +342,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         uses_incrementally=True,
         default_period="1d",
         row_kind="download_result",
+        auto_symbol_universe=True,
     ),
     "download_history_batch": QmtTaskSpec(
         task="download_history_batch",
@@ -328,6 +355,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         uses_incrementally=True,
         default_period="1d",
         row_kind="download_result",
+        auto_symbol_universe=True,
     ),
     "download_financial": QmtTaskSpec(
         task="download_financial",
@@ -338,6 +366,8 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         uses_table_names=True,
         uses_begin_end=True,
         row_kind="download_result",
+        default_table_names=("Balance", "Income", "CashFlow"),
+        auto_symbol_universe=True,
     ),
     "download_index_weight": QmtTaskSpec(
         task="download_index_weight",
@@ -354,6 +384,7 @@ QMT_TASK_SPECS: dict[str, QmtTaskSpec] = {
         table_name="qmt_download_history_contracts",
         uses_market=True,
         row_kind="download_result",
+        default_markets=("SH", "SZ"),
     ),
     "download_sector": QmtTaskSpec(
         task="download_sector",

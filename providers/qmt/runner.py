@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,7 +14,7 @@ from typing import Any
 from sync_data_system.config_paths import resolve_config_candidate
 from sync_data_system.providers.qmt.provider import QmtConfig, QmtProvider, iter_qmt_rows, normalize_qmt_code_list
 from sync_data_system.providers.qmt.repository import QmtRepository
-from sync_data_system.providers.qmt.specs import QMT_TASK_CHOICES, QMT_TASK_SPECS
+from sync_data_system.providers.qmt.specs import QMT_TASK_CHOICES, QMT_TASK_SPECS, QmtTaskSpec
 from sync_data_system.sync_core.clickhouse import ClickHouseConfig, create_clickhouse_client
 from sync_data_system.sync_core.incremental import (
     advance_cursor_value,
@@ -206,6 +206,7 @@ def main() -> int:
 
 
 def run_sync_args(args: SyncArgs, provider: QmtProvider, repository: QmtRepository) -> int:
+    args = apply_task_defaults(args)
     args = resolve_auto_symbol_universe(args, provider)
     specs = expand_task_args(args)
     if not specs:
@@ -281,14 +282,17 @@ def resolve_auto_symbol_universe(
         or spec.auto_symbol_universe_sector
         or QMT_DEFAULT_SYMBOL_UNIVERSE_SECTOR
     )
-    historical_sector_name = spec.auto_historical_symbol_universe_sector
-    if not historical_sector_name and sector_name == QMT_DEFAULT_SYMBOL_UNIVERSE_SECTOR:
-        historical_sector_name = QMT_DEFAULT_HISTORICAL_SYMBOL_UNIVERSE_SECTOR
+    historical_sector_name = ""
+    if spec.auto_include_historical_universe:
+        historical_sector_name = spec.auto_historical_symbol_universe_sector
+        if not historical_sector_name and sector_name == QMT_DEFAULT_SYMBOL_UNIVERSE_SECTOR:
+            historical_sector_name = QMT_DEFAULT_HISTORICAL_SYMBOL_UNIVERSE_SECTOR
     resolved_sectors = tuple(
         item for item in (sector_name, historical_sector_name) if item
     )
-    for market in QMT_HISTORY_CONTRACT_MARKETS:
-        provider.fetch_task("download_history_contracts", market=market)
+    if historical_sector_name:
+        for market in QMT_HISTORY_CONTRACT_MARKETS:
+            provider.fetch_task("download_history_contracts", market=market)
     provider.fetch_task("download_sector", sector_name=sector_name)
     if args.task == "cb_info":
         provider.fetch_task("download_cb")
@@ -325,8 +329,49 @@ def resolve_auto_symbol_universe(
     )
 
 
+def apply_task_defaults(args: SyncArgs) -> SyncArgs:
+    """Fill dimensions required by registered/UI QMT tasks when omitted."""
+
+    spec = QMT_TASK_SPECS[args.task]
+    return replace(
+        args,
+        market=args.market.strip() or ",".join(spec.default_markets),
+        index_code=args.index_code.strip() or ",".join(spec.default_index_codes),
+        table_names_raw=(
+            args.table_names_raw.strip() or ",".join(spec.default_table_names)
+        ),
+        code_market=(
+            args.code_market.strip() or ",".join(spec.default_code_markets)
+        ),
+    )
+
+
 def expand_task_args(args: SyncArgs) -> list[SyncArgs]:
     spec = QMT_TASK_SPECS[args.task]
+    dimension_args = [args]
+    for field_name, enabled in (
+        ("market", spec.uses_market),
+        ("index_code", spec.uses_index_code),
+        ("code_market", spec.uses_code_market),
+    ):
+        if not enabled:
+            continue
+        values = parse_csv(getattr(args, field_name))
+        if not values:
+            continue
+        dimension_args = [
+            replace(item, **{field_name: value})
+            for item in dimension_args
+            for value in values
+        ]
+
+    expanded: list[SyncArgs] = []
+    for dimension_arg in dimension_args:
+        expanded.extend(_expand_symbol_args(dimension_arg, spec))
+    return expanded
+
+
+def _expand_symbol_args(args: SyncArgs, spec: QmtTaskSpec) -> list[SyncArgs]:
     uses_single_code = spec.uses_symbol or spec.uses_stock_code
     if not spec.uses_symbols and not uses_single_code:
         return [args]

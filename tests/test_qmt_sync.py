@@ -12,12 +12,15 @@ from sync_data_system.providers.qmt.provider import iter_qmt_rows, normalize_qmt
 from sync_data_system.providers.qmt.repository import QmtRepository
 from sync_data_system.providers.qmt.runner import (
     SyncArgs,
+    apply_task_defaults,
     build_fetch_kwargs,
     build_request_meta,
     expand_task_args,
     load_execution_plan_from_toml,
     resolve_effective_request_meta,
+    resolve_auto_symbol_universe,
     run_sync_args,
+    validate_required_request,
 )
 from sync_data_system.providers.qmt.specs import QMT_TASK_SPECS
 
@@ -303,7 +306,140 @@ class QmtRunnerTest(unittest.TestCase):
         repository = QmtRepository(_FakeClickHouseClient(), database="qmt")
 
         with self.assertRaisesRegex(ValueError, "需要 codes 参数"):
-            run_sync_args(self._args(task="tick_history", symbols_raw=""), provider, repository)
+            run_sync_args(
+                self._args(
+                    task="etf_info",
+                    symbols_raw="",
+                    begin_time="",
+                    end_time="",
+                ),
+                provider,
+                repository,
+            )
+
+    def test_registered_qmt_tasks_resolve_required_defaults_without_ui_params(self) -> None:
+        provider = _FakeQmtProvider(
+            {"success": True, "data": {"items": []}},
+            sector_envelopes={
+                "沪深A股": {
+                    "success": True,
+                    "data": {
+                        "items": [
+                            {"sector_name": "沪深A股", "symbols": ["600000.SH"]}
+                        ]
+                    },
+                },
+                "过期沪深A股": {
+                    "success": True,
+                    "data": {
+                        "items": [
+                            {"sector_name": "过期沪深A股", "symbols": ["600001.SH"]}
+                        ]
+                    },
+                },
+            },
+        )
+        tasks = (
+            "divid_factors",
+            "download_financial",
+            "download_history",
+            "download_history_batch",
+            "financial",
+            "full_tick",
+            "instrument",
+            "instrument_type",
+        )
+
+        for task in tasks:
+            with self.subTest(task=task):
+                args = apply_task_defaults(
+                    self._args(
+                        task=task,
+                        symbols_raw="",
+                        symbol="",
+                        stock_code="",
+                        table_names_raw="",
+                        begin_time="",
+                        end_time="",
+                    )
+                )
+                args = resolve_auto_symbol_universe(args, provider)
+                requests = expand_task_args(args)
+                self.assertTrue(requests)
+                for request_args in requests:
+                    validate_required_request(
+                        request_args,
+                        build_request_meta(request_args),
+                    )
+
+    def test_task_defaults_expand_required_market_index_and_financial_dimensions(self) -> None:
+        contract_requests = expand_task_args(
+            apply_task_defaults(
+                self._args(
+                    task="download_history_contracts",
+                    symbols_raw="",
+                    market="",
+                    begin_time="",
+                    end_time="",
+                )
+            )
+        )
+        self.assertEqual([item.market for item in contract_requests], ["SH", "SZ"])
+
+        index_request = expand_task_args(
+            apply_task_defaults(
+                self._args(
+                    task="index_weight",
+                    symbols_raw="",
+                    index_code="",
+                    begin_time="",
+                    end_time="",
+                )
+            )
+        )[0]
+        self.assertEqual(index_request.index_code, "000300.SH")
+
+        financial_args = apply_task_defaults(
+            self._args(task="financial", table_names_raw="")
+        )
+        self.assertEqual(
+            financial_args.table_names_raw,
+            "Balance,Income,CashFlow",
+        )
+
+    def test_realtime_auto_universe_excludes_historical_symbols(self) -> None:
+        provider = _FakeQmtProvider(
+            {"success": True, "data": {"items": []}},
+            sector_envelopes={
+                "沪深A股": {
+                    "success": True,
+                    "data": {
+                        "items": [
+                            {"sector_name": "沪深A股", "symbols": ["600000.SH"]}
+                        ]
+                    },
+                },
+                "过期沪深A股": {
+                    "success": True,
+                    "data": {
+                        "items": [
+                            {"sector_name": "过期沪深A股", "symbols": ["600001.SH"]}
+                        ]
+                    },
+                },
+            },
+        )
+
+        resolved = resolve_auto_symbol_universe(
+            self._args(task="full_tick", symbols_raw=""),
+            provider,
+        )
+
+        self.assertEqual(resolved.symbols_raw, "600000.SH")
+        self.assertEqual(
+            [call["task"] for call in provider.fetch_calls],
+            ["download_sector", "sectors"],
+        )
 
     def test_tick_history_keeps_intraday_time_window(self) -> None:
         args = self._args(
