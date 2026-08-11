@@ -47,11 +47,13 @@ def test_default_qmt_preflight_selection_covers_freshness_tasks():
     assert not (set(names) & FRESHNESS_DEFAULT_LOCKED_TASKS)
     assert "kline_history" in names
     assert "trading_calendar" not in names
+    assert "download_holiday" not in names
 
 
 def test_qmt_preflight_can_include_or_explicitly_probe_locked_tasks():
     assert selected_task_names([], include_locked=True) == list(QMT_TASK_SPECS)
     assert selected_task_names(["qmt.trading_calendar"]) == ["trading_calendar"]
+    assert selected_task_names(["qmt.download_holiday"]) == ["download_holiday"]
 
 
 def test_explicit_qmt_preflight_task_normalizes_provider_prefix():

@@ -18,7 +18,8 @@ python3 scripts/test_qmt_enabled_tasks.py \
 脚本自动检查数据时效页面中默认启用的 QMT 任务，但默认排除当前 QMT REST
 服务明确返回 HTTP 501 的任务，并跳过会修改 QMT 本地缓存的 `download_*` 接口。
 使用 `--include-locked` 可以重新探测被禁用的接口，使用 `--include-downloads`
-可以主动调用下载接口。脚本不会写 ClickHouse 业务表、同步日志或 checkpoint。
+可以主动调用默认启用的下载接口；两个选项同时使用才会调用已知返回 501 的
+下载接口。脚本不会写 ClickHouse 业务表、同步日志或 checkpoint。
 
 ## 基础信息
 

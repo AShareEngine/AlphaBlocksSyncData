@@ -67,6 +67,9 @@ FRESHNESS_DEFAULT_LOCKED_TASKS = frozenset(
         "cb_info",
         "ipo_info",
         "etf_info",
+        "download_holiday",
+        "download_cb",
+        "download_etf",
     }
 )
 
