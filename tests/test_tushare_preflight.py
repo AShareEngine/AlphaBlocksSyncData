@@ -36,6 +36,7 @@ def test_default_preflight_selection_excludes_freshness_locked_tasks():
     assert not (set(names) & FRESHNESS_DEFAULT_LOCKED_TASKS)
     assert "daily" in names
     assert "news" not in names
+    assert "p_get" not in names
 
 
 def test_explicit_preflight_task_can_probe_a_locked_task():
@@ -45,7 +46,7 @@ def test_explicit_preflight_task_can_probe_a_locked_task():
     ) == ["news"]
 
 
-def test_limited_provider_injects_one_row_limit():
+def test_limited_provider_preserves_params_and_caps_real_pagination():
     class Provider:
         def __init__(self):
             self.config = SimpleNamespace()
@@ -55,7 +56,10 @@ def test_limited_provider_injects_one_row_limit():
         def query_all(self, api_name, **kwargs):
             self.request_count += 1
             self.calls.append((api_name, kwargs))
-            return [{"trade_date": "20240329"}]
+            return [
+                {"trade_date": "20240329"},
+                {"trade_date": "20240328"},
+            ]
 
     raw = Provider()
     provider = LimitedTushareProvider(raw)
@@ -63,11 +67,8 @@ def test_limited_provider_injects_one_row_limit():
     rows = provider.query_all("daily", params={"trade_date": "20240329"})
 
     assert rows == [{"trade_date": "20240329"}]
-    assert raw.calls[0][1]["params"] == {
-        "trade_date": "20240329",
-        "limit": 1,
-        "offset": 0,
-    }
+    assert raw.calls[0][1]["params"] == {"trade_date": "20240329"}
+    assert raw.calls[0][1]["page_size"] == 1
     assert raw.calls[0][1]["max_pages"] == 1
 
 

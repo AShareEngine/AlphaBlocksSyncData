@@ -151,7 +151,7 @@ class LimitedTushareProvider:
         page_size: int = 0,
         max_pages: int = 0,
     ) -> list[dict[str, Any]]:
-        return self.provider.query_all(
+        rows = self.provider.query_all(
             api_name,
             params=dict(params or {}),
             fields=fields,
@@ -159,6 +159,7 @@ class LimitedTushareProvider:
             page_size=min(max(1, int(page_size or self.row_limit)), self.row_limit),
             max_pages=1,
         )
+        return rows[: self.row_limit]
 
 
 class ReadOnlyPreflightRepository:

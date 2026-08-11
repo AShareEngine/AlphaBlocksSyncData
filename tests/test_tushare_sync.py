@@ -20,6 +20,8 @@ from sync_data_system.providers.tushare.provider import (
 )
 from sync_data_system.providers.tushare.repository import TushareRepository
 from sync_data_system.providers.tushare.runner import (
+    TASK_DEFAULT_PARAMS,
+    TASK_UNIVERSE_DEFINITIONS,
     UNIVERSE_DEFINITIONS,
     SyncArgs,
     _fetch_rows,
@@ -27,6 +29,7 @@ from sync_data_system.providers.tushare.runner import (
     _run_code_range,
     _run_date_slice,
     _run_snapshot,
+    _task_param_variants,
     load_execution_plan_from_toml,
 )
 from sync_data_system.providers.tushare.specs import TUSHARE_TASK_SPECS
@@ -304,6 +307,98 @@ def test_global_text_endpoints_use_date_slices_instead_of_security_universes():
         "irm_qa_sz": "date_slice",
         "research_report": "date_slice",
     }
+
+
+def test_registered_tasks_receive_required_default_dimensions():
+    expected_values = {
+        "fut_basic": (
+            "exchange",
+            ["CFFEX", "DCE", "CZCE", "SHFE", "INE", "GFEX"],
+        ),
+        "fut_weekly_monthly": ("freq", ["week", "month"]),
+        "stk_week_month_adj": ("freq", ["week", "month"]),
+        "stk_weekly_monthly": ("freq", ["week", "month"]),
+        "stock_hsgt": ("type", ["HK_SZ", "SZ_HK", "HK_SH", "SH_HK"]),
+        "dc_index": ("idx_type", ["行业板块", "概念板块", "地域板块"]),
+    }
+
+    assert set(TASK_DEFAULT_PARAMS) == set(expected_values)
+    for task, (field, values) in expected_values.items():
+        variants = _task_param_variants(TUSHARE_TASK_SPECS[task], {})
+        assert [variant[field] for variant in variants] == values
+
+
+def test_explicit_task_params_override_registered_defaults():
+    variants = _task_param_variants(
+        TUSHARE_TASK_SPECS["fut_basic"],
+        {"exchange": "DCE", "fut_type": "1"},
+    )
+
+    assert variants == [{"exchange": "DCE", "fut_type": "1"}]
+
+
+def test_ths_member_uses_ths_index_codes_as_its_task_universe():
+    class Provider:
+        def __init__(self):
+            self.calls = []
+
+        def query_all(self, api_name, **kwargs):
+            self.calls.append((api_name, kwargs))
+            code = kwargs["params"]["ts_code"]
+            return [
+                {
+                    "ts_code": code,
+                    "con_code": "600000.SH",
+                    "in_date": "20200101",
+                }
+            ]
+
+    class Repository:
+        def __init__(self):
+            self.saved = []
+
+        def load_universe_codes(self, spec):
+            assert spec.task == "ths_index"
+            return ["885800.TI", "885801.TI"]
+
+        def save_rows(self, spec, rows, *, scope_key):
+            self.saved.extend(rows)
+            return len(rows)
+
+    provider = Provider()
+    repository = Repository()
+    inserted = _run_snapshot(
+        SyncArgs(task="ths_member", limit=1),
+        TUSHARE_TASK_SPECS["ths_member"],
+        provider,
+        repository,
+        context=None,
+    )
+
+    assert TASK_UNIVERSE_DEFINITIONS["ths_member"][0].task == "ths_index"
+    assert inserted == 1
+    assert provider.calls[0][0] == "ths_member"
+    assert provider.calls[0][1]["params"] == {"ts_code": "885800.TI"}
+
+
+def test_cn_pmi_compatible_gateway_month_alias_satisfies_business_key():
+    class Provider:
+        def query_all(self, api_name, **kwargs):
+            assert api_name == "cn_pmi"
+            return [{"m": "202607", "pmi010000": "49.3"}]
+
+    rows = _fetch_rows(
+        SyncArgs(task="cn_pmi"),
+        TUSHARE_TASK_SPECS["cn_pmi"],
+        Provider(),
+        {},
+    )
+
+    assert rows == [{"month": "202607", "pmi010000": "49.3"}]
+
+
+def test_fund_adj_disables_generic_pagination_for_compatible_gateway():
+    assert TUSHARE_TASK_SPECS["fund_adj"].supports_pagination is False
 
 
 def test_counter_bond_quotes_use_market_date_slices_instead_of_cb_basic_codes():
