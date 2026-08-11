@@ -110,10 +110,12 @@ python3 scripts/run_provider_sync.py tushare.stock_hsgt \
 
 类目基础表映射如下：股票 `ts_bak_basic + ts_stock_basic`、ETF
 `ts_etf_basic`、基金 `ts_fund_basic`、指数 `ts_index_basic`、期货
-`ts_fut_basic`、期权 `ts_opt_basic`、可转债 `ts_cb_basic`、外汇
+`ts_fut_basic`、期权 `ts_opt_basic`、可转债接口 `ts_cb_basic`、外汇
 `ts_fx_obasic`、港股 `ts_hk_basic`、美股 `ts_us_basic`、现货
 `ts_sge_basic`。全历史计划会先同步这些基础表；`bak_basic` 从官方有数据的
-`20160101` 开始。
+`20160101` 开始。柜台流通式债券没有对应基础列表，`bc_bestotcqt` 和
+`bc_otcqt` 使用独立的 `.BC` 代码体系，因此按 `trade_date` 全市场切片同步，
+不使用 `ts_cb_basic` 的可转债代码。
 
 ## ReplacingMergeTree 设计
 

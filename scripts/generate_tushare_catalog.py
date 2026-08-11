@@ -58,6 +58,12 @@ DATE_SLICE_API_NAMES = frozenset(
         # examples recommend querying the whole market one date at a time.
         # Date slices also prevent multi-day responses from hitting row limits.
         "anns_d",
+        # Counter bond codes use the dedicated .BC namespace and Tushare does
+        # not provide a matching basic-list endpoint. Never traverse cb_basic
+        # convertible-bond codes (.SH/.SZ); query the whole counter market by
+        # trade_date instead.
+        "bc_bestotcqt",
+        "bc_otcqt",
         "irm_qa_sh",
         "irm_qa_sz",
         "research_report",

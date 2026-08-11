@@ -306,6 +306,76 @@ def test_global_text_endpoints_use_date_slices_instead_of_security_universes():
     }
 
 
+def test_counter_bond_quotes_use_market_date_slices_instead_of_cb_basic_codes():
+    class Provider:
+        def __init__(self):
+            self.config = TushareConfig(token="token", default_start_date="20100101")
+            self.calls = []
+
+        def query_all(self, api_name, **kwargs):
+            self.calls.append((api_name, kwargs))
+            trade_date = kwargs["params"]["trade_date"]
+            if api_name == "bc_bestotcqt":
+                return [{"trade_date": trade_date, "ts_code": "200013.BC"}]
+            if api_name == "bc_otcqt":
+                return [
+                    {
+                        "trade_date": trade_date,
+                        "qt_time": "09:05:28",
+                        "bank": "招商银行",
+                        "ts_code": "200013.BC",
+                    }
+                ]
+            raise AssertionError(api_name)
+
+    class Repository:
+        def __init__(self):
+            self.saved = []
+
+        def load_latest_cursor(self, spec):
+            return None
+
+        def save_rows(self, spec, rows, *, scope_key):
+            self.saved.extend(rows)
+            return len(rows)
+
+    assert {
+        task: TUSHARE_TASK_SPECS[task].request_mode
+        for task in ("bc_bestotcqt", "bc_otcqt")
+    } == {
+        "bc_bestotcqt": "date_slice",
+        "bc_otcqt": "date_slice",
+    }
+
+    for task in ("bc_bestotcqt", "bc_otcqt"):
+        provider = Provider()
+        repository = Repository()
+        inserted = _run_date_slice(
+            SyncArgs(
+                task=task,
+                begin_date="20240329",
+                end_date="20240329",
+            ),
+            TUSHARE_TASK_SPECS[task],
+            provider,
+            repository,
+        )
+
+        assert inserted == 1
+        assert provider.calls == [
+            (
+                task,
+                {
+                    "params": {"trade_date": "20240329"},
+                    "fields": list(TUSHARE_TASK_SPECS[task].output_provider_names),
+                    "supports_pagination": False,
+                    "page_size": 0,
+                    "max_pages": 0,
+                },
+            )
+        ]
+
+
 def test_cb_price_change_batches_multiple_bond_codes_per_request():
     class Provider:
         def __init__(self):
