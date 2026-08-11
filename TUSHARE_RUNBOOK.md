@@ -113,15 +113,18 @@ python3 scripts/run_provider_sync.py tushare.stock_hsgt \
 `ts_fut_basic`、期权 `ts_opt_basic`、可转债接口 `ts_cb_basic`、外汇
 `ts_fx_obasic`、港股 `ts_hk_basic`、美股 `ts_us_basic`、现货
 `ts_sge_basic`。全历史计划会先同步这些基础表；`bak_basic` 从官方有数据的
-`20160101` 开始。柜台流通式债券没有对应基础列表，`bc_bestotcqt` 和
-`bc_otcqt` 使用独立的 `.BC` 代码体系，因此按 `trade_date` 全市场切片同步，
-不使用 `ts_cb_basic` 的可转债代码。
+`20160101` 开始。柜台流通式债券没有对应基础列表，`bc_otcqt` 先按
+`trade_date` 全市场获取当日 `.BC` 代码；如果兼容网关的 `bc_bestotcqt`
+全市场响应不返回 `ts_code`，同步器会使用这份当日代码逐债券查询最优报价。
+两者都不使用 `ts_cb_basic` 的可转债代码。
 
 ### 全量同步前预检
 
 下面的只读预检脚本会小样本检查数据时效页面默认允许选择的 Tushare
 任务。它不写入业务表、同步日志或 checkpoint；每个任务只读取一小份响应，
-并检查接口权限、必填参数、代码池、返回业务键和现有表结构。
+并检查接口权限、必填参数、代码池、返回业务键和现有表结构。非分页响应会检查
+返回的全部行；分页接口默认检查前 20 行，而不是只验证第一行。对容易返回占位
+结构的接口使用官方文档中的稳定样例代码和日期，避免“预检为空但正式同步失败”。
 
 ```bash
 python3 scripts/test_tushare_enabled_tasks.py
@@ -139,6 +142,18 @@ python3 scripts/test_tushare_enabled_tasks.py --task bc_otcqt
 python3 scripts/test_tushare_enabled_tasks.py \
   --json-report .service_state/tushare_preflight.json
 ```
+
+需要扩大分页接口的契约样本时：
+
+```bash
+python3 scripts/test_tushare_enabled_tasks.py \
+  --contract-rows 100 \
+  --json-report .service_state/tushare_preflight.json
+```
+
+报告中的 `BUSINESS_KEY_CONTRACT` 表示上游确实返回了业务行，但缺少无法从请求参数
+补齐的业务键；`EXPECTED_SAMPLE_EMPTY` 表示官方稳定样例也没有返回可入库记录。
+这两类结果都应在全量同步前处理或禁用对应任务。
 
 ## ReplacingMergeTree 设计
 

@@ -536,7 +536,7 @@ def _run_date_slice(
             )
             params[cursor_request_field] = cursor_value
             _validate_required_params(spec, params)
-            rows = _fetch_rows(args, spec, provider, params)
+            rows = _fetch_date_slice_rows(args, spec, provider, params)
             total += repository.save_rows(
                 spec,
                 rows,
@@ -652,26 +652,146 @@ def _fetch_rows(
         max_pages=args.max_pages,
     )
     normalized_rows = [spec.normalize_output_row(row) for row in rows]
+    valid_rows: list[dict[str, Any]] = []
     for row in normalized_rows:
+        missing_fields = _missing_business_key_fields(spec, row, params)
+        if missing_fields and _is_placeholder_row(spec, row, params):
+            logger.warning(
+                "Skipping Tushare placeholder row task=%s missing_business_keys=%s fields=%s",
+                spec.task,
+                ",".join(missing_fields),
+                ",".join(sorted(row)),
+            )
+            continue
         for field in spec.business_key_fields:
-            if field in row:
+            if _has_business_key_value(row.get(field)):
                 continue
             request_field = (
                 TASK_CURSOR_REQUEST_FIELDS.get(spec.task, field)
                 if field == spec.cursor_field
                 else field
             )
-            if request_field in params:
+            if _has_business_key_value(params.get(request_field)):
                 row[field] = params[request_field]
                 continue
-            if field in spec.business_key_defaults:
+            if _has_business_key_value(spec.business_key_defaults.get(field)):
                 row[field] = spec.business_key_defaults[field]
                 continue
             raise ValueError(
                 f"Tushare task={spec.task} 返回数据缺少业务键字段 {field!r}，"
                 f"且请求参数未提供该维度；实际返回字段={sorted(row)}。"
             )
-    return normalized_rows
+        valid_rows.append(row)
+    return valid_rows
+
+
+def _fetch_date_slice_rows(
+    args: SyncArgs,
+    spec: TushareTaskSpec,
+    provider: TushareProvider,
+    params: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    try:
+        return _fetch_rows(args, spec, provider, params)
+    except ValueError as exc:
+        if (
+            spec.task != "bc_bestotcqt"
+            or _has_business_key_value(params.get("ts_code"))
+            or "缺少业务键字段 'ts_code'" not in str(exc)
+        ):
+            raise
+
+    source_spec = TUSHARE_TASK_SPECS["bc_otcqt"]
+    source_params = {
+        key: value
+        for key, value in params.items()
+        if key in source_spec.input_names and key != "ts_code"
+    }
+    source_rows = provider.query_all(
+        source_spec.task,
+        params=source_params,
+        fields=("trade_date", "ts_code"),
+        supports_pagination=source_spec.supports_pagination,
+        page_size=args.page_size,
+        max_pages=args.max_pages,
+    )
+    normalized_source_rows = [
+        source_spec.normalize_output_row(row) for row in source_rows
+    ]
+    codes = sorted(
+        {
+            str(row.get("ts_code") or "").strip().upper()
+            for row in normalized_source_rows
+            if str(row.get("ts_code") or "").strip()
+        }
+    )
+    if args.limit > 0:
+        codes = codes[: args.limit]
+    if not codes:
+        logger.warning(
+            "Skipping unidentifiable Tushare bc_bestotcqt response because "
+            "bc_otcqt has no codes for params=%s",
+            dict(params),
+        )
+        return []
+
+    logger.info(
+        "Tushare bc_bestotcqt falling back to per-code requests codes=%s params=%s",
+        len(codes),
+        dict(params),
+    )
+    result: list[dict[str, Any]] = []
+    for code in codes:
+        result.extend(
+            _fetch_rows(
+                args,
+                spec,
+                provider,
+                {**params, "ts_code": code},
+            )
+        )
+    return result
+
+
+def _missing_business_key_fields(
+    spec: TushareTaskSpec,
+    row: Mapping[str, Any],
+    params: Mapping[str, Any],
+) -> list[str]:
+    missing: list[str] = []
+    for field in spec.business_key_fields:
+        if _has_business_key_value(row.get(field)):
+            continue
+        request_field = (
+            TASK_CURSOR_REQUEST_FIELDS.get(spec.task, field)
+            if field == spec.cursor_field
+            else field
+        )
+        if _has_business_key_value(params.get(request_field)):
+            continue
+        if _has_business_key_value(spec.business_key_defaults.get(field)):
+            continue
+        missing.append(field)
+    return missing
+
+
+def _is_placeholder_row(
+    spec: TushareTaskSpec,
+    row: Mapping[str, Any],
+    params: Mapping[str, Any],
+) -> bool:
+    request_dimensions = set(params)
+    for field, request_field in TASK_CURSOR_REQUEST_FIELDS.items():
+        if field == spec.task and request_field in params:
+            request_dimensions.add(spec.cursor_field)
+    return not any(
+        _has_business_key_value(value) and name not in request_dimensions
+        for name, value in row.items()
+    )
+
+
+def _has_business_key_value(value: Any) -> bool:
+    return value is not None and str(value).strip() != ""
 
 
 def _resolve_universe(

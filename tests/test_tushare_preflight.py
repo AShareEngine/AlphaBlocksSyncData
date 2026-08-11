@@ -8,8 +8,11 @@ from types import SimpleNamespace
 from scripts.test_tushare_enabled_tasks import (
     FRESHNESS_DEFAULT_LOCKED_TASKS,
     LimitedTushareProvider,
+    PREFLIGHT_TASK_SAMPLES,
+    PreflightResult,
     ReadOnlyPreflightRepository,
     check_table_layout,
+    build_summary,
     selected_task_names,
 )
 from sync_data_system.providers.tushare.specs import TUSHARE_TASK_SPECS
@@ -68,9 +71,101 @@ def test_limited_provider_preserves_params_and_caps_real_pagination():
 
     assert rows == [{"trade_date": "20240329"}]
     assert provider.raw_row_count("daily") == 2
+    assert "missing=ts_code" in provider.contract_error("daily")
+    assert "row=1" in provider.contract_error("daily")
     assert raw.calls[0][1]["params"] == {"trade_date": "20240329"}
     assert raw.calls[0][1]["page_size"] == 1
     assert raw.calls[0][1]["max_pages"] == 1
+
+
+def test_limited_provider_scans_more_rows_for_paginated_contracts():
+    class Provider:
+        def __init__(self):
+            self.config = SimpleNamespace()
+            self.request_count = 0
+            self.calls = []
+
+        def query_all(self, api_name, **kwargs):
+            self.request_count += 1
+            self.calls.append((api_name, kwargs))
+            return [
+                {"ts_code": f"00000{index}.SZ", "trade_date": "20240329"}
+                for index in range(5)
+            ]
+
+    raw = Provider()
+    provider = LimitedTushareProvider(raw, contract_row_limit=20)
+
+    rows = provider.query_all(
+        "daily",
+        params={"trade_date": "20240329"},
+        supports_pagination=True,
+        page_size=1,
+    )
+
+    assert len(rows) == 1
+    assert provider.raw_row_count("daily") == 5
+    assert raw.calls[0][1]["page_size"] == 20
+
+
+def test_fragile_tushare_tasks_use_known_documented_preflight_samples():
+    assert PREFLIGHT_TASK_SAMPLES["bc_bestotcqt"].params == {
+        "ts_code": "200013.BC"
+    }
+    assert PREFLIGHT_TASK_SAMPLES["bc_bestotcqt"].date == "20240329"
+    assert PREFLIGHT_TASK_SAMPLES["bc_bestotcqt"].expect_rows is True
+    assert PREFLIGHT_TASK_SAMPLES["cb_rate"].codes == ("123046.SZ",)
+    assert PREFLIGHT_TASK_SAMPLES["cb_rate"].expect_rows is True
+
+
+def test_preflight_summary_separates_contract_permission_and_other_failures():
+    results = [
+        PreflightResult(
+            task="bc_bestotcqt",
+            table="ts_bc_bestotcqt",
+            status="FAIL",
+            rows=0,
+            raw_rows=1,
+            requests=1,
+            elapsed_ms=1,
+            table_status="ok",
+            error_type="BUSINESS_KEY_CONTRACT",
+        ),
+        PreflightResult(
+            task="news",
+            table="ts_news",
+            status="FAIL",
+            rows=0,
+            raw_rows=-1,
+            requests=1,
+            elapsed_ms=1,
+            table_status="ok",
+            error_type="NO_PERMISSION",
+        ),
+        PreflightResult(
+            task="daily",
+            table="ts_daily",
+            status="FAIL",
+            rows=0,
+            raw_rows=0,
+            requests=1,
+            elapsed_ms=1,
+            table_status="outdated:key",
+            error_type="TABLE_LAYOUT",
+        ),
+    ]
+
+    summary = build_summary(
+        results,
+        total_tasks=3,
+        total_requests=3,
+        elapsed_ms=3,
+        probe_date="20260810",
+    )
+
+    assert summary["contract_failed"] == 1
+    assert summary["no_permission"] == 1
+    assert summary["other_failed"] == 1
 
 
 def test_read_only_repository_keeps_rows_in_memory():

@@ -593,6 +593,110 @@ def test_best_counter_bond_quote_rejects_gateway_rows_without_bond_code():
         raise AssertionError("bc_bestotcqt rows without ts_code must be rejected")
 
 
+def test_best_counter_bond_quote_falls_back_to_codes_from_daily_otc_quotes():
+    class Provider:
+        def __init__(self):
+            self.config = TushareConfig(token="token", default_start_date="20100101")
+            self.calls = []
+
+        def query_all(self, api_name, **kwargs):
+            self.calls.append((api_name, dict(kwargs["params"])))
+            params = kwargs["params"]
+            if api_name == "bc_otcqt":
+                return [
+                    {"TRADE_DATE": params["trade_date"], "TS_CODE": "200013.BC"},
+                    {"TRADE_DATE": params["trade_date"], "TS_CODE": "200016.BC"},
+                ]
+            if api_name == "bc_bestotcqt" and "ts_code" not in params:
+                return [{"best_buy_price": "101.2", "best_sell_price": "101.4"}]
+            if api_name == "bc_bestotcqt":
+                return [{"best_buy_price": "101.2", "best_sell_price": "101.4"}]
+            raise AssertionError(api_name)
+
+    class Repository:
+        def __init__(self):
+            self.saved = []
+
+        def load_latest_cursor(self, spec):
+            return None
+
+        def save_rows(self, spec, rows, *, scope_key):
+            self.saved.extend(rows)
+            return len(rows)
+
+    provider = Provider()
+    repository = Repository()
+
+    inserted = _run_date_slice(
+        SyncArgs(
+            task="bc_bestotcqt",
+            begin_date="20240329",
+            end_date="20240329",
+            limit=1,
+        ),
+        TUSHARE_TASK_SPECS["bc_bestotcqt"],
+        provider,
+        repository,
+    )
+
+    assert inserted == 1
+    assert repository.saved == [
+        {
+            "best_buy_price": "101.2",
+            "best_sell_price": "101.4",
+            "trade_date": "20240329",
+            "ts_code": "200013.BC",
+        }
+    ]
+    assert provider.calls == [
+        ("bc_bestotcqt", {"trade_date": "20240329"}),
+        ("bc_otcqt", {"trade_date": "20240329"}),
+        ("bc_bestotcqt", {"trade_date": "20240329", "ts_code": "200013.BC"}),
+    ]
+
+
+def test_cb_rate_skips_code_only_placeholder_rows():
+    class Provider:
+        def query_all(self, api_name, **kwargs):
+            assert api_name == "cb_rate"
+            return [{"ts_code": kwargs["params"]["ts_code"]}]
+
+    rows = _fetch_rows(
+        SyncArgs(task="cb_rate"),
+        TUSHARE_TASK_SPECS["cb_rate"],
+        Provider(),
+        {"ts_code": "123046.SZ"},
+    )
+
+    assert rows == []
+
+
+def test_cb_rate_rejects_payload_rows_with_empty_coupon_period_keys():
+    class Provider:
+        def query_all(self, api_name, **kwargs):
+            assert api_name == "cb_rate"
+            return [
+                {
+                    "ts_code": kwargs["params"]["ts_code"],
+                    "rate_start_date": "",
+                    "rate_end_date": "",
+                    "coupon_rate": "0.5",
+                }
+            ]
+
+    try:
+        _fetch_rows(
+            SyncArgs(task="cb_rate"),
+            TUSHARE_TASK_SPECS["cb_rate"],
+            Provider(),
+            {"ts_code": "123046.SZ"},
+        )
+    except ValueError as exc:
+        assert "rate_start_date" in str(exc)
+    else:
+        raise AssertionError("cb_rate payload without coupon period must be rejected")
+
+
 def test_cb_price_change_batches_multiple_bond_codes_per_request():
     class Provider:
         def __init__(self):

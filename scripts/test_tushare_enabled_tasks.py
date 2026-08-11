@@ -44,6 +44,7 @@ from sync_data_system.providers.tushare.runner import (
     SyncArgs,
     TushareExecutionContext,
     _execute_task,
+    _missing_business_key_fields,
 )
 from sync_data_system.providers.tushare.specs import (
     TUSHARE_TASK_SPECS,
@@ -117,6 +118,29 @@ FRESHNESS_DEFAULT_LOCKED_TASKS = frozenset(
 
 
 @dataclass(frozen=True)
+class PreflightSample:
+    codes: tuple[str, ...] = ()
+    date: str = ""
+    params: Mapping[str, Any] | None = None
+    expect_rows: bool = False
+
+
+# Use documented, historically stable examples for endpoints whose generic
+# request can return an empty/placeholder shape on compatible gateways.
+PREFLIGHT_TASK_SAMPLES: dict[str, PreflightSample] = {
+    "bc_bestotcqt": PreflightSample(
+        date="20240329",
+        params={"ts_code": "200013.BC"},
+        expect_rows=True,
+    ),
+    "cb_rate": PreflightSample(
+        codes=("123046.SZ",),
+        expect_rows=True,
+    ),
+}
+
+
+@dataclass(frozen=True)
 class PreflightResult:
     task: str
     table: str
@@ -133,11 +157,18 @@ class PreflightResult:
 class LimitedTushareProvider:
     """Cap real pagination while preserving task-specific query parameters."""
 
-    def __init__(self, provider: TushareProvider, row_limit: int = 1) -> None:
+    def __init__(
+        self,
+        provider: TushareProvider,
+        row_limit: int = 1,
+        contract_row_limit: int = 20,
+    ) -> None:
         self.provider = provider
         self.config = provider.config
         self.row_limit = max(1, int(row_limit))
+        self.contract_row_limit = max(self.row_limit, int(contract_row_limit))
         self.raw_row_counts: dict[str, int] = {}
+        self.contract_errors: dict[str, list[str]] = {}
 
     @property
     def request_count(self) -> int:
@@ -158,16 +189,44 @@ class LimitedTushareProvider:
             params=dict(params or {}),
             fields=fields,
             supports_pagination=supports_pagination,
-            page_size=min(max(1, int(page_size or self.row_limit)), self.row_limit),
+            page_size=(
+                self.contract_row_limit
+                if supports_pagination
+                else max(1, int(page_size or self.row_limit))
+            ),
             max_pages=1,
         )
         self.raw_row_counts[api_name] = len(rows)
+        spec = TUSHARE_TASK_SPECS.get(api_name)
+        if spec is not None:
+            for row_index, row in enumerate(rows):
+                normalized = spec.normalize_output_row(row)
+                missing = _missing_business_key_fields(
+                    spec,
+                    normalized,
+                    dict(params or {}),
+                )
+                if missing:
+                    self.contract_errors.setdefault(api_name, []).append(
+                        f"row={row_index} missing={','.join(missing)} "
+                        f"fields={','.join(sorted(normalized))}"
+                    )
         return rows[: self.row_limit]
 
     def raw_row_count(self, api_name: str) -> int:
         """Return the upstream row count before the one-row preflight cap."""
 
         return self.raw_row_counts.get(api_name, -1)
+
+    def reset_task_diagnostics(self, api_name: str) -> None:
+        self.raw_row_counts.pop(api_name, None)
+        self.contract_errors.pop(api_name, None)
+
+    def contract_error(self, api_name: str) -> str:
+        errors = self.contract_errors.get(api_name, ())
+        if not errors:
+            return ""
+        return "; ".join(errors[:5])
 
 
 class ReadOnlyPreflightRepository:
@@ -266,6 +325,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Probe date in YYYYMMDD. Default: previous weekday.",
     )
     parser.add_argument("--max-tasks", type=int, default=0)
+    parser.add_argument(
+        "--contract-rows",
+        type=int,
+        default=20,
+        help="分页接口用于业务键契约检查的最大样本行数，默认 20。",
+    )
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--skip-table-check", action="store_true")
     parser.add_argument("--json", action="store_true", help="Print JSON lines.")
@@ -309,7 +374,10 @@ def run_preflight(argv: list[str] | None = None) -> int:
     clickhouse_config = ClickHouseConfig.from_env(runtime_path=args.runtime_path)
     connection = create_clickhouse_client(clickhouse_config)
     base_provider = TushareProvider(TushareConfig.from_env(runtime_path=args.runtime_path))
-    provider = LimitedTushareProvider(base_provider)
+    provider = LimitedTushareProvider(
+        base_provider,
+        contract_row_limit=max(1, int(args.contract_rows or 20)),
+    )
     repository = ReadOnlyPreflightRepository(connection, database=str(args.database or "tushare"))
     context = TushareExecutionContext(
         provider=provider,
@@ -321,6 +389,7 @@ def run_preflight(argv: list[str] | None = None) -> int:
     try:
         for index, task_name in enumerate(task_names, start=1):
             spec = TUSHARE_TASK_SPECS[task_name]
+            provider.reset_task_diagnostics(task_name)
             before_requests = provider.request_count
             task_started = time.monotonic()
             table_status = "skipped" if args.skip_table_check else check_table_layout(
@@ -329,11 +398,19 @@ def run_preflight(argv: list[str] | None = None) -> int:
                 spec=spec,
             )
             try:
+                sample = PREFLIGHT_TASK_SAMPLES.get(task_name, PreflightSample())
+                task_probe_date = (
+                    probe_date
+                    if str(args.date or "").strip()
+                    else sample.date or probe_date
+                )
                 rows = _execute_task(
                     SyncArgs(
                         task=task_name,
-                        begin_date=probe_date,
-                        end_date=probe_date,
+                        codes_raw=",".join(sample.codes),
+                        begin_date=task_probe_date,
+                        end_date=task_probe_date,
+                        params=dict(sample.params or {}),
                         limit=1,
                         page_size=1,
                         max_pages=1,
@@ -348,7 +425,20 @@ def run_preflight(argv: list[str] | None = None) -> int:
                 status = "EMPTY" if rows == 0 else "OK"
                 error_type = ""
                 error = ""
-                if table_status.startswith("outdated:"):
+                contract_error = provider.contract_error(task_name)
+                if contract_error:
+                    status = "FAIL"
+                    error_type = "BUSINESS_KEY_CONTRACT"
+                    error = contract_error
+                elif sample.expect_rows and rows == 0:
+                    status = "FAIL"
+                    error_type = "EXPECTED_SAMPLE_EMPTY"
+                    error = (
+                        "文档样例请求未返回可入库业务行；"
+                        f"codes={','.join(sample.codes)} params={dict(sample.params or {})} "
+                        f"date={task_probe_date}"
+                    )
+                elif table_status.startswith("outdated:"):
                     status = "FAIL"
                     error_type = "TABLE_LAYOUT"
                     error = table_status.removeprefix("outdated:")
@@ -477,6 +567,11 @@ def build_summary(
     elapsed_ms: int,
     probe_date: str,
 ) -> dict[str, Any]:
+    contract_error_types = {
+        "BUSINESS_KEY",
+        "BUSINESS_KEY_CONTRACT",
+        "EXPECTED_SAMPLE_EMPTY",
+    }
     return {
         "status": "SUMMARY",
         "probe_date": probe_date,
@@ -485,6 +580,15 @@ def build_summary(
         "passed": sum(item.status == "OK" for item in results),
         "empty": sum(item.status == "EMPTY" for item in results),
         "failed": sum(item.status == "FAIL" for item in results),
+        "contract_failed": sum(
+            item.error_type in contract_error_types for item in results
+        ),
+        "no_permission": sum(item.error_type == "NO_PERMISSION" for item in results),
+        "other_failed": sum(
+            item.status == "FAIL"
+            and item.error_type not in contract_error_types | {"NO_PERMISSION"}
+            for item in results
+        ),
         "requests": total_requests,
         "elapsed_ms": elapsed_ms,
     }
@@ -521,6 +625,9 @@ def emit(args: argparse.Namespace, payload: Mapping[str, Any]) -> None:
             f"date={payload['probe_date']} tasks={payload['tasks']} "
             f"checked={payload['checked']} passed={payload['passed']} "
             f"empty={payload['empty']} failed={payload['failed']} "
+            f"contract_failed={payload['contract_failed']} "
+            f"no_permission={payload['no_permission']} "
+            f"other_failed={payload['other_failed']} "
             f"requests={payload['requests']} elapsed_ms={payload['elapsed_ms']}",
             flush=True,
         )
