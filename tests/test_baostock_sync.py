@@ -407,6 +407,30 @@ class BaoStockIncrementalHelperTest(unittest.TestCase):
         self.assertEqual(provider.fetch_latest_all_stock_calls, [])
         self.assertEqual(repository.calls, [])
 
+    def test_resolve_code_list_excludes_beijing_exchange_codes(self) -> None:
+        args = SyncArgs(
+            task="daily_kline",
+            codes_raw="000001.SZ,920001.BJ,600000.SH",
+            begin_date="20200101",
+            end_date="20241231",
+            day="",
+            year=None,
+            quarter=None,
+            year_type="",
+            adjustflag="3",
+            frequency="d",
+            limit=0,
+            force=False,
+            continue_on_error=True,
+            runtime_path=None,
+            database="baostock",
+            log_level="INFO",
+        )
+
+        codes = resolve_code_list(_FakeBaoStockProvider(), args)
+
+        self.assertEqual(codes, ["000001.SZ", "600000.SH"])
+
     def test_historical_universe_uses_amazingdata_history_and_unions_current_codes(self) -> None:
         args = SyncArgs(
             task="daily_kline",
@@ -437,6 +461,35 @@ class BaoStockIncrementalHelperTest(unittest.TestCase):
         self.assertEqual(codes, ["000005.SZ", "000023.SZ", "510300.SH", "600000.SH"])
         self.assertEqual(repository.calls, [("20200101", "20241231")])
         self.assertEqual(provider.fetch_latest_all_stock_calls, ["20241231"])
+
+    def test_historical_universe_excludes_beijing_exchange_codes(self) -> None:
+        args = SyncArgs(
+            task="daily_kline",
+            codes_raw="",
+            begin_date="20200101",
+            end_date="20241231",
+            day="",
+            year=None,
+            quarter=None,
+            year_type="",
+            adjustflag="3",
+            frequency="d",
+            limit=0,
+            force=False,
+            continue_on_error=True,
+            runtime_path=None,
+            database="baostock",
+            log_level="INFO",
+            universe_mode="historical",
+        )
+        provider = _FakeBaoStockProvider(
+            codes_by_day={"20241231": ["600000.SH", "920001.BJ"]},
+        )
+        repository = _FakeHistoricalRepository(["000001.SZ", "920002.BJ"])
+
+        codes = resolve_code_list(provider, args, repository)
+
+        self.assertEqual(codes, ["000001.SZ", "600000.SH"])
 
     def test_historical_universe_applies_limit_after_merge_and_sort(self) -> None:
         args = SyncArgs(

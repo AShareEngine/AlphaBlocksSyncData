@@ -163,6 +163,38 @@ class AmazingDataSDKConfig:
         )
 
 
+def _is_stale_sdk_session_error(exc: Exception) -> bool:
+    """Recognize the opaque error emitted by an expired AmazingData session."""
+
+    return (
+        isinstance(exc, TypeError)
+        and "'NoneType' object is not subscriptable" in str(exc)
+    )
+
+
+class _ReconnectableSDKClient:
+    """Delegate SDK calls through the session's one-shot reconnect guard."""
+
+    def __init__(self, session: "AmazingDataSDKSession", client_name: str) -> None:
+        self._session = session
+        self._client_name = client_name
+
+    def __getattr__(self, method_name: str):
+        attribute = getattr(self._session._raw_client(self._client_name), method_name)
+        if not callable(attribute):
+            return attribute
+
+        def guarded_call(*args, **kwargs):
+            return self._session._call_with_reconnect(
+                self._client_name,
+                method_name,
+                *args,
+                **kwargs,
+            )
+
+        return guarded_call
+
+
 class AmazingDataSDKSession:
     """AmazingData SDK 登录会话.
 
@@ -231,19 +263,50 @@ class AmazingDataSDKSession:
     @property
     def base(self):
         self.ensure_connected()
-        return self._base
+        return _ReconnectableSDKClient(self, "base")
 
     @property
     def info(self):
         self.ensure_connected()
-        return self._info
+        return _ReconnectableSDKClient(self, "info")
 
     @property
     def market(self):
         self.ensure_connected()
         if self._market is None:
             self._market = self._build_market_client()
-        return self._market
+        return _ReconnectableSDKClient(self, "market")
+
+    def _raw_client(self, client_name: str):
+        self.ensure_connected()
+        if client_name == "base":
+            return self._base
+        if client_name == "info":
+            return self._info
+        if client_name == "market":
+            if self._market is None:
+                self._market = self._build_market_client()
+            return self._market
+        raise AttributeError(client_name)
+
+    def _call_with_reconnect(self, client_name: str, method_name: str, *args, **kwargs):
+        method = getattr(self._raw_client(client_name), method_name)
+        try:
+            return method(*args, **kwargs)
+        except Exception as exc:
+            if not _is_stale_sdk_session_error(exc):
+                raise
+            logger.warning(
+                "AmazingData SDK session may be stale; reconnecting once "
+                "client=%s method=%s error=%s",
+                client_name,
+                method_name,
+                exc,
+            )
+            self.close()
+            self.ensure_connected()
+            retry_method = getattr(self._raw_client(client_name), method_name)
+            return retry_method(*args, **kwargs)
 
     def get_calendar_dates(self, market: str = Market.SH) -> list:
         self.ensure_connected()

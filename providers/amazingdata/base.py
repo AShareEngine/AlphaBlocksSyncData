@@ -308,20 +308,39 @@ class BaseData:
                 security_type,
             )
 
+        code_info_refresh_error: Exception | None = None
         if self.sync_provider is not None:
-            if force:
-                self.sync_code_info(security_type=security_type, force=True)
-            elif self.repository.has_successful_sync_today("get_code_info", scope_key, run_date):
-                logger.info(
-                    "get_code_info 已在 %s 同步成功，get_code_list 直接复用 code_info 数据 security_type=%s",
-                    run_date,
+            try:
+                if force:
+                    self.sync_code_info(security_type=security_type, force=True)
+                elif self.repository.has_successful_sync_today("get_code_info", scope_key, run_date):
+                    logger.info(
+                        "get_code_info 已在 %s 同步成功，get_code_list 直接复用 code_info 数据 security_type=%s",
+                        run_date,
+                        security_type,
+                    )
+                else:
+                    self.sync_code_info(security_type=security_type, force=False)
+            except Exception as exc:
+                # Code pools are infrastructure dependencies for many tasks.
+                # A transient SDK failure must not fan out into every task when
+                # ClickHouse already contains a usable security master.  The
+                # explicit code_info task still calls sync_code_info directly
+                # and therefore remains failed, preserving freshness truth.
+                cached_codes = self.get_code_list_from_db(security_type=security_type)
+                if not cached_codes:
+                    raise
+                code_info_refresh_error = exc
+                logger.warning(
+                    "get_code_info 远端刷新失败，代码池回退到 ClickHouse 缓存 "
+                    "security_type=%s code_count=%s error=%s",
                     security_type,
+                    len(cached_codes),
+                    exc,
                 )
-            else:
-                self.sync_code_info(security_type=security_type, force=False)
 
         code_list = self.get_code_list_from_db(security_type=security_type)
-        if not code_list and self.sync_provider is not None:
+        if not code_list and self.sync_provider is not None and code_info_refresh_error is None:
             logger.warning(
                 "第一次构建代码池后仍为空，改为强制刷新 code_info security_type=%s",
                 security_type,
@@ -349,6 +368,11 @@ class BaseData:
             )
             raise BaseDataCacheMissError(message)
 
+        fallback_suffix = (
+            f" fallback=clickhouse_cache refresh_error={code_info_refresh_error}"
+            if code_info_refresh_error is not None
+            else ""
+        )
         self._write_sync_log(
             task_name="get_code_list",
             scope_key=scope_key,
@@ -361,15 +385,17 @@ class BaseData:
             message=(
                 f"get_code_list 构建完成 security_type={security_type} "
                 f"checkpoint_date={latest_checkpoint_date} code_count={len(code_list)}"
+                f"{fallback_suffix}"
             ),
             started_at=started_at,
             finished_at=finished_at,
         )
         logger.info(
-            "get_code_list build success security_type=%s checkpoint_date=%s code_count=%s",
+            "get_code_list build success security_type=%s checkpoint_date=%s code_count=%s fallback=%s",
             security_type,
             latest_checkpoint_date,
             len(code_list),
+            code_info_refresh_error is not None,
         )
         return code_list
 

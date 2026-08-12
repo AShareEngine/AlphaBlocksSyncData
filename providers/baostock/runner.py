@@ -414,9 +414,23 @@ def resolve_code_list(
     else:
         codes = []
 
+    unsupported_codes = [code for code in codes if not _is_supported_baostock_code(code)]
+    if unsupported_codes:
+        logger.warning(
+            "BaoStock task=%s skipped unsupported market codes count=%s sample=%s; "
+            "BaoStock security APIs only accept SH/SZ codes",
+            args.task,
+            len(unsupported_codes),
+            ",".join(unsupported_codes[:10]),
+        )
+        codes = [code for code in codes if _is_supported_baostock_code(code)]
     if args.limit > 0:
         codes = codes[: args.limit]
     return codes
+
+
+def _is_supported_baostock_code(code: str) -> bool:
+    return str(code or "").strip().upper().endswith((".SH", ".SZ"))
 
 
 def resolve_current_code_list(provider: BaoStockProvider, args: SyncArgs) -> list[str]:
