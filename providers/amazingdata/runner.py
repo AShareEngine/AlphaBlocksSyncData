@@ -95,6 +95,11 @@ MINUTE_KLINE_HIST_SECURITY_TYPES = tuple(
     for item in MARKET_KLINE_HIST_SECURITY_TYPES
     if item[1] != SecurityType.EXTRA_ETF_OP
 )
+HISTORY_STOCK_STATUS_SECURITY_TYPES = (
+    ("stock", SecurityType.EXTRA_STOCK_A),
+    ("index", SecurityType.EXTRA_INDEX_A),
+    ("etf", SecurityType.EXTRA_ETF),
+)
 DEFAULT_RUNTIME_PATH = str(resolve_runtime_config_path(PROJECT_ROOT))
 DEFAULT_LOG_LEVEL = "INFO"
 OPTION_SYNC_CODE_BATCH_SIZE = 500
@@ -1932,6 +1937,18 @@ def resolve_code_list(
             codes = [code for code in codes if code not in option_codes]
         if not codes:
             raise ValueError("minute_kline 不支持同步 EXTRA_ETF_OP ETF 期权代码。")
+    if task == "history_stock_status" and not codes:
+        codes = resolve_history_stock_status_code_list(
+            base_data=base_data,
+            limit=limit,
+            local_path=local_path,
+            begin_date=begin_date,
+            end_date=end_date,
+        )
+        if not codes:
+            raise RuntimeError("未获取到可同步的股票、指数或 ETF 历史代码。")
+        logger.info("resolved history_stock_status code_list count=%s", len(codes))
+        return codes
     if task in {"daily_kline", "minute_kline"} and not codes:
         codes = resolve_market_kline_code_list(
             base_data=base_data,
@@ -2102,6 +2119,53 @@ def resolve_market_kline_code_list(
     return codes
 
 
+def resolve_history_stock_status_code_list(
+    base_data: BaseData,
+    limit: int,
+    local_path: str | None,
+    begin_date: int | None,
+    end_date: int | None,
+) -> list[str]:
+    if begin_date is None or end_date is None:
+        raise ValueError(
+            "history_stock_status 获取历史代码池时必须提供 begin_date 和 end_date。"
+        )
+    if not str(local_path or "").strip():
+        raise ValueError(
+            "history_stock_status 获取历史代码池时必须配置 AmazingData local_path。"
+        )
+
+    raw_codes: list[str] = []
+    for label, security_type in HISTORY_STOCK_STATUS_SECURITY_TYPES:
+        try:
+            fetched = base_data.get_hist_code_list(
+                security_type=security_type,
+                start_date=begin_date,
+                end_date=end_date,
+                local_path=str(local_path),
+            )
+        except BaseDataCacheMissError as exc:
+            raise RuntimeError(
+                f"history_stock_status 未获取到请求区间内的 {label} 历史代码；"
+                "请先同步 amazingdata.hist_code_list。"
+            ) from exc
+        logger.info(
+            "history_stock_status code_list source=ad_hist_code_daily "
+            "asset_type=%s security_type=%s begin_date=%s end_date=%s raw_count=%s",
+            label,
+            security_type,
+            begin_date,
+            end_date,
+            len(fetched),
+        )
+        raw_codes.extend(fetched)
+
+    codes = normalize_code_list(raw_codes)
+    if limit and limit > 0:
+        codes = codes[:limit]
+    return codes
+
+
 def resolve_backward_factor_code_list(
     base_data: BaseData,
     raw_codes: str,
@@ -2140,6 +2204,8 @@ def resolve_task_security_type(task: str) -> str:
         return "EXTRA_STOCK_A+EXTRA_INDEX_A+EXTRA_ETF+EXTRA_KZZ"
     if task == "hist_code_list":
         return DEFAULT_SYNC_SECURITY_TYPE
+    if task == "history_stock_status":
+        return "EXTRA_STOCK_A+EXTRA_INDEX_A+EXTRA_ETF"
     if task == "bj_code_mapping":
         return "N/A"
     if is_option_task(task):
@@ -2198,9 +2264,11 @@ def resolve_missing_historical_code_list(
     limit: int,
 ) -> list[str]:
     target_table = TASK_TARGET_TABLE_MAP[task]
-    security_type = resolve_task_security_type(task)
+    security_types = [resolve_task_security_type(task)]
+    if task == "history_stock_status":
+        security_types = [item[1] for item in HISTORY_STOCK_STATUS_SECURITY_TYPES]
     if task in {"daily_kline", "minute_kline"}:
-        security_type = DEFAULT_SYNC_SECURITY_TYPE
+        security_types = [DEFAULT_SYNC_SECURITY_TYPE]
     client = context.base_data.repository.client
     columns = {
         str(row[0])
@@ -2221,12 +2289,19 @@ def resolve_missing_historical_code_list(
     else:
         raise ValueError(f"目标表 starlight.{target_table} 没有 code/market_code 字段。")
 
+    if len(security_types) == 1:
+        security_type_filter = "security_type = {security_type:String}"
+        security_parameters = {"security_type": security_types[0]}
+    else:
+        security_type_filter = "security_type IN {security_types:Array(String)}"
+        security_parameters = {"security_types": security_types}
+
     sql = f"""
     WITH historical AS
     (
         SELECT DISTINCT code
         FROM starlight.ad_hist_code_daily
-        WHERE security_type = {{security_type:String}}
+        WHERE {security_type_filter}
           AND trade_date >= {{begin_date:Date}}
           AND trade_date <= {{end_date:Date}}
     ),
@@ -2243,7 +2318,7 @@ def resolve_missing_historical_code_list(
     rows = client.query_rows(
         sql,
         {
-            "security_type": security_type,
+            **security_parameters,
             "begin_date": to_ch_date(begin_date),
             "end_date": to_ch_date(end_date),
         },
@@ -2255,7 +2330,7 @@ def resolve_missing_historical_code_list(
         "missing historical universe task=%s target=starlight.%s security_type=%s begin=%s end=%s missing=%s",
         task,
         target_table,
-        security_type,
+        "+".join(security_types),
         begin_date,
         end_date,
         len(codes),
@@ -2272,6 +2347,14 @@ def resolve_historical_code_list(
     limit: int,
 ) -> list[str]:
     security_type = resolve_task_security_type(task)
+    if task == "history_stock_status":
+        return resolve_history_stock_status_code_list(
+            base_data=context.base_data,
+            limit=limit,
+            local_path=context.sdk_config.local_path,
+            begin_date=begin_date,
+            end_date=end_date,
+        )
     if task in {"daily_kline", "minute_kline"}:
         security_type = DEFAULT_SYNC_SECURITY_TYPE
     if security_type != DEFAULT_SYNC_SECURITY_TYPE:

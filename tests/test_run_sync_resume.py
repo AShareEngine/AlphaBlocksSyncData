@@ -17,6 +17,7 @@ from sync_data_system.providers.amazingdata.runner import (
     build_resume_scope_pairs,
     filter_code_list_for_resume,
     resolve_code_list,
+    resolve_history_stock_status_code_list,
     run_hist_code_list,
 )
 
@@ -463,6 +464,26 @@ class RunSyncResumeTest(unittest.TestCase):
                 self.assertEqual(context.base_data.stock_universe_calls, [])
                 self.assertEqual(context.base_data.index_universe_calls, [])
                 self.assertEqual(context.base_data.etf_universe_calls, [])
+
+    def test_history_stock_status_uses_stock_index_and_etf_history(self) -> None:
+        context = self._build_context()
+
+        result = resolve_history_stock_status_code_list(
+            base_data=context.base_data,
+            limit=0,
+            local_path="/tmp/amazing_data_cache",
+            begin_date=20100101,
+            end_date=20240131,
+        )
+
+        self.assertEqual(
+            result,
+            ["000001.SZ", "600000.SH", "000300.SH", "510300.SH"],
+        )
+        self.assertEqual(
+            [item[0] for item in context.base_data.hist_code_calls],
+            ["EXTRA_STOCK_A", "EXTRA_INDEX_A", "EXTRA_ETF"],
+        )
 
     def test_minute_kline_filters_explicit_etf_option_codes(self) -> None:
         context = self._build_context()

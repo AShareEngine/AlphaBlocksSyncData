@@ -660,7 +660,11 @@ class InfoData:
             date_field="trade_date",
             code_list=normalized_codes,
         )
-        sync_start = self._resolve_incremental_start_date(latest_date=latest_date, requested_begin_date=begin)
+        sync_start = self._resolve_force_aware_sync_start_date(
+            latest_date=latest_date,
+            requested_begin_date=begin,
+            force=force,
+        )
         return self._run_sync_job(
             task_name="get_history_stock_status",
             scope_key=scope_key,

@@ -20,6 +20,7 @@ except Exception:  # pragma: no cover
 from sync_data_system.providers.amazingdata.constants import (
     FactorType,
     Market,
+    PeriodName,
 )
 from sync_data_system.providers.amazingdata.base import BaseDataSyncProvider
 from sync_data_system.config_paths import resolve_runtime_config_path
@@ -1059,6 +1060,7 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider, MarketD
             type(result).__name__,
             _count_sdk_result_rows(result),
         )
+        observed_codes: set[str] = set()
         for record in _iter_records_from_sdk_result(
             result,
             action="get_history_stock_status",
@@ -1068,6 +1070,7 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider, MarketD
             trade_date_value = _record_get(record, "TRADE_DATE", "trade_date")
             if not market_code or trade_date_value is None:
                 continue
+            observed_codes.add(market_code)
             trade_date = to_ch_date(trade_date_value)
             if start_date is not None and trade_date < start_date:
                 continue
@@ -1089,6 +1092,67 @@ class AmazingDataSDKProvider(BaseDataSyncProvider, InfoDataSyncProvider, MarketD
                 is_susp_sec=_as_str(_record_get(record, "IS_SUSP_SEC", "is_susp_sec")),
                 is_wd_sec=_as_str(_record_get(record, "IS_WD_SEC", "is_wd_sec")),
                 is_xr_sec=_as_str(_record_get(record, "IS_XR_SEC", "is_xr_sec")),
+            )
+
+        # The SDK documents get_history_stock_status as an A-share-only API.
+        # Daily kline supports stocks, indices and ETFs, so use it for codes the
+        # dedicated endpoint did not return. This keeps the public task and
+        # target table stable without downloading years of intraday snapshots.
+        missing_codes = [code for code in normalized_codes if code not in observed_codes]
+        if not missing_codes:
+            return
+        requested_begin = to_ch_date(start_date) if start_date is not None else date(2010, 1, 1)
+        requested_end = (
+            to_ch_date(end_date)
+            if end_date is not None
+            else self.session.get_latest_trade_date()
+        )
+        # Include an earlier window so the first requested row can obtain its
+        # previous trading close across weekends and long exchange holidays.
+        kline_begin = requested_begin - timedelta(days=31)
+        logger.info(
+            "AmazingData get_history_stock_status fallback=query_kline_daily "
+            "code_count=%s start_date=%s end_date=%s",
+            len(missing_codes),
+            requested_begin,
+            requested_end,
+        )
+        daily_last: dict[tuple[str, date], MarketKlineRow] = {}
+        for kline in self.fetch_kline(
+            missing_codes,
+            begin_date=kline_begin,
+            end_date=requested_end,
+            period=PeriodName.DAY,
+        ):
+            key = (kline.code, kline.trade_time.date())
+            previous = daily_last.get(key)
+            if previous is None or kline.trade_time > previous.trade_time:
+                daily_last[key] = kline
+        logger.info(
+            "AmazingData get_history_stock_status fallback=query_kline_daily rows=%s",
+            len(daily_last),
+        )
+        previous_close_by_code: dict[str, Optional[float]] = {}
+        for (market_code, trade_date), kline in sorted(daily_last.items()):
+            preclose = previous_close_by_code.get(market_code)
+            previous_close_by_code[market_code] = kline.close
+            if trade_date < requested_begin or trade_date > requested_end:
+                continue
+            yield HistoryStockStatusRow(
+                trade_date=trade_date,
+                market_code=market_code,
+                preclose=preclose,
+                high_limited=None,
+                low_limited=None,
+                price_high_lmt_rate=None,
+                price_low_lmt_rate=None,
+                # Daily kline does not expose these dedicated A-share status
+                # dimensions. Null is accurate; deriving them from zero volume
+                # or prices would create false data.
+                is_st_sec=None,
+                is_susp_sec=None,
+                is_wd_sec=None,
+                is_xr_sec=None,
             )
 
     def fetch_balance_sheet(self, code_list, start_date=None, end_date=None):
