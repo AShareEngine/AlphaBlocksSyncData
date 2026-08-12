@@ -1264,6 +1264,73 @@ def test_pro_bar_materializes_blank_unadjusted_business_dimension():
     ]
 
 
+def test_optional_blank_financial_business_dimensions_are_materialized():
+    class Provider:
+        def query_all(self, api_name, **kwargs):
+            if api_name == "balancesheet":
+                return [
+                    {
+                        "ts_code": "000001.SZ",
+                        "end_date": "20261231",
+                        "report_type": "1",
+                        "comp_type": "1",
+                        "end_type": None,
+                    }
+                ]
+            assert api_name == "fina_mainbz"
+            return [
+                {
+                    "ts_code": "000001.SZ",
+                    "end_date": "20261231",
+                    "bz_code": None,
+                    "bz_item": "零售业务",
+                    "curr_type": "CNY",
+                }
+            ]
+
+    provider = Provider()
+    balance_rows = _fetch_rows(
+        SyncArgs(task="balancesheet"),
+        TUSHARE_TASK_SPECS["balancesheet"],
+        provider,
+        {},
+    )
+    mainbz_rows = _fetch_rows(
+        SyncArgs(task="fina_mainbz"),
+        TUSHARE_TASK_SPECS["fina_mainbz"],
+        provider,
+        {},
+    )
+
+    assert balance_rows[0]["end_type"] == ""
+    assert mainbz_rows[0]["bz_code"] == ""
+
+
+def test_latest_cursor_queries_are_batched_for_large_code_universe():
+    class CursorClickHouse(FakeClickHouse):
+        def __init__(self):
+            super().__init__()
+            self.code_batches = []
+
+        def query_rows(self, sql, parameters=None):
+            if "GROUP BY" not in sql:
+                return []
+            code_batch = list(parameters["codes"])
+            self.code_batches.append(code_batch)
+            return [(code, "20260810") for code in code_batch]
+
+    client = CursorClickHouse()
+    repository = TushareRepository(client)
+    repository.ensure_task_table = lambda spec: None
+    codes = [f"{index:06d}.SZ" for index in range(1201)]
+
+    latest = repository.load_latest_cursors(TUSHARE_TASK_SPECS["daily"], codes)
+
+    assert len(client.code_batches) == 3
+    assert max(map(len, client.code_batches)) == 500
+    assert len(latest) == len(codes)
+
+
 def test_state_tables_have_log_and_checkpoint_semantics():
     client = FakeClickHouse()
     repository = TushareRepository(client)

@@ -524,6 +524,24 @@ Response:
 }
 ```
 
+### 6.11 Retry Failed Job Tasks
+
+`POST /api/jobs/{job_id}/retry-failed`
+
+This endpoint accepts a terminal batch job and creates a new batch containing
+only tasks whose result is `failed`, `partial_success`, `not_run`, or
+`interrupted`. Each selected task is forced into continuation mode with
+`resume=true` and `force=false`; successful tasks from the original job are not
+run again.
+
+Example:
+
+```bash
+curl -X POST http://127.0.0.1:18080/api/jobs/abc123def456/retry-failed
+```
+
+The response includes `retried_task_count` and the newly queued job in `job`.
+
 Final job status after process exit:
 
 - `cancelled`

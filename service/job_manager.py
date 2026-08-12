@@ -383,6 +383,75 @@ class SyncJobManager:
         self._dispatch_next()
         return self.get_job(parent.job_id)
 
+    def retry_failed_tasks(self, job_id: str) -> JobRecord:
+        """Create a resumable batch containing only a terminal job's failures."""
+
+        original = self.get_job(job_id)
+        if original.status not in TERMINAL_STATUSES:
+            raise RuntimeError(
+                f"job is still active and cannot be retried: {job_id} status={original.status}"
+            )
+        snapshot = deepcopy(original.request_payload or {})
+        original_tasks = list(snapshot.get("tasks") or [])
+        if not original_tasks:
+            raise ValueError(f"job does not contain retryable batch tasks: {job_id}")
+
+        results = list(self.read_task_results(job_id).get("tasks") or [])
+        retryable_statuses = {"failed", "partial_success", "not_run", "interrupted"}
+        failed_results = [
+            result
+            for result in results
+            if str(result.get("status") or "").strip().lower()
+            in retryable_statuses
+        ]
+        failed_by_id = {
+            str(result.get("task_id") or ""): result
+            for result in failed_results
+            if str(result.get("task_id") or "").strip()
+        }
+        failed_names = {
+            str(result.get("name") or "").strip()
+            for result in failed_results
+            if not str(result.get("task_id") or "").strip()
+            if str(result.get("name") or "").strip()
+        }
+        task_ids = list(snapshot.get("task_ids") or [])
+        retry_tasks: list[dict[str, Any]] = []
+        for index, raw_task in enumerate(original_tasks):
+            task_id = str(
+                raw_task.get("id")
+                or (task_ids[index] if index < len(task_ids) else "")
+            )
+            task_name = str(raw_task.get("name") or raw_task.get("task") or "").strip()
+            if task_id:
+                should_retry = task_id in failed_by_id
+            else:
+                should_retry = task_name in failed_names
+            if not should_retry:
+                continue
+            task = deepcopy(raw_task)
+            task.pop("id", None)
+            task["enabled"] = True
+            parameters = dict(task.get("parameters") or {})
+            parameters["resume"] = True
+            parameters["force"] = False
+            task["parameters"] = parameters
+            retry_tasks.append(task)
+
+        if not retry_tasks:
+            raise ValueError(f"job has no failed or unfinished tasks to retry: {job_id}")
+        original_name = str(
+            snapshot.get("name") or original.config_name or job_id
+        ).strip()
+        return self.create_task_batch_job(
+            name=f"{original_name} - 重试失败项",
+            tasks=retry_tasks,
+            continue_on_error=bool(snapshot.get("continue_on_error", True)),
+            log_level=str(snapshot.get("log_level") or "INFO"),
+            runtime_path=snapshot.get("runtime_path"),
+            trigger="retry_failed",
+        )
+
     def create_registered_task_job(
         self,
         *,

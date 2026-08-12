@@ -203,6 +203,15 @@ TUSHARE_BUSINESS_KEYS = _build_business_keys(BUSINESS_KEY_GROUPS)
 # Optional key inputs need their provider defaults materialized into the row so
 # direct CLI calls and generated plans use the same key representation.
 TUSHARE_BUSINESS_KEY_DEFAULTS: dict[str, dict[str, str]] = {
+    # The financial-statement gateway legitimately returns blank end_type for
+    # some reports.  It remains an explicit key dimension so a non-blank
+    # report type cannot collide with the ordinary blank series.
+    "balancesheet": {"end_type": ""},
+    "cashflow": {"end_type": ""},
+    "income": {"end_type": ""},
+    # Main-business rows can identify the item by bz_item even when the
+    # optional upstream classification code is blank.
+    "fina_mainbz": {"bz_code": ""},
     "pro_bar": {"asset": "E", "freq": "D", "adj": ""},
     "etf_mins": {"freq": "1min"},
     "idx_mins": {"freq": "1min"},

@@ -824,6 +824,38 @@ sync:
         self.assertEqual(payload["job_id"], "job1")
         self.assertEqual(payload["task_metadata"]["name"], "amazingdata.daily_kline")
 
+    def test_retry_failed_job_tasks_returns_new_batch(self) -> None:
+        client = TestClient(app)
+        fake_job = JobRecord(
+            job_id="retry-job",
+            kind="task_batch",
+            status="queued",
+            created_at="2026-08-12T01:00:00+00:00",
+            started_at=None,
+            finished_at=None,
+            cwd="/tmp",
+            command=[],
+            log_path="/tmp/retry-job.log",
+            request_payload={
+                "tasks": [
+                    {"name": "tushare.ci_daily", "parameters": {"resume": True}}
+                ]
+            },
+        )
+        with patch(
+            "sync_data_system.service.api.JOB_MANAGER.retry_failed_tasks",
+            return_value=fake_job,
+        ) as retry_failed:
+            response = client.post("/api/jobs/original-job/retry-failed")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["original_job_id"], "original-job")
+        self.assertEqual(payload["retried_task_count"], 1)
+        self.assertEqual(payload["job"]["job_id"], "retry-job")
+        retry_failed.assert_called_once_with("original-job")
+
     def test_config_schedule_uses_config_scoped_endpoint(self) -> None:
         client = TestClient(app)
 

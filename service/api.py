@@ -282,7 +282,11 @@ PROVIDER_CONFIG_SCHEMAS: dict[str, list[dict[str, Any]]] = {
 
 def _job_error_to_http(exc: Exception) -> HTTPException:
     message = str(exc)
-    if "already queued or running" in message or "enable the schedule before editing" in message:
+    if (
+        "already queued or running" in message
+        or "enable the schedule before editing" in message
+        or "still active and cannot be retried" in message
+    ):
         return HTTPException(status_code=409, detail=message)
     if isinstance(exc, (FileNotFoundError, ValueError)):
         return HTTPException(status_code=400, detail=message)
@@ -1412,3 +1416,20 @@ def cancel_job(job_id: str):
     except KeyError:
         raise HTTPException(status_code=404, detail="job not found")
     return _job_response(job)
+
+
+@app.post("/api/sync/jobs/{job_id}/retry-failed")
+@app.post("/api/jobs/{job_id}/retry-failed")
+def retry_failed_job_tasks(job_id: str):
+    try:
+        job = JOB_MANAGER.retry_failed_tasks(job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="job not found")
+    except Exception as exc:
+        raise _job_error_to_http(exc)
+    return {
+        "ok": True,
+        "original_job_id": job_id,
+        "retried_task_count": len((job.request_payload or {}).get("tasks") or []),
+        "job": _job_response(job),
+    }

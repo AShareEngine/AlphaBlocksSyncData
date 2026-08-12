@@ -450,6 +450,68 @@ class SyncJobManagerTest(unittest.TestCase):
                 manager.get_job(parent.job_id).error,
             )
 
+    def test_retry_failed_tasks_only_requeues_failures_in_resume_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "sync_project"
+            root.mkdir()
+            manager = SyncJobManager(root, state_dir=root / ".service_state")
+            tasks = [
+                {
+                    "name": "tushare.daily",
+                    "enabled": True,
+                    "parameters": {"force": True},
+                },
+                {
+                    "name": "tushare.ci_daily",
+                    "enabled": True,
+                    "parameters": {"force": True},
+                },
+            ]
+            original = JobRecord(
+                job_id="partial-job",
+                kind="task_batch",
+                status="partial_success",
+                created_at="2026-08-11T01:00:00+00:00",
+                started_at="2026-08-11T01:00:01+00:00",
+                finished_at="2026-08-11T02:00:00+00:00",
+                cwd=str(root),
+                command=[],
+                log_path=str(root / "partial-job.log"),
+                request_payload={
+                    "name": "Tushare 全量",
+                    "tasks": tasks,
+                    "task_ids": ["daily-id", "ci-id"],
+                    "continue_on_error": True,
+                    "log_level": "DEBUG",
+                },
+            )
+            manager._jobs[original.job_id] = original
+            manager.read_task_results = Mock(
+                return_value={
+                    "tasks": [
+                        {"task_id": "daily-id", "name": "tushare.daily", "status": "success"},
+                        {"task_id": "ci-id", "name": "tushare.ci_daily", "status": "failed"},
+                    ]
+                }
+            )
+            retry_process = ControlledProcess()
+
+            with patch(
+                "sync_data_system.service.job_manager.subprocess.Popen",
+                return_value=retry_process,
+            ):
+                retry = manager.retry_failed_tasks(original.job_id)
+
+            self.assertEqual(retry.trigger, "retry_failed")
+            self.assertEqual(retry.config_name, "Tushare 全量 - 重试失败项")
+            self.assertEqual(len(retry.request_payload["tasks"]), 1)
+            retried_task = retry.request_payload["tasks"][0]
+            self.assertEqual(retried_task["name"], "tushare.ci_daily")
+            self.assertTrue(retried_task["parameters"]["resume"])
+            self.assertFalse(retried_task["parameters"]["force"])
+            retry_process.finish()
+            wait_for_status(manager, retry.job_id, {"success"})
+
     def test_failed_job_persists_exception_summary_from_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "sync_project"

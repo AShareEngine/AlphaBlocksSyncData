@@ -26,6 +26,7 @@ LEGACY_META_COLUMNS = (
     "_cursor_value",
     "_ingested_at",
 )
+LATEST_CURSOR_CODE_BATCH_SIZE = 500
 
 
 class TushareRepository:
@@ -170,21 +171,33 @@ class TushareRepository:
         self.ensure_task_table(spec)
         code_column = _quote_identifier(spec.code_field)
         cursor_column = _quote_identifier(spec.cursor_field)
-        rows = self.client.query_rows(
-            f"""
-            SELECT {code_column}, max({cursor_column})
-            FROM {self._table_ref(spec.table_name)}
-            WHERE {code_column} IN {{codes:Array(String)}}
-              AND {cursor_column} != ''
-            GROUP BY {code_column}
-            """,
-            {"codes": normalized_codes},
-        )
-        return {
-            str(row[0]).strip(): _stringify(row[1])
-            for row in rows
-            if len(row) >= 2 and str(row[0]).strip() and _stringify(row[1])
-        }
+        sql = f"""
+        SELECT {code_column}, max({cursor_column})
+        FROM {self._table_ref(spec.table_name)}
+        WHERE {code_column} IN {{codes:Array(String)}}
+          AND {cursor_column} != ''
+        GROUP BY {code_column}
+        """
+        latest: dict[str, str] = {}
+        # clickhouse-connect sends bound parameters as HTTP form fields.  A
+        # full stock universe can exceed ClickHouse's maximum form-field
+        # length before the SQL is executed, so query persisted cursors in
+        # bounded chunks instead of one multi-thousand-code parameter.
+        for offset in range(0, len(normalized_codes), LATEST_CURSOR_CODE_BATCH_SIZE):
+            code_batch = normalized_codes[
+                offset : offset + LATEST_CURSOR_CODE_BATCH_SIZE
+            ]
+            rows = self.client.query_rows(sql, {"codes": code_batch})
+            latest.update(
+                {
+                    str(row[0]).strip(): _stringify(row[1])
+                    for row in rows
+                    if len(row) >= 2
+                    and str(row[0]).strip()
+                    and _stringify(row[1])
+                }
+            )
+        return latest
 
     def load_universe_codes(self, spec: TushareTaskSpec) -> list[str]:
         """Load a previously synchronized security universe from ClickHouse."""
