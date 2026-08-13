@@ -51,6 +51,22 @@ DEFAULT_DATABASE = "starlight"
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 AUDIT_CODE_BATCH_SIZE = 250
 
+# Financial statements are company data at the source, but consumers of this
+# project also need them addressable by the exchange symbol that was active at
+# each point in time.  For verified code migrations we therefore materialize
+# rows under the predecessor code, bounded by that code's final trading date.
+BACKTEST_CODE_IDENTITY_TASKS = frozenset(
+    {"balance_sheet", "cash_flow", "income"}
+)
+FINANCIAL_STATEMENT_KEY_COLUMNS = (
+    "reporting_period",
+    "report_date",
+    "statement_type",
+    "report_type",
+    "ann_date",
+    "actual_ann_date",
+)
+
 # These tables are expected to have broad stock coverage.  They are safe enough
 # for the default --execute set because an absent code normally means a missing
 # backfill rather than "the event never happened".
@@ -165,6 +181,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="append",
         default=[],
         help="仅检查/执行指定任务，可重复；支持 income 或 amazingdata.income。",
+    )
+    parser.add_argument(
+        "--codes",
+        default="",
+        help="只审计/回补指定历史证券代码，多个代码用逗号分隔。",
     )
     parser.add_argument(
         "--execute",
@@ -327,6 +348,161 @@ def canonicalize_codes(codes: Iterable[str], aliases: dict[str, str]) -> set[str
     return {aliases.get(str(code).strip().upper(), str(code).strip().upper()) for code in codes}
 
 
+def parse_code_filter(value: str) -> set[str]:
+    return {
+        item.strip().upper()
+        for item in str(value or "").split(",")
+        if item.strip()
+    }
+
+
+def load_legacy_code_cutoffs(
+    connection: ClickHouseConnection,
+    *,
+    database: str,
+    old_codes: Iterable[str],
+) -> dict[str, date]:
+    codes = sorted({str(code).strip().upper() for code in old_codes if code})
+    if not codes:
+        return {}
+    rows = connection.query_rows(
+        f"""
+        SELECT code, max(trade_date) AS final_trade_date
+        FROM `{database}`.`ad_hist_code_daily`
+        WHERE code IN {{old_codes:Array(String)}}
+        GROUP BY code
+        """,
+        {"old_codes": codes},
+    )
+    return {
+        str(code).strip().upper(): to_ch_date(final_trade_date)
+        for code, final_trade_date in rows
+        if code and final_trade_date
+    }
+
+
+def load_table_columns(
+    connection: ClickHouseConnection,
+    *,
+    database: str,
+    table: str,
+) -> list[str]:
+    rows = connection.query_rows(
+        """
+        SELECT name
+        FROM system.columns
+        WHERE database = {database:String} AND table = {table:String}
+        ORDER BY position
+        """,
+        {"database": database, "table": table},
+    )
+    return [str(row[0]) for row in rows if row]
+
+
+def _financial_statement_key(record: dict[str, object]) -> tuple[object, ...]:
+    reporting_period = record.get("reporting_period") or record.get("report_date")
+    return (
+        reporting_period,
+        str(record.get("statement_type") or ""),
+        str(record.get("report_type") or ""),
+        record.get("ann_date") or date(1970, 1, 1),
+        record.get("actual_ann_date") or date(1970, 1, 1),
+    )
+
+
+def materialize_legacy_financial_rows(
+    connection: ClickHouseConnection,
+    *,
+    database: str,
+    task: str,
+    old_codes: Iterable[str],
+    company_aliases: dict[str, str],
+    legacy_cutoffs: dict[str, date],
+) -> tuple[int, tuple[str, ...]]:
+    """Copy PIT-safe financial history from successor codes to old symbols.
+
+    Rows are copied only when they were public no later than the predecessor's
+    last trading day.  Existing business keys are skipped, making reruns
+    idempotent without relying on a later ClickHouse merge.
+    """
+
+    if task not in BACKTEST_CODE_IDENTITY_TASKS:
+        return 0, ()
+    table = runner.TASK_TARGET_TABLE_MAP[task]
+    columns = load_table_columns(connection, database=database, table=table)
+    required_columns = {"market_code", *FINANCIAL_STATEMENT_KEY_COLUMNS}
+    missing_columns = sorted(required_columns - set(columns))
+    if missing_columns:
+        raise ValueError(
+            f"{database}.{table} 缺少旧代码财务映射所需字段: "
+            f"{','.join(missing_columns)}"
+        )
+
+    quoted_columns = ", ".join(f"`{column}`" for column in columns)
+    market_code_index = columns.index("market_code")
+    inserted_rows = 0
+    processed: list[str] = []
+    for old_code in sorted({str(code).strip().upper() for code in old_codes if code}):
+        successor_code = company_aliases.get(old_code)
+        cutoff = legacy_cutoffs.get(old_code)
+        if not successor_code or cutoff is None:
+            continue
+
+        source_rows = connection.query_rows(
+            f"""
+            SELECT {quoted_columns}
+            FROM `{database}`.`{table}` FINAL
+            WHERE market_code = {{successor_code:String}}
+              AND coalesce(
+                    actual_ann_date,
+                    ann_date,
+                    report_date,
+                    reporting_period,
+                    toDate('1970-01-01')
+                  ) <= {{cutoff:Date}}
+            """,
+            {"successor_code": successor_code, "cutoff": cutoff},
+        )
+        existing_rows = connection.query_rows(
+            f"""
+            SELECT {quoted_columns}
+            FROM `{database}`.`{table}` FINAL
+            WHERE market_code = {{old_code:String}}
+            """,
+            {"old_code": old_code},
+        )
+        existing_keys = {
+            _financial_statement_key(dict(zip(columns, row)))
+            for row in existing_rows
+        }
+        rows_to_insert: list[tuple[object, ...]] = []
+        for row in source_rows:
+            mutable = list(row)
+            mutable[market_code_index] = old_code
+            mapped_row = tuple(mutable)
+            business_key = _financial_statement_key(dict(zip(columns, mapped_row)))
+            if business_key in existing_keys:
+                continue
+            existing_keys.add(business_key)
+            rows_to_insert.append(mapped_row)
+
+        if rows_to_insert:
+            connection.insert_rows(
+                f"{database}.{table}",
+                columns,
+                rows_to_insert,
+            )
+            inserted_rows += len(rows_to_insert)
+        processed.append(old_code)
+        print(
+            f"[MAP] task={task} old_code={old_code} "
+            f"successor_code={successor_code} cutoff={cutoff.isoformat()} "
+            f"source_rows={len(source_rows)} inserted_rows={len(rows_to_insert)}",
+            flush=True,
+        )
+    return inserted_rows, tuple(processed)
+
+
 def get_code_column(
     connection: ClickHouseConnection,
     *,
@@ -391,7 +567,10 @@ def audit_task(
     company_aliases: dict[str, str],
 ) -> CoverageResult:
     table = runner.TASK_TARGET_TABLE_MAP[task]
-    category = "company" if task in COMPANY_IDENTITY_TASKS else "security"
+    if task in BACKTEST_CODE_IDENTITY_TASKS:
+        category = "security_backtest"
+    else:
+        category = "company" if task in COMPANY_IDENTITY_TASKS else "security"
     code_column = get_code_column(
         connection,
         database=database,
@@ -422,7 +601,12 @@ def audit_task(
         code_column=code_column,
         expected_codes=historical_codes | set(company_aliases.values()),
     )
-    aliases = company_aliases if task in COMPANY_IDENTITY_TASKS else security_aliases
+    if task in BACKTEST_CODE_IDENTITY_TASKS:
+        # Financial rows must be directly queryable by the historical symbol;
+        # a successor row alone is not sufficient for a code-based backtest.
+        aliases: dict[str, str] = {}
+    else:
+        aliases = company_aliases if task in COMPANY_IDENTITY_TASKS else security_aliases
     expected = canonicalize_codes(historical_codes, aliases)
     existing = canonicalize_codes(existing_raw, aliases)
     current = canonicalize_codes(current_codes, aliases)
@@ -480,10 +664,13 @@ def execute_backfill(
     begin_date: int,
     end_date: int | None,
     selected: list[tuple[str, list[str]]],
+    connection: ClickHouseConnection,
+    company_aliases: dict[str, str],
+    legacy_cutoffs: dict[str, date],
 ) -> list[ExecutionResult]:
     if not selected:
         return []
-    context = runner.build_context(runtime_path=runtime_path, database=database)
+    context = None
     results: list[ExecutionResult] = []
     try:
         for index, (task, codes) in enumerate(selected, start=1):
@@ -492,18 +679,35 @@ def execute_backfill(
                 flush=True,
             )
             try:
-                runner.execute_task_spec(
-                    context,
-                    runner.TaskRunSpec(
+                mapped_codes: tuple[str, ...] = ()
+                if task in BACKTEST_CODE_IDENTITY_TASKS:
+                    _inserted, mapped_codes = materialize_legacy_financial_rows(
+                        connection,
+                        database=database,
                         task=task,
-                        codes_raw=",".join(codes),
-                        begin_date=begin_date,
-                        end_date=end_date,
-                        force=True,
-                        resume=False,
-                        universe_mode="current",
-                    ),
-                )
+                        old_codes=codes,
+                        company_aliases=company_aliases,
+                        legacy_cutoffs=legacy_cutoffs,
+                    )
+                direct_codes = [code for code in codes if code not in mapped_codes]
+                if direct_codes:
+                    if context is None:
+                        context = runner.build_context(
+                            runtime_path=runtime_path,
+                            database=database,
+                        )
+                    runner.execute_task_spec(
+                        context,
+                        runner.TaskRunSpec(
+                            task=task,
+                            codes_raw=",".join(direct_codes),
+                            begin_date=begin_date,
+                            end_date=end_date,
+                            force=True,
+                            resume=False,
+                            universe_mode="current",
+                        ),
+                    )
             except Exception as exc:
                 logger.exception("AmazingData missing-stock backfill failed task=%s", task)
                 results.append(
@@ -525,7 +729,8 @@ def execute_backfill(
                     )
                 )
     finally:
-        context.close()
+        if context is not None:
+            context.close()
     return results
 
 
@@ -569,11 +774,23 @@ def main(argv: list[str] | None = None) -> int:
                 "ad_hist_code_daily 中没有请求区间内的 EXTRA_STOCK_A；"
                 "请先同步 amazingdata.hist_code_list。"
             )
+        code_filter = parse_code_filter(args.codes)
+        if code_filter:
+            historical_codes &= code_filter
+            if not historical_codes:
+                raise RuntimeError(
+                    "--codes 指定的代码不在 ad_hist_code_daily 的历史 A 股池中。"
+                )
         current_codes = load_current_codes(connection, database=args.database)
         security_aliases, company_aliases = load_code_aliases(
             connection,
             database=args.database,
             current_codes=current_codes,
+        )
+        legacy_cutoffs = load_legacy_code_cutoffs(
+            connection,
+            database=args.database,
+            old_codes=company_aliases,
         )
         print(
             f"[POOL] begin={args.begin_date} end={audit_end} "
@@ -615,6 +832,9 @@ def main(argv: list[str] | None = None) -> int:
                 begin_date=args.begin_date,
                 end_date=args.end_date,
                 selected=selected,
+                connection=connection,
+                company_aliases=company_aliases,
+                legacy_cutoffs=legacy_cutoffs,
             )
 
             for result in before:
@@ -665,6 +885,7 @@ def main(argv: list[str] | None = None) -> int:
         "end_date": audit_end,
         "execute": bool(args.execute),
         "include_current": bool(args.include_current),
+        "codes": sorted(parse_code_filter(args.codes)),
         "before": [asdict(item) for item in before],
         "executions": [asdict(item) for item in executions],
         "after": [asdict(item) for item in after],

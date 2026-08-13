@@ -9,7 +9,9 @@ from scripts.backfill_amazingdata_missing_stocks import (
     KNOWN_COMPANY_CODE_ALIASES,
     audit_task,
     canonicalize_codes,
+    materialize_legacy_financial_rows,
     normalize_mapped_code,
+    parse_code_filter,
     resolve_requested_tasks,
 )
 
@@ -38,10 +40,25 @@ class AmazingDataMissingStockBackfillTest(unittest.TestCase):
             {"920017.BJ"},
         )
 
-    def test_company_task_treats_successor_code_as_covered(self) -> None:
+    def test_financial_task_requires_old_code_for_backtest(self) -> None:
         result = audit_task(
             _AuditConnection(["601975.SH"]),
             task="income",
+            database="starlight",
+            historical_codes={"600087.SH"},
+            current_codes={"601975.SH"},
+            security_aliases={},
+            company_aliases={"600087.SH": "601975.SH"},
+        )
+
+        self.assertEqual(result.category, "security_backtest")
+        self.assertEqual(result.missing_codes, ("600087.SH",))
+        self.assertEqual(result.aliases_satisfied, 0)
+
+    def test_other_company_task_treats_successor_code_as_covered(self) -> None:
+        result = audit_task(
+            _AuditConnection(["601975.SH"]),
+            task="equity_structure",
             database="starlight",
             historical_codes={"600087.SH"},
             current_codes={"601975.SH"},
@@ -72,6 +89,68 @@ class AmazingDataMissingStockBackfillTest(unittest.TestCase):
 
     def test_verified_company_migration_aliases_are_available(self) -> None:
         self.assertEqual(KNOWN_COMPANY_CODE_ALIASES["300114.SZ"], "302132.SZ")
+
+    def test_parse_code_filter(self) -> None:
+        self.assertEqual(
+            parse_code_filter("300114.sz, 601313.SH,300114.SZ"),
+            {"300114.SZ", "601313.SH"},
+        )
+
+    def test_materialize_financial_rows_is_pit_safe_and_idempotent(self) -> None:
+        columns = [
+            "market_code",
+            "report_date",
+            "statement_type",
+            "report_type",
+            "reporting_period",
+            "ann_date",
+            "actual_ann_date",
+            "payload_json",
+        ]
+        source_rows = [
+            (
+                "302132.SZ",
+                __import__("datetime").date(2024, 12, 31),
+                "1",
+                "4",
+                __import__("datetime").date(2024, 12, 31),
+                __import__("datetime").date(2025, 1, 30),
+                __import__("datetime").date(2025, 1, 30),
+                "{}",
+            )
+        ]
+
+        class _MaterializeConnection:
+            def __init__(self) -> None:
+                self.inserted = []
+
+            def query_rows(self, sql, parameters=None):
+                if "system.columns" in sql:
+                    return [(column,) for column in columns]
+                if parameters and parameters.get("successor_code"):
+                    return source_rows
+                if parameters and parameters.get("old_code"):
+                    return []
+                raise AssertionError(sql)
+
+            def insert_rows(self, table, column_names, rows):
+                self.inserted.append((table, list(column_names), list(rows)))
+
+        connection = _MaterializeConnection()
+        inserted, processed = materialize_legacy_financial_rows(
+            connection,
+            database="starlight",
+            task="income",
+            old_codes=["300114.SZ"],
+            company_aliases={"300114.SZ": "302132.SZ"},
+            legacy_cutoffs={
+                "300114.SZ": __import__("datetime").date(2025, 2, 14)
+            },
+        )
+
+        self.assertEqual(inserted, 1)
+        self.assertEqual(processed, ("300114.SZ",))
+        self.assertEqual(connection.inserted[0][2][0][0], "300114.SZ")
 
 
 if __name__ == "__main__":
