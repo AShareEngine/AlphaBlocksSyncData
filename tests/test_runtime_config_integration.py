@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 import tempfile
 import textwrap
@@ -14,10 +15,24 @@ from program_bootstrap import install_sync_data_system_alias
 from sync_data_system.providers.amazingdata.provider import AmazingDataSDKConfig
 from sync_data_system.providers.qmt.provider import QmtConfig
 from sync_data_system.runtime_config import load_runtime_config
+from sync_data_system.config_paths import DEFAULT_RUNTIME_CONFIG_PATH, resolve_runtime_config_path
 from sync_data_system.scripts.validate_runtime_config import validate_runtime_config
 
 
 class RuntimeConfigIntegrationTest(unittest.TestCase):
+    def test_alphablocks_runtime_env_does_not_override_sync_data_runtime(self) -> None:
+        previous = os.environ.get("ALPHABLOCKS_RUNTIME_CONFIG")
+        os.environ["ALPHABLOCKS_RUNTIME_CONFIG"] = "/tmp/AlphaBlocks/config/runtime.local.yaml"
+        try:
+            resolved = resolve_runtime_config_path()
+        finally:
+            if previous is None:
+                os.environ.pop("ALPHABLOCKS_RUNTIME_CONFIG", None)
+            else:
+                os.environ["ALPHABLOCKS_RUNTIME_CONFIG"] = previous
+
+        self.assertEqual(resolved, DEFAULT_RUNTIME_CONFIG_PATH)
+
     def test_package_does_not_eagerly_import_provider_runner(self) -> None:
         sys.modules.pop("sync_data_system.providers.amazingdata.runner", None)
         sys.modules.pop("sync_data_system", None)

@@ -14,6 +14,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from sync_data_system.clickhouse_client import ClickHouseConfig, create_clickhouse_client
+from sync_data_system.config_paths import resolve_runtime_config_path
 from sync_data_system.scripts.run_provider_sync import run_registered_task
 from sync_data_system.service.log_time import log_timestamp
 from sync_data_system.service.log_redaction import redact_sensitive_text
@@ -244,7 +245,10 @@ def _run_wide_table_task(
     ).strip()
     spec_path = f"inline://{wide_table_name}.yaml"
     metadata = build_wide_table_metadata(inline_payload, spec_path=spec_path)
-    runtime_path = str(task.get("runtime_path") or batch_runtime_path or "").strip() or None
+    runtime_path = _resolve_wide_table_runtime_path(
+        task.get("runtime_path"),
+        batch_runtime_path,
+    )
     state_database = str(task.get("state_database") or "").strip() or None
     result["effective_parameters"] = {
         "wide_table_id": metadata.wide_table_id,
@@ -261,6 +265,28 @@ def _run_wide_table_task(
     failures = [item.message for item in results if item.status != "success"]
     if failures:
         raise RuntimeError("; ".join(failures))
+
+
+def _resolve_wide_table_runtime_path(
+    task_runtime_path: object,
+    batch_runtime_path: str | None,
+) -> str:
+    """Keep a wide-table job inside the SyncData configuration boundary.
+
+    AlphaBlocks and AlphaBlocksSyncData each own a different runtime.local.yaml.
+    Older Studio payloads could embed AlphaBlocks' path in tasks[].runtime_path;
+    that field crosses the service boundary and must never override SyncData's
+    configuration.  A top-level batch runtime remains an explicit SyncData API
+    option; otherwise this service resolves its own environment/default path.
+    """
+
+    del task_runtime_path
+    requested = str(batch_runtime_path or "").strip()
+    if requested:
+        candidate = Path(requested).expanduser()
+        if candidate.exists():
+            return str(candidate.resolve())
+    return str(resolve_runtime_config_path().resolve())
 
 
 def _record_batch_table_check(

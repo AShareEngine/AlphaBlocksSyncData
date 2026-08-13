@@ -10,11 +10,52 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
-from sync_data_system.service.task_batch import _resolve_incremental_parameters, run_task_batch
+from sync_data_system.service.task_batch import (
+    _resolve_incremental_parameters,
+    _resolve_wide_table_runtime_path,
+    run_task_batch,
+)
 from sync_data_system.wide_table_sync import WideTableRunResult
 
 
 class TaskBatchTest(unittest.TestCase):
+    def test_wide_table_missing_foreign_runtime_falls_back_to_sync_runtime(self) -> None:
+        missing = "/Users/example/AlphaBlocks/config/runtime.local.yaml"
+        with patch(
+            "sync_data_system.service.task_batch.resolve_runtime_config_path",
+            return_value=Path("/srv/AlphaBlocksSyncData/config/runtime.local.yaml"),
+        ):
+            resolved = _resolve_wide_table_runtime_path(missing, None)
+
+        self.assertEqual(
+            resolved,
+            "/srv/AlphaBlocksSyncData/config/runtime.local.yaml",
+        )
+
+    def test_wide_table_ignores_existing_task_runtime_from_other_service(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            task_runtime = Path(tmpdir) / "runtime.local.yaml"
+            task_runtime.write_text("datasource: {}", encoding="utf-8")
+            sync_runtime = Path(tmpdir) / "sync-runtime.local.yaml"
+            sync_runtime.write_text("datasource: {}", encoding="utf-8")
+
+            with patch(
+                "sync_data_system.service.task_batch.resolve_runtime_config_path",
+                return_value=sync_runtime,
+            ):
+                resolved = _resolve_wide_table_runtime_path(str(task_runtime), None)
+
+        self.assertEqual(resolved, str(sync_runtime.resolve()))
+
+    def test_wide_table_keeps_existing_explicit_batch_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_path = Path(tmpdir) / "runtime.local.yaml"
+            runtime_path.write_text("datasource: {}", encoding="utf-8")
+
+            resolved = _resolve_wide_table_runtime_path(None, str(runtime_path))
+
+        self.assertEqual(resolved, str(runtime_path.resolve()))
+
     def test_batch_executes_wide_table_task_through_managed_job_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

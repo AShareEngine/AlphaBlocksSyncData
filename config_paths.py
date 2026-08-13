@@ -30,7 +30,6 @@ def resolve_runtime_config_path(path_like: str | Path | None = None) -> Path:
     env_path = (
         os.environ.get("SYNC_DATA_RUNTIME_CONFIG")
         or os.environ.get("ALPHABLOCKS_SYNC_DATA_RUNTIME_CONFIG")
-        or os.environ.get("ALPHABLOCKS_RUNTIME_CONFIG")
         or os.environ.get("RUNTIME_CONFIG_PATH")
     )
     if path_like is None:
