@@ -56,7 +56,7 @@ AUDIT_CODE_BATCH_SIZE = 250
 # each point in time.  For verified code migrations we therefore materialize
 # rows under the predecessor code, bounded by that code's final trading date.
 BACKTEST_CODE_IDENTITY_TASKS = frozenset(
-    {"balance_sheet", "cash_flow", "income"}
+    {"balance_sheet", "cash_flow", "income", "equity_structure"}
 )
 FINANCIAL_STATEMENT_KEY_COLUMNS = (
     "reporting_period",
@@ -66,6 +66,7 @@ FINANCIAL_STATEMENT_KEY_COLUMNS = (
     "ann_date",
     "actual_ann_date",
 )
+EQUITY_STRUCTURE_KEY_COLUMNS = ("change_date", "ann_date")
 
 # These tables are expected to have broad stock coverage.  They are safe enough
 # for the default --execute set because an absent code normally means a missing
@@ -399,7 +400,12 @@ def load_table_columns(
     return [str(row[0]) for row in rows if row]
 
 
-def _financial_statement_key(record: dict[str, object]) -> tuple[object, ...]:
+def _mapped_history_key(task: str, record: dict[str, object]) -> tuple[object, ...]:
+    if task == "equity_structure":
+        return (
+            record.get("change_date") or date(1970, 1, 1),
+            record.get("ann_date") or date(1970, 1, 1),
+        )
     reporting_period = record.get("reporting_period") or record.get("report_date")
     return (
         reporting_period,
@@ -419,7 +425,7 @@ def materialize_legacy_financial_rows(
     company_aliases: dict[str, str],
     legacy_cutoffs: dict[str, date],
 ) -> tuple[int, tuple[str, ...]]:
-    """Copy PIT-safe financial history from successor codes to old symbols.
+    """Copy PIT-safe company history from successor codes to old symbols.
 
     Rows are copied only when they were public no later than the predecessor's
     last trading day.  Existing business keys are skipped, making reruns
@@ -430,7 +436,12 @@ def materialize_legacy_financial_rows(
         return 0, ()
     table = runner.TASK_TARGET_TABLE_MAP[task]
     columns = load_table_columns(connection, database=database, table=table)
-    required_columns = {"market_code", *FINANCIAL_STATEMENT_KEY_COLUMNS}
+    key_columns = (
+        EQUITY_STRUCTURE_KEY_COLUMNS
+        if task == "equity_structure"
+        else FINANCIAL_STATEMENT_KEY_COLUMNS
+    )
+    required_columns = {"market_code", *key_columns}
     missing_columns = sorted(required_columns - set(columns))
     if missing_columns:
         raise ValueError(
@@ -448,18 +459,29 @@ def materialize_legacy_financial_rows(
         if not successor_code or cutoff is None:
             continue
 
-        source_rows = connection.query_rows(
-            f"""
-            SELECT {quoted_columns}
-            FROM `{database}`.`{table}` FINAL
-            WHERE market_code = {{successor_code:String}}
+        if task == "equity_structure":
+            cutoff_filter = """
+              AND coalesce(ann_date, change_date, ex_change_date,
+                           toDate('1970-01-01')) <= {cutoff:Date}
+              AND coalesce(ex_change_date, change_date, ann_date,
+                           toDate('1970-01-01')) <= {cutoff:Date}
+            """
+        else:
+            cutoff_filter = """
               AND coalesce(
                     actual_ann_date,
                     ann_date,
                     report_date,
                     reporting_period,
                     toDate('1970-01-01')
-                  ) <= {{cutoff:Date}}
+                  ) <= {cutoff:Date}
+            """
+        source_rows = connection.query_rows(
+            f"""
+            SELECT {quoted_columns}
+            FROM `{database}`.`{table}` FINAL
+            WHERE market_code = {{successor_code:String}}
+            {cutoff_filter}
             """,
             {"successor_code": successor_code, "cutoff": cutoff},
         )
@@ -472,7 +494,7 @@ def materialize_legacy_financial_rows(
             {"old_code": old_code},
         )
         existing_keys = {
-            _financial_statement_key(dict(zip(columns, row)))
+            _mapped_history_key(task, dict(zip(columns, row)))
             for row in existing_rows
         }
         rows_to_insert: list[tuple[object, ...]] = []
@@ -480,7 +502,7 @@ def materialize_legacy_financial_rows(
             mutable = list(row)
             mutable[market_code_index] = old_code
             mapped_row = tuple(mutable)
-            business_key = _financial_statement_key(dict(zip(columns, mapped_row)))
+            business_key = _mapped_history_key(task, dict(zip(columns, mapped_row)))
             if business_key in existing_keys:
                 continue
             existing_keys.add(business_key)

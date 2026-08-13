@@ -58,7 +58,7 @@ class AmazingDataMissingStockBackfillTest(unittest.TestCase):
     def test_other_company_task_treats_successor_code_as_covered(self) -> None:
         result = audit_task(
             _AuditConnection(["601975.SH"]),
-            task="equity_structure",
+            task="share_holder",
             database="starlight",
             historical_codes={"600087.SH"},
             current_codes={"601975.SH"},
@@ -151,6 +151,58 @@ class AmazingDataMissingStockBackfillTest(unittest.TestCase):
         self.assertEqual(inserted, 1)
         self.assertEqual(processed, ("300114.SZ",))
         self.assertEqual(connection.inserted[0][2][0][0], "300114.SZ")
+
+    def test_materialize_equity_structure_uses_historical_symbol(self) -> None:
+        columns = [
+            "market_code",
+            "ann_date",
+            "change_date",
+            "ex_change_date",
+            "tot_share",
+        ]
+        source_rows = [
+            (
+                "302132.SZ",
+                __import__("datetime").date(2025, 1, 17),
+                __import__("datetime").date(2025, 1, 22),
+                __import__("datetime").date(2025, 1, 21),
+                267678.2376,
+            )
+        ]
+
+        class _Connection:
+            def __init__(self) -> None:
+                self.inserted = []
+
+            def query_rows(self, sql, parameters=None):
+                if "system.columns" in sql:
+                    return [(column,) for column in columns]
+                if parameters and parameters.get("successor_code"):
+                    self.assert_cutoff_sql = sql
+                    return source_rows
+                if parameters and parameters.get("old_code"):
+                    return []
+                raise AssertionError(sql)
+
+            def insert_rows(self, table, column_names, rows):
+                self.inserted.extend(rows)
+
+        connection = _Connection()
+        inserted, processed = materialize_legacy_financial_rows(
+            connection,
+            database="starlight",
+            task="equity_structure",
+            old_codes=["300114.SZ"],
+            company_aliases={"300114.SZ": "302132.SZ"},
+            legacy_cutoffs={
+                "300114.SZ": __import__("datetime").date(2025, 2, 14)
+            },
+        )
+
+        self.assertEqual(inserted, 1)
+        self.assertEqual(processed, ("300114.SZ",))
+        self.assertEqual(connection.inserted[0][0], "300114.SZ")
+        self.assertIn("ex_change_date", connection.assert_cutoff_sql)
 
 
 if __name__ == "__main__":
