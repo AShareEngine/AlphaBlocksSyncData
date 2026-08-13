@@ -2255,6 +2255,36 @@ def task_requires_code_list(task: str) -> bool:
     return task not in {"bj_code_mapping", "industry_base_info", "margin_summary", "hist_code_list"}
 
 
+def load_bj_code_aliases(client: Any) -> dict[str, str]:
+    """Return legacy Beijing exchange codes mapped to their current 920 codes."""
+
+    try:
+        rows = client.query_rows(
+            "SELECT old_code, new_code FROM starlight.ad_bj_code_mapping"
+        )
+    except Exception as exc:
+        logger.warning("load ad_bj_code_mapping failed; keeping raw BJ codes: %s", exc)
+        return {}
+
+    aliases: dict[str, str] = {}
+    for row in rows:
+        if not row or len(row) < 2:
+            continue
+        old_code, new_code = row[0], row[1]
+        old = str(old_code or "").strip().upper()
+        new = str(new_code or "").strip().upper()
+        if not old or not new:
+            continue
+        aliases[old if "." in old else f"{old}.BJ"] = (
+            new if "." in new else f"{new}.BJ"
+        )
+    return aliases
+
+
+def canonicalize_bj_codes(codes: list[str], aliases: dict[str, str]) -> list[str]:
+    return normalize_code_list([aliases.get(code, code) for code in codes])
+
+
 def resolve_missing_historical_code_list(
     *,
     context: SyncExecutionContext,
@@ -2324,6 +2354,23 @@ def resolve_missing_historical_code_list(
         },
     )
     codes = normalize_code_list([str(row[0]) for row in rows if row and row[0] is not None])
+    aliases = load_bj_code_aliases(client)
+    if aliases:
+        codes = canonicalize_bj_codes(codes, aliases)
+        existing_rows = client.query_rows(
+            f"""
+            SELECT DISTINCT {code_column}
+            FROM starlight.{target_table}
+            WHERE {code_column} IN {{candidate_codes:Array(String)}}
+            """,
+            {"candidate_codes": codes},
+        )
+        existing_codes = canonicalize_bj_codes(
+            [str(row[0]) for row in existing_rows if row and row[0] is not None],
+            aliases,
+        )
+        canonical_existing = set(existing_codes)
+        codes = [code for code in codes if code not in canonical_existing]
     if limit > 0:
         codes = codes[:limit]
     logger.info(
@@ -2348,13 +2395,18 @@ def resolve_historical_code_list(
 ) -> list[str]:
     security_type = resolve_task_security_type(task)
     if task == "history_stock_status":
-        return resolve_history_stock_status_code_list(
+        codes = resolve_history_stock_status_code_list(
             base_data=context.base_data,
-            limit=limit,
+            limit=0,
             local_path=context.sdk_config.local_path,
             begin_date=begin_date,
             end_date=end_date,
         )
+        aliases = load_bj_code_aliases(context.base_data.repository.client)
+        codes = canonicalize_bj_codes(codes, aliases)
+        if limit > 0:
+            codes = codes[:limit]
+        return codes
     if task in {"daily_kline", "minute_kline"}:
         security_type = DEFAULT_SYNC_SECURITY_TYPE
     if security_type != DEFAULT_SYNC_SECURITY_TYPE:
@@ -2393,6 +2445,9 @@ def resolve_historical_code_list(
             "starlight.ad_hist_code_daily 在请求区间内没有 EXTRA_STOCK_A 历史代码，"
             "拒绝降级为当前股票池；请先同步 amazingdata.hist_code_list。"
         )
+    aliases = load_bj_code_aliases(context.base_data.repository.client)
+    historical_codes = canonicalize_bj_codes(historical_codes, aliases)
+    current_codes = canonicalize_bj_codes(current_codes, aliases)
     codes = sorted(normalize_code_list([*current_codes, *historical_codes]))
     if limit > 0:
         codes = codes[:limit]

@@ -27,9 +27,13 @@ class _MissingHistoricalClient:
     def __init__(self) -> None:
         self.data_parameters: dict[str, object] | None = None
 
-    def query_rows(self, sql, parameters):
+    def query_rows(self, sql, parameters=None):
         if "system.columns" in sql:
             return [("market_code",)]
+        if "ad_bj_code_mapping" in sql:
+            return []
+        if "SELECT DISTINCT market_code FROM starlight.ad_fund_share" in " ".join(sql.split()):
+            return []
         self.data_parameters = dict(parameters)
         return []
 
@@ -38,6 +42,8 @@ class AmazingDataReplacingMergeTreeKeyTest(unittest.TestCase):
     def test_historical_universe_merges_current_and_delisted_stocks(self) -> None:
         class _HistoricalClient:
             def query_rows(self, sql, parameters):
+                if "ad_bj_code_mapping" in sql:
+                    return []
                 self.parameters = dict(parameters)
                 return [("000005.SZ",), ("600000.SH",)]
 
@@ -61,6 +67,31 @@ class AmazingDataReplacingMergeTreeKeyTest(unittest.TestCase):
 
         self.assertEqual(codes, ["000001.SZ", "000005.SZ", "600000.SH"])
         self.assertEqual(client.parameters["security_type"], "EXTRA_STOCK_A")
+
+    def test_historical_universe_maps_legacy_bj_codes(self) -> None:
+        class _HistoricalClient:
+            def query_rows(self, sql, parameters=None):
+                if "ad_bj_code_mapping" in sql:
+                    return [("430017", "920017")]
+                return [("430017.BJ",), ("920017.BJ",)]
+
+        context = SimpleNamespace(
+            base_data=SimpleNamespace(
+                repository=SimpleNamespace(client=_HistoricalClient()),
+                get_stock_universe=lambda security_type, force=False: ["920017.BJ"],
+            ),
+            sdk_config=SimpleNamespace(local_path="/tmp"),
+        )
+
+        codes = resolve_historical_code_list(
+            context=context,
+            task="income",
+            begin_date=20100101,
+            end_date=20260729,
+            limit=0,
+        )
+
+        self.assertEqual(codes, ["920017.BJ"])
 
     def test_profit_express_preserves_announcement_versions(self) -> None:
         ddl = CREATE_AD_PROFIT_EXPRESS_TABLE
@@ -160,6 +191,39 @@ class AmazingDataReplacingMergeTreeKeyTest(unittest.TestCase):
         self.assertEqual(codes, [])
         self.assertIsNotNone(client.data_parameters)
         self.assertEqual(client.data_parameters["security_type"], "EXTRA_ETF")
+
+    def test_missing_historical_ignores_legacy_bj_code_when_new_code_exists(self) -> None:
+        class _BjMappedClient:
+            def query_rows(self, sql, parameters=None):
+                normalized = " ".join(sql.split())
+                if "system.columns" in normalized:
+                    return [("market_code",)]
+                if "LEFT ANTI JOIN existing" in normalized:
+                    return [("430017.BJ",)]
+                if "ad_bj_code_mapping" in normalized:
+                    return [("430017", "920017")]
+                if "SELECT DISTINCT market_code FROM starlight.ad_income" in normalized:
+                    self.candidate_codes = list(parameters["candidate_codes"])
+                    return [("920017.BJ",)]
+                raise AssertionError(normalized)
+
+        client = _BjMappedClient()
+        context = SimpleNamespace(
+            base_data=SimpleNamespace(
+                repository=SimpleNamespace(client=client),
+            )
+        )
+
+        codes = resolve_missing_historical_code_list(
+            context=context,
+            task="income",
+            begin_date=20100101,
+            end_date=20260729,
+            limit=0,
+        )
+
+        self.assertEqual(codes, [])
+        self.assertEqual(client.candidate_codes, ["920017.BJ"])
 
 
 if __name__ == "__main__":
